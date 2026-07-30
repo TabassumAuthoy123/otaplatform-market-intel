@@ -1,0 +1,11 @@
+node_modules
+.next
+out
+.env
+.env.local
+*.log
+.DS_Store
+
+# Internal source documents — market pack, target-customer deck, Sabre PNR logs.
+# Kept on disk, deliberately NOT pushed: this GitHub repo is public.
+docs/

@@ -1,0 +1,26 @@
+# ============================================================================
+#  Dev override — hot reload, source bind-mounted from the host.
+#  Use this while you are editing code in VS Code / Claude Code.
+#
+#    docker compose -f docker-compose.dev.yml up --build
+#
+#  Edit a file on Windows, the browser refreshes. Ctrl+C to stop.
+# ============================================================================
+
+services:
+  market_intel_dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: ota_market_intel_dev
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      # keep container node_modules — do not let the host folder shadow it
+      - /app/node_modules
+      - /app/.next
+    environment:
+      NODE_ENV: development
+      WATCHPACK_POLLING: "true"   # file watching works reliably on Windows
+      CHOKIDAR_USEPOLLING: "true"

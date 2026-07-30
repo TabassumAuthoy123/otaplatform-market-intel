@@ -1,0 +1,286 @@
+// ============================================================================
+//  OTA Platform — Market Intelligence  ·  PRISMA SCHEMA
+//  Provider: MySQL 8 (same engine as the OTAPlatform production stack)
+//  Mirrors data/schema.ts exactly. Run:  npx prisma migrate dev --name init
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------- enums ------
+
+enum CredentialState {
+  verified
+  inferred
+  unknown
+  none
+}
+
+enum Priority {
+  A
+  B
+  C
+  X
+}
+
+enum SalesMode {
+  manual
+  sub_agent
+  own_platform
+  unknown
+}
+
+enum PipelineStage {
+  not_contacted
+  attempted
+  discovery
+  demo_booked
+  demo_done
+  proposal_sent
+  negotiation
+  won
+  lost
+  disqualified
+}
+
+enum ExclusionReason {
+  has_own_platform
+  building_in_house
+  is_competitor
+  compliance_risk
+}
+
+enum Tier {
+  Starter
+  Growth
+  Professional
+  Hajj
+  Enterprise
+}
+
+enum ActivityType {
+  call
+  whatsapp
+  email
+  visit
+  demo
+  note
+}
+
+// ------------------------------------------------------------- reference -----
+
+model Division {
+  id        Int        @id @default(autoincrement())
+  name      String     @unique @db.VarChar(64)
+  districts District[]
+}
+
+model District {
+  id         Int       @id @default(autoincrement())
+  name       String    @unique @db.VarChar(64)
+  divisionId Int
+  division   Division  @relation(fields: [divisionId], references: [id])
+  clusters   Cluster[]
+
+  @@index([divisionId])
+}
+
+/// A geographic sales cluster — the unit the field plan is built around.
+model Cluster {
+  id         String   @id @db.VarChar(48)
+  name       String   @db.VarChar(160)
+  districtId Int
+  district   District @relation(fields: [districtId], references: [id])
+  /// JSON array of named buildings, for the walk-the-floors plan.
+  landmarks  Json
+  phase      Int      @default(1) @db.TinyInt
+  note       String?  @db.Text
+  agencies   Agency[]
+
+  @@index([districtId])
+}
+
+/// Commercial segment definition (S1..S6).
+model Segment {
+  code         String   @id @db.VarChar(4)
+  name         String   @db.VarChar(180)
+  shortName    String   @db.VarChar(64)
+  description  String   @db.Text
+  priorityRank Int      @db.TinyInt
+  tierHint     String?  @db.VarChar(64)
+  agencies     Agency[] @relation("PrimarySegment")
+  secondary    Agency[] @relation("SecondarySegment")
+}
+
+/// BD reps who own accounts.
+model SalesRep {
+  id        Int        @id @default(autoincrement())
+  name      String     @db.VarChar(120)
+  email     String?    @unique @db.VarChar(160)
+  phone     String?    @db.VarChar(32)
+  active    Boolean    @default(true)
+  agencies  Agency[]
+  activities Activity[]
+  createdAt DateTime   @default(now())
+}
+
+// ---------------------------------------------------------------- core -------
+
+model Agency {
+  id       String  @id @db.VarChar(16)
+  name     String  @db.VarChar(200)
+  address  String  @db.Text
+
+  clusterId String  @db.VarChar(48)
+  cluster   Cluster @relation(fields: [clusterId], references: [id])
+
+  // ---- contact -----------------------------------------------------------
+  /// Primary published business line. Null = not published; collect on call.
+  phone     String? @db.VarChar(32)
+  /// JSON array of additional published numbers.
+  altPhones Json?
+  whatsapp  String? @db.VarChar(32)
+  website   String? @db.VarChar(255)
+  facebook  String? @db.VarChar(255)
+  email     String? @db.VarChar(160)
+
+  // ---- classification ----------------------------------------------------
+  segmentCode          String   @db.VarChar(4)
+  segment              Segment  @relation("PrimarySegment", fields: [segmentCode], references: [code])
+  segmentSecondaryCode String?  @db.VarChar(4)
+  segmentSecondary     Segment? @relation("SecondarySegment", fields: [segmentSecondaryCode], references: [code])
+
+  priority        Priority
+  exclusionReason ExclusionReason?
+
+  // ---- credentials -------------------------------------------------------
+  /// Ministry of Civil Aviation & Tourism travel-agency licence (TAMS).
+  /// Colloquially the "Civil Aviation certificate".
+  caabLicence   CredentialState @default(unknown)
+  caabLicenceNo String?         @db.VarChar(32)
+  iata          CredentialState @default(unknown)
+  iataNo        String?         @db.VarChar(32)
+  atab          CredentialState @default(unknown)
+  atabNo        String?         @db.VarChar(32)
+  hajjLicence   CredentialState @default(unknown)
+  /// Set true only after checking the official portal. Drives the
+  /// "verified vs inferred" split on the dashboard.
+  credsVerifiedAt DateTime?
+
+  // ---- commercial signals ------------------------------------------------
+  salesMode       SalesMode @default(unknown)
+  hasOwnPlatform  Boolean   @default(false)
+  currentSystem   String?   @db.VarChar(120)
+  currentSupplier String?   @db.VarChar(120)
+  reviewCount     Int?
+  rating          Decimal?  @db.Decimal(2, 1)
+  open247         Boolean   @default(false)
+  signal          String    @db.Text
+  monthlyBookings Int?
+  staffCount      Int?
+  branchCount     Int?
+  subAgentCount   Int?
+  suggestedTier   Tier?
+
+  // ---- CRM state ---------------------------------------------------------
+  stage           PipelineStage @default(not_contacted)
+  lastContactedAt DateTime?
+  nextActionAt    DateTime?
+  ownerRepId      Int?
+  ownerRep        SalesRep?     @relation(fields: [ownerRepId], references: [id])
+
+  // ---- compliance --------------------------------------------------------
+  /// Raise when public reviews allege fraud or misrepresentation.
+  complianceFlag Boolean @default(false)
+  complianceNote String? @db.Text
+  onboardingApproved Boolean @default(false)
+
+  contacts   Contact[]
+  activities Activity[]
+  deals      Deal[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([clusterId])
+  @@index([segmentCode])
+  @@index([priority])
+  @@index([stage])
+  @@index([caabLicence])
+  @@index([iata])
+  @@index([hasOwnPlatform])
+  @@fulltext([name, address, signal])
+}
+
+model Contact {
+  id          Int      @id @default(autoincrement())
+  agencyId    String   @db.VarChar(16)
+  agency      Agency   @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  name        String   @db.VarChar(120)
+  designation String?  @db.VarChar(120)
+  phone       String?  @db.VarChar(32)
+  whatsapp    String?  @db.VarChar(32)
+  email       String?  @db.VarChar(160)
+  isDecisionMaker Boolean @default(false)
+  bestTimeToCall  String? @db.VarChar(64)
+  languagePref    String? @db.VarChar(32)
+  gatekeeperName  String? @db.VarChar(120)
+  createdAt   DateTime @default(now())
+
+  @@index([agencyId])
+}
+
+model Activity {
+  id        Int          @id @default(autoincrement())
+  agencyId  String       @db.VarChar(16)
+  agency    Agency       @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  repId     Int?
+  rep       SalesRep?    @relation(fields: [repId], references: [id])
+  type      ActivityType
+  outcome   String?      @db.VarChar(160)
+  /// Objection raised, in the prospect's own words. Reused in the proposal.
+  objection String?      @db.Text
+  notes     String?      @db.Text
+  occurredAt DateTime    @default(now())
+
+  @@index([agencyId])
+  @@index([occurredAt])
+}
+
+model Deal {
+  id           Int           @id @default(autoincrement())
+  agencyId     String        @db.VarChar(16)
+  agency       Agency        @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  tier         Tier
+  monthlyBdt   Int
+  setupBdt     Int
+  discountPct  Int           @default(0)
+  /// True when the client granted the right to a named case study.
+  referenceable Boolean      @default(false)
+  stage        PipelineStage @default(proposal_sent)
+  expectedCloseAt DateTime?
+  closedAt     DateTime?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([agencyId])
+  @@index([stage])
+}
+
+/// Audit of where each record came from — keeps the dataset defensible.
+model DataSource {
+  id         Int      @id @default(autoincrement())
+  agencyId   String?  @db.VarChar(16)
+  sourceType String   @db.VarChar(48) // business_listing | tams | hajj_gov_bd | atab | iata_portal | field_visit
+  sourceRef  String?  @db.VarChar(255)
+  capturedAt DateTime @default(now())
+  note       String?  @db.Text
+
+  @@index([agencyId])
+}

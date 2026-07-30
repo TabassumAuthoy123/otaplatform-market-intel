@@ -1,0 +1,47 @@
+# ============================================================================
+#  OTA Platform — Market Intelligence
+#  Runs ALONGSIDE the existing OTAPlatform stack. No port collisions:
+#    OTAPlatform : 8080 nginx · 8081 phpMyAdmin · 3307 mysql · 6379 redis
+#    This app    : 3000
+#
+#  Start:   docker compose up -d --build
+#  Open:    http://localhost:3000
+#  Stop:    docker compose down
+# ============================================================================
+
+services:
+  market_intel:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ota_market_intel
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      NEXT_PUBLIC_APP_NAME: "OTA Platform — Market Intelligence"
+      # Only needed once you switch from the static dataset to a live DB.
+      # 'otaplatform_mysql' is the OTAPlatform MySQL container name — reachable
+      # by that name ONLY if the shared network below is enabled.
+      # DATABASE_URL: "mysql://root:root@otaplatform_mysql:3306/ota_market_intel"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/api/agencies?stats=1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+    # ---- to reach OTAPlatform's MySQL, uncomment this block AND the
+    # ---- top-level networks block at the bottom of this file.
+    # networks:
+    #   - default
+    #   - otaplatform_net
+
+# networks:
+#   otaplatform_net:
+#     external: true
+#     # Verified on this machine with `docker network ls` — OTAPlatform's compose
+#     # declares a network literally named 'otaplatform', so Docker prefixes the
+#     # project name and the real network is 'otaplatform_otaplatform'.
+#     name: otaplatform_otaplatform

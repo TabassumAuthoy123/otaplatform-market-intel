@@ -1,0 +1,26 @@
+{
+  "//": "Open BOTH projects in one VS Code window. File > Open Workspace from File...",
+  "//2": "Paths are relative to THIS file. Two levels up because the zip extracted nested.",
+  "folders": [
+    { "name": "1 · OTAPlatform (Laravel)", "path": "../../OTAPlatform" },
+    { "name": "2 · Market Intel (Next.js)", "path": "." }
+  ],
+  "settings": {
+    "files.eol": "\n",
+    "editor.formatOnSave": false,
+    "typescript.tsdk": "2 · Market Intel (Next.js)/node_modules/typescript/lib",
+    "search.exclude": {
+      "**/node_modules": true,
+      "**/.next": true,
+      "**/vendor": true
+    }
+  },
+  "extensions": {
+    "recommendations": [
+      "bradlc.vscode-tailwindcss",
+      "dbaeumer.vscode-eslint",
+      "Prisma.prisma",
+      "ms-azuretools.vscode-docker"
+    ]
+  }
+}

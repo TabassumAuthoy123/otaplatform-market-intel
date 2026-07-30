@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; }
+
+html, body { -webkit-font-smoothing: antialiased; }
+body { background: #F5F8FA; color: #1F2933; }
+
+/* thin scrollbars for the dense tables */
+.scroll-thin::-webkit-scrollbar { height: 8px; width: 8px; }
+.scroll-thin::-webkit-scrollbar-thumb { background: #C7D5DE; border-radius: 8px; }
+.scroll-thin::-webkit-scrollbar-track { background: transparent; }
+
+@media print {
+  .no-print { display: none !important; }
+  body { background: #fff; }
+}
