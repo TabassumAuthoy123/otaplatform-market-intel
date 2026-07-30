@@ -7,3 +7,6 @@ docs
 *.log
 README.md
 DOCKER.md
+# sibling apps — they build from their own Dockerfiles / dev servers
+b2c
+admin

@@ -1,0 +1,51 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-sans: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  @apply bg-surface text-ink antialiased;
+  font-family: var(--font-sans);
+}
+
+/* dense numeric text — fares, codes, phone numbers */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.hairline {
+  @apply border-hair;
+}
+
+/* thin teal rule that sits under every section title */
+.rule::after {
+  content: '';
+  @apply mt-3 block h-[2px] w-10 bg-teal-600;
+}
+
+.card {
+  @apply rounded-xl2 border border-hair bg-white shadow-card transition-shadow;
+}
+.card:hover {
+  @apply shadow-lift;
+}
+
+/* hero gradient — navy, no rainbow */
+.hero-navy {
+  background:
+    radial-gradient(1100px 480px at 12% -10%, rgba(31, 168, 174, 0.22), transparent 60%),
+    radial-gradient(800px 400px at 88% 0%, rgba(49, 100, 159, 0.35), transparent 62%),
+    #0B1A33;
+}
+
+.chip {
+  @apply inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide;
+}

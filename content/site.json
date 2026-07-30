@@ -1,0 +1,692 @@
+{
+  "_meta": {
+    "note": "Every string on the B2C portal comes from this file. Edit it through the admin portal (http://localhost:4001) — do not hand-edit unless the admin server is stopped.",
+    "revision": 1,
+    "lastEditedBy": "seed",
+    "lastEditedAt": "2026-07-30"
+  },
+  "brand": {
+    "name": "OTA Platform",
+    "company": "Softifybd Limited",
+    "logoMark": "OTA",
+    "tagline": "Start your online travel agency journey",
+    "hotline": "096-12345-100",
+    "email": "info@softifybd.com",
+    "address": "Tower of Aakash, Level 18, 54 Gulshan Avenue, Dhaka 1212",
+    "productSite": "otaplatform.net"
+  },
+  "announcement": {
+    "enabled": true,
+    "text": "Demo environment — fares and availability shown here are indicative sample data, not live GDS results.",
+    "linkLab": "",
+    "linkHref": ""
+  },
+  "nav": [
+    {
+      "label": "Flights",
+      "href": "/flights"
+    },
+    {
+      "label": "Hajj & Umrah",
+      "href": "/packages"
+    },
+    {
+      "label": "Hotels",
+      "href": "/hotels"
+    },
+    {
+      "label": "Visa",
+      "href": "/visa"
+    },
+    {
+      "label": "For Agents",
+      "href": "/agents"
+    },
+    {
+      "label": "About",
+      "href": "/about"
+    }
+  ],
+  "hero": {
+    "kicker": "Softifybd Limited · OTA Platform",
+    "title": "Book flights, Hajj packages and hotels — one platform",
+    "subtitle": "Three live GDS connections, fares in BDT, and a support team in Dhaka that answers in Bangla.",
+    "primaryCta": {
+      "label": "Search flights",
+      "href": "/flights"
+    },
+    "secondaryCta": {
+      "label": "Become a sub-agent",
+      "href": "/agents"
+    },
+    "searchTabs": [
+      "Flights",
+      "Hotels",
+      "Hajj & Umrah",
+      "Visa"
+    ],
+    "popularFrom": [
+      "Dhaka (DAC)",
+      "Chattogram (CGP)",
+      "Sylhet (ZYL)"
+    ],
+    "badges": [
+      "ISO 27001",
+      "ISO 9001",
+      "BASIS Member",
+      "DUNS Registered"
+    ]
+  },
+  "trustStats": [
+    {
+      "value": "3",
+      "label": "Live GDS connections",
+      "sub": "Sabre · Travelport · Flyhub"
+    },
+    {
+      "value": "10+",
+      "label": "Years in software",
+      "sub": "Softifybd Limited"
+    },
+    {
+      "value": "100+",
+      "label": "People on the team",
+      "sub": "Dhaka & Narayanganj"
+    },
+    {
+      "value": "300+",
+      "label": "Projects delivered",
+      "sub": "12+ products in the line"
+    }
+  ],
+  "routes": [
+    {
+      "from": "Dhaka",
+      "fromCode": "DAC",
+      "to": "Jeddah",
+      "toCode": "JED",
+      "airline": "Saudia",
+      "priceFrom": 62500,
+      "tag": "Umrah season",
+      "duration": "8h 10m",
+      "stops": "1 stop"
+    },
+    {
+      "from": "Dhaka",
+      "fromCode": "DAC",
+      "to": "Dubai",
+      "toCode": "DXB",
+      "airline": "Emirates",
+      "priceFrom": 48900,
+      "tag": "Popular",
+      "duration": "5h 25m",
+      "stops": "Direct"
+    },
+    {
+      "from": "Dhaka",
+      "fromCode": "DAC",
+      "to": "Kuala Lumpur",
+      "toCode": "KUL",
+      "airline": "Malaysia Airlines",
+      "priceFrom": 41200,
+      "tag": "",
+      "duration": "4h 15m",
+      "stops": "Direct"
+    },
+    {
+      "from": "Dhaka",
+      "fromCode": "DAC",
+      "to": "Doha",
+      "toCode": "DOH",
+      "airline": "Qatar Airways",
+      "priceFrom": 52300,
+      "tag": "",
+      "duration": "5h 40m",
+      "stops": "Direct"
+    },
+    {
+      "from": "Dhaka",
+      "fromCode": "DAC",
+      "to": "Kolkata",
+      "toCode": "CCU",
+      "airline": "IndiGo",
+      "priceFrom": 12800,
+      "tag": "Cheapest",
+      "duration": "1h 05m",
+      "stops": "Direct"
+    },
+    {
+      "from": "Dhaka",
+      "fromCode": "DAC",
+      "to": "Bangkok",
+      "toCode": "BKK",
+      "airline": "Thai Airways",
+      "priceFrom": 38600,
+      "tag": "",
+      "duration": "2h 35m",
+      "stops": "Direct"
+    },
+    {
+      "from": "Dhaka",
+      "fromCode": "DAC",
+      "to": "Singapore",
+      "toCode": "SIN",
+      "airline": "Singapore Airlines",
+      "priceFrom": 45700,
+      "tag": "",
+      "duration": "4h 05m",
+      "stops": "Direct"
+    },
+    {
+      "from": "Dhaka",
+      "fromCode": "DAC",
+      "to": "Cox's Bazar",
+      "toCode": "CXB",
+      "airline": "US-Bangla Airlines",
+      "priceFrom": 5400,
+      "tag": "Domestic",
+      "duration": "1h 10m",
+      "stops": "Direct"
+    },
+    {
+      "from": "Dhaka",
+      "fromCode": "DAC",
+      "to": "Sylhet",
+      "toCode": "ZYL",
+      "airline": "Biman Bangladesh",
+      "priceFrom": 4300,
+      "tag": "Domestic",
+      "duration": "0h 45m",
+      "stops": "Direct"
+    }
+  ],
+  "packages": [
+    {
+      "title": "Umrah — 14 nights, economy",
+      "kind": "Umrah",
+      "nights": 14,
+      "priceFrom": 165000,
+      "tag": "Most booked",
+      "includes": [
+        "Return air ticket",
+        "Visa processing",
+        "Makkah hotel — 800m from Haram",
+        "Madinah hotel — 400m from Masjid an-Nabawi",
+        "Ziyarah transport",
+        "Bangla-speaking guide"
+      ]
+    },
+    {
+      "title": "Umrah — 10 nights, premium",
+      "kind": "Umrah",
+      "nights": 10,
+      "priceFrom": 245000,
+      "tag": "",
+      "includes": [
+        "Return air ticket",
+        "Visa processing",
+        "4-star Makkah hotel — Haram view",
+        "4-star Madinah hotel",
+        "Private transport",
+        "Full-board meals"
+      ]
+    },
+    {
+      "title": "Hajj 2027 — standard package",
+      "kind": "Hajj",
+      "nights": 38,
+      "priceFrom": 585000,
+      "tag": "Registration open",
+      "includes": [
+        "Return air ticket",
+        "Hajj visa",
+        "Mina & Arafah tent (Category B)",
+        "Makkah & Madinah hotel",
+        "All ground transport",
+        "Instalment plan over 10 months"
+      ]
+    },
+    {
+      "title": "Dubai city break — 4 nights",
+      "kind": "Tour",
+      "nights": 4,
+      "priceFrom": 78000,
+      "tag": "",
+      "includes": [
+        "Return air ticket",
+        "UAE visa",
+        "4-star hotel with breakfast",
+        "Desert safari",
+        "Burj Khalifa Level 124",
+        "Airport transfers"
+      ]
+    },
+    {
+      "title": "Malaysia & Singapore — 6 nights",
+      "kind": "Tour",
+      "nights": 6,
+      "priceFrom": 112000,
+      "tag": "",
+      "includes": [
+        "Return air ticket",
+        "Both visas",
+        "Hotels with breakfast",
+        "Genting Highlands day trip",
+        "Sentosa & Universal Studios",
+        "All transfers"
+      ]
+    },
+    {
+      "title": "Cox's Bazar — 3 nights",
+      "kind": "Tour",
+      "nights": 3,
+      "priceFrom": 18500,
+      "tag": "Domestic",
+      "includes": [
+        "Return air ticket",
+        "Sea-view resort",
+        "Breakfast & dinner",
+        "Inani & Himchari tour",
+        "Airport transfers"
+      ]
+    }
+  ],
+  "hotels": [
+    {
+      "name": "Makkah — Haram district",
+      "city": "Makkah",
+      "priceFrom": 9800,
+      "rating": 4,
+      "note": "Walking distance to Masjid al-Haram"
+    },
+    {
+      "name": "Madinah — Central area",
+      "city": "Madinah",
+      "priceFrom": 7400,
+      "rating": 4,
+      "note": "Near Masjid an-Nabawi"
+    },
+    {
+      "name": "Dubai — Deira",
+      "city": "Dubai",
+      "priceFrom": 8600,
+      "rating": 4,
+      "note": "Metro-connected, close to Gold Souk"
+    },
+    {
+      "name": "Kuala Lumpur — Bukit Bintang",
+      "city": "Kuala Lumpur",
+      "priceFrom": 5200,
+      "rating": 4,
+      "note": "Shopping district, halal dining"
+    },
+    {
+      "name": "Bangkok — Sukhumvit",
+      "city": "Bangkok",
+      "priceFrom": 4900,
+      "rating": 4,
+      "note": "BTS Skytrain access"
+    },
+    {
+      "name": "Cox's Bazar — Kolatoli",
+      "city": "Cox's Bazar",
+      "priceFrom": 6500,
+      "rating": 4,
+      "note": "Direct beach access"
+    }
+  ],
+  "services": [
+    {
+      "title": "Air ticketing",
+      "desc": "Domestic and international fares from three live GDS connections, priced in BDT with no hidden markup.",
+      "icon": "plane"
+    },
+    {
+      "title": "Hajj & Umrah",
+      "desc": "Pilgrim groups, visa processing, hotel allocation in Makkah and Madinah, and instalment plans.",
+      "icon": "kaaba"
+    },
+    {
+      "title": "Hotel booking",
+      "desc": "Rooms across the Gulf, Southeast Asia and Bangladesh, confirmed instantly with e-voucher.",
+      "icon": "bed"
+    },
+    {
+      "title": "Visa assistance",
+      "desc": "Document checklists, appointment booking and application handling for the main outbound corridors.",
+      "icon": "passport"
+    },
+    {
+      "title": "Tour packages",
+      "desc": "Ready-made and custom itineraries, family and group travel, with transparent inclusion lists.",
+      "icon": "map"
+    },
+    {
+      "title": "Corporate travel",
+      "desc": "Company accounts, monthly billing, approval workflow and spend reporting.",
+      "icon": "briefcase"
+    }
+  ],
+  "why": [
+    {
+      "title": "Your own brand, not ours",
+      "desc": "Agencies running on OTA Platform sell under their own name and domain. The passenger sees the agency, not the supplier."
+    },
+    {
+      "title": "Supplier-neutral by design",
+      "desc": "Three GDS connections live — Sabre, Travelport and Flyhub. Add or drop a supplier without rebuilding anything."
+    },
+    {
+      "title": "Margin control that is not manual",
+      "desc": "Commission, markup and blocking rules run in an engine, not in a spreadsheet at the end of the month."
+    },
+    {
+      "title": "Support in the same city, same language",
+      "desc": "A Dhaka team on 096-12345-100. Not an email ticket queue in another time zone."
+    },
+    {
+      "title": "Every action logged",
+      "desc": "Activity, audit and booking logs record which staff member did what — the answer to staff-side fraud."
+    },
+    {
+      "title": "Built on verifiable credentials",
+      "desc": "ISO 27001 and ISO 9001 certified, DUNS registered, BASIS member 22-08-047."
+    }
+  ],
+  "credentials": [
+    {
+      "label": "ISO 27001",
+      "note": "Information security management"
+    },
+    {
+      "label": "ISO 9001",
+      "note": "Quality management"
+    },
+    {
+      "label": "BASIS Member",
+      "note": "Profile 22-08-047"
+    },
+    {
+      "label": "DUNS Registered",
+      "note": "Verified business identity"
+    },
+    {
+      "label": "SSLCommerz",
+      "note": "Payment gateway"
+    },
+    {
+      "label": "2FA Secured",
+      "note": "Google2FA on every portal"
+    }
+  ],
+  "paymentMethods": [
+    "SSLCommerz",
+    "Visa",
+    "Mastercard",
+    "bKash",
+    "Nagad",
+    "Bank transfer"
+  ],
+  "testimonials": {
+    "_hint": "Leave this empty until you have real, named, permission-granted quotes. The market pack flags the placeholder testimonials on the live site ('CTO, Unknown Group') as a credibility problem — do not repeat it here.",
+    "items": []
+  },
+  "agentCta": {
+    "kicker": "For licensed travel agencies",
+    "title": "Run your own OTA — live in weeks, under your own brand",
+    "body": "If you hold a Ministry travel-agency licence and sell tickets on WhatsApp today, OTA Platform gives you a booking site on your own domain, a B2B panel for your sub-agents, automatic markup rules and a full ledger.",
+    "bullets": [
+      "Booking website on your own domain and logo",
+      "Sub-agents register themselves — you approve",
+      "Sabre, Travelport and Flyhub live",
+      "Automatic commission and markup rules",
+      "Ledger, deposits, bank and MFS reconciliation",
+      "Audit log on every staff action"
+    ],
+    "cta": {
+      "label": "Request a 15-minute demo",
+      "href": "/agents"
+    }
+  },
+  "agentTiers": [
+    {
+      "name": "Starter",
+      "for": "Under 100 bookings a month",
+      "featured": false,
+      "features": [
+        "B2C storefront on your domain",
+        "1 GDS connection",
+        "Basic markup rules",
+        "Email support"
+      ]
+    },
+    {
+      "name": "Growth",
+      "for": "100–500 bookings a month",
+      "featured": true,
+      "features": [
+        "Everything in Starter",
+        "B2B sub-agent panel",
+        "Full rules engine",
+        "Ledger and roles",
+        "Audit log",
+        "Priority support"
+      ]
+    },
+    {
+      "name": "Professional",
+      "for": "500+ bookings a month",
+      "featured": false,
+      "features": [
+        "Everything in Growth",
+        "All three GDS live",
+        "Unlimited sub-agents",
+        "GSA partner accounting",
+        "API access",
+        "SLA"
+      ]
+    },
+    {
+      "name": "Hajj & Umrah",
+      "for": "Licensed Hajj and Umrah operators",
+      "featured": false,
+      "features": [
+        "Pilgrim group management",
+        "Document tracking",
+        "Instalment schedules",
+        "Hotel allocation",
+        "Makkah & Madinah rooming"
+      ]
+    }
+  ],
+  "pricingNote": "Tier pricing is quoted after a discovery call, because it depends on monthly booking volume and how many suppliers you need live. Ask for the rate card on the demo.",
+  "about": {
+    "title": "Built by Softifybd Limited",
+    "body": "Softifybd is a Dhaka software company: 10+ years, 100+ people, 12+ products and 300+ delivered projects. OTA Platform is the travel product in that line — a white-label online travel agency for licensed Bangladeshi agencies, with three GDS connections, separated B2B, B2C and admin portals, a rules-driven financial engine and a bilingual AI assistant.",
+    "facts": [
+      {
+        "k": "Corporate office",
+        "v": "Tower of Aakash, Level 18, 54 Gulshan Avenue, Dhaka 1212"
+      },
+      {
+        "k": "Development & support",
+        "v": "Gulshan-1 and Narayanganj"
+      },
+      {
+        "k": "Hotline",
+        "v": "096-12345-100"
+      },
+      {
+        "k": "Email",
+        "v": "info@softifybd.com"
+      },
+      {
+        "k": "Product site",
+        "v": "otaplatform.net"
+      },
+      {
+        "k": "Stack",
+        "v": "Laravel 11 · PHP 8.2 · MySQL 8 · Dockerised"
+      }
+    ],
+    "capabilities": [
+      {
+        "area": "GDS & supplier connectivity",
+        "detail": "Sabre, Travelport and Flyhub — three live integrations."
+      },
+      {
+        "area": "Multi-portal separation",
+        "detail": "B2B agent, B2C customer and Admin are separate portals."
+      },
+      {
+        "area": "Agent onboarding",
+        "detail": "Sub-agents self-register; the parent agency approves."
+      },
+      {
+        "area": "Financial engine",
+        "detail": "Ledger, GSA partner accounting, bank and MFS management, auto deposit and recharge."
+      },
+      {
+        "area": "Rules engine",
+        "detail": "Commission, markup and blocking rules."
+      },
+      {
+        "area": "Payments",
+        "detail": "SSLCommerz integrated."
+      },
+      {
+        "area": "Security",
+        "detail": "Google2FA and Laravel Sanctum API authentication."
+      },
+      {
+        "area": "Audit & logging",
+        "detail": "Activity, audit, booking-audit and error logs."
+      },
+      {
+        "area": "Documents & reporting",
+        "detail": "Excel export, PDF generation, QR codes on tickets."
+      },
+      {
+        "area": "Trippy AI assistant",
+        "detail": "Bilingual English and Bangla assistant over FAQ, fare rules and booking policy."
+      }
+    ]
+  },
+  "visa": {
+    "title": "Visa assistance",
+    "body": "Document checklist, appointment booking and application handling for the corridors Bangladeshi travellers actually use.",
+    "destinations": [
+      {
+        "country": "Saudi Arabia",
+        "type": "Umrah / Hajj",
+        "processing": "7–14 days"
+      },
+      {
+        "country": "United Arab Emirates",
+        "type": "Tourist",
+        "processing": "3–5 days"
+      },
+      {
+        "country": "Malaysia",
+        "type": "Tourist / eVisa",
+        "processing": "5–7 days"
+      },
+      {
+        "country": "Thailand",
+        "type": "Tourist",
+        "processing": "5–10 days"
+      },
+      {
+        "country": "India",
+        "type": "Tourist / Medical",
+        "processing": "10–15 days"
+      },
+      {
+        "country": "Singapore",
+        "type": "Tourist",
+        "processing": "5–7 days"
+      },
+      {
+        "country": "Qatar",
+        "type": "Tourist / Transit",
+        "processing": "3–7 days"
+      },
+      {
+        "country": "Turkey",
+        "type": "Tourist / eVisa",
+        "processing": "7–14 days"
+      }
+    ],
+    "note": "Processing times are indicative and set by the embassy, not by us. We do not guarantee visa outcomes."
+  },
+  "contact": {
+    "title": "Talk to us",
+    "body": "Sunday to Thursday, 10:00–19:00. Friday closed.",
+    "hotline": "096-12345-100",
+    "email": "info@softifybd.com",
+    "salesEmail": "info@softifybd.com",
+    "address": "Tower of Aakash, Level 18, 54 Gulshan Avenue, Dhaka 1212"
+  },
+  "footer": {
+    "blurb": "OTA Platform is the travel product of Softifybd Limited — a white-label online travel agency for licensed Bangladeshi travel agencies.",
+    "columns": [
+      {
+        "title": "Book",
+        "links": [
+          {
+            "label": "Flights",
+            "href": "/flights"
+          },
+          {
+            "label": "Hajj & Umrah",
+            "href": "/packages"
+          },
+          {
+            "label": "Hotels",
+            "href": "/hotels"
+          },
+          {
+            "label": "Visa",
+            "href": "/visa"
+          }
+        ]
+      },
+      {
+        "title": "For agencies",
+        "links": [
+          {
+            "label": "Become a sub-agent",
+            "href": "/agents"
+          },
+          {
+            "label": "Platform tiers",
+            "href": "/agents"
+          },
+          {
+            "label": "Request a demo",
+            "href": "/agents"
+          }
+        ]
+      },
+      {
+        "title": "Company",
+        "links": [
+          {
+            "label": "About Softifybd",
+            "href": "/about"
+          },
+          {
+            "label": "Contact",
+            "href": "/contact"
+          },
+          {
+            "label": "otaplatform.net",
+            "href": "/about"
+          }
+        ]
+      }
+    ],
+    "legal": "© 2026 Softifybd Limited. Internal demo build — not a live booking service.",
+    "disclaimer": "Fares, package prices and availability on this demo are indicative sample data and do not reflect live GDS results."
+  }
+}

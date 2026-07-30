@@ -1,0 +1,11 @@
+{
+  "name": "otaplatform-admin",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Content admin portal for the OTA Platform B2C storefront. Zero dependencies — Node's own http/crypto/fs only.",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": { "node": ">=18.17" }
+}

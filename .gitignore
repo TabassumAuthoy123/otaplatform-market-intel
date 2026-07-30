@@ -9,3 +9,10 @@ out
 # Internal source documents — market pack, target-customer deck, Sabre PNR logs.
 # Kept on disk, deliberately NOT pushed: this GitHub repo is public.
 docs/
+
+# Admin portal secrets and captured personal data — never commit these.
+# users.json holds a password hash; leads.json holds names and phone numbers.
+content/users.json
+content/leads.json
+content/.session-secret
+content/*.tmp

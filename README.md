@@ -1,5 +1,11 @@
 # OTA Platform — Bangladesh Market Intelligence Dashboard
 
+> This repo now holds three local apps. The market-intelligence dashboard below,
+> plus a **B2C consumer storefront** (`b2c/`, port 3001) and a **content admin
+> portal** (`admin/`, port 4001) built for the CTO walkthrough — see
+> [B2C-ADMIN.md](B2C-ADMIN.md). When all three run together the dashboard moves
+> to port 3002 (`npm run dev:alt`).
+
 Lead-intelligence dashboard for **Softifybd OTA Platform**. Built to be shown to the CEO
 and used on the phone the same day.
 
