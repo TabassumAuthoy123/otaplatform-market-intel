@@ -8,7 +8,7 @@ import { NextResponse } from 'next/server';
  * walkthrough. leads.json is gitignored — it holds names and phone numbers.
  */
 
-const CONTENT_DIR = path.join(process.cwd(), '..', 'content');
+const CONTENT_DIR = path.join(process.cwd(), 'content');
 const LEADS_FILE = path.join(CONTENT_DIR, 'leads.json');
 
 type Lead = {

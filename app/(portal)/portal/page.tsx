@@ -1,7 +1,7 @@
 import Link from 'next/link';
-import { PackageCard, RouteCard } from '@/components/cards';
-import { SearchWidget } from '@/components/SearchWidget';
-import { Button, Chip, Icon, Section, SectionTitle, Stat } from '@/components/ui';
+import { PackageCard, RouteCard } from '@/components/portal/cards';
+import { SearchWidget } from '@/components/portal/SearchWidget';
+import { Button, Chip, Icon, Section, SectionTitle, Stat } from '@/components/portal/ui';
 import { getContent } from '@/lib/content';
 
 export const dynamic = 'force-dynamic';
@@ -75,7 +75,7 @@ export default async function HomePage() {
       <Section tone="white">
         <div className="mb-9 flex flex-wrap items-end justify-between gap-4">
           <SectionTitle kicker="Popular right now" title="Fares from Dhaka" />
-          <Link href="/flights" className="mb-2 text-[13.5px] font-semibold text-teal-700 hover:underline">
+          <Link href="/portal/flights" className="mb-2 text-[13.5px] font-semibold text-teal-700 hover:underline">
             All routes →
           </Link>
         </div>
@@ -94,7 +94,7 @@ export default async function HomePage() {
             title="Packages with the inclusion list printed on the front"
             sub="No surprise add-ons at the counter. What is listed is what is in the price."
           />
-          <Link href="/packages" className="mb-2 text-[13.5px] font-semibold text-teal-700 hover:underline">
+          <Link href="/portal/packages" className="mb-2 text-[13.5px] font-semibold text-teal-700 hover:underline">
             All packages →
           </Link>
         </div>

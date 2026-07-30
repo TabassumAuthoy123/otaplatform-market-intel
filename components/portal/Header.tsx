@@ -4,6 +4,16 @@ import type { SiteContent } from '@/lib/content';
 export function Header({ c }: { c: SiteContent }) {
   return (
     <>
+      {/* Way back to the dashboard — this storefront lives inside it. */}
+      <div className="border-b border-navy-800 bg-navy-950">
+        <div className="mx-auto flex max-w-6xl items-center gap-4 px-5 py-1.5 sm:px-8">
+          <Link href="/" className="text-[11.5px] font-semibold text-teal-300 hover:text-white">
+            ← Market Intelligence
+          </Link>
+          <span className="text-[11px] text-white/40">B2C portal preview</span>
+        </div>
+      </div>
+
       {c.announcement?.enabled && (
         <div className="bg-amber-700 text-white">
           <div className="mx-auto max-w-6xl px-5 py-2 text-[12.5px] sm:px-8">{c.announcement.text}</div>
@@ -12,7 +22,7 @@ export function Header({ c }: { c: SiteContent }) {
 
       <header className="sticky top-0 z-40 border-b border-hair bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center gap-6 px-5 py-3.5 sm:px-8">
-          <Link href="/" className="flex shrink-0 items-center gap-2.5">
+          <Link href="/portal" className="flex shrink-0 items-center gap-2.5" aria-label="B2C portal home">
             <span className="grid h-9 w-9 place-items-center rounded-lg bg-navy-900 text-[13px] font-bold text-white">
               {c.brand.logoMark}
             </span>
@@ -42,7 +52,7 @@ export function Header({ c }: { c: SiteContent }) {
               {c.brand.hotline}
             </a>
             <Link
-              href="/agents"
+              href="/portal/agents"
               className="rounded-lg bg-teal-600 px-4 py-2.5 text-[13px] font-semibold text-white transition-colors hover:bg-teal-700"
             >
               Agent login

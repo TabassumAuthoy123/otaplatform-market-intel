@@ -106,6 +106,16 @@ export default function Nav() {
           </div>
 
           {link('/agencies?priority=A', 'Call First (A)')}
+
+          {/* The consumer-facing storefront — separate product area, so it is
+              styled as an outlined link rather than another dashboard tab. */}
+          <Link
+            href="/portal"
+            className="ml-1 rounded border border-teal-400/50 px-3 py-2 text-sm text-teal-300 transition-colors hover:border-teal-400 hover:bg-teal-400/10 hover:text-white"
+          >
+            B2C Portal ↗
+          </Link>
+
           <a
             href="/api/agencies?format=csv"
             className="ml-2 rounded bg-teal-600 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-500"
@@ -129,6 +139,7 @@ export default function Nav() {
             {link('/agencies', 'Agency Database')}
             {link('/segments', 'Segments')}
             {link('/agencies?priority=A', 'Call First (A)')}
+            {link('/portal', 'B2C Portal ↗')}
           </div>
         </div>
       )}

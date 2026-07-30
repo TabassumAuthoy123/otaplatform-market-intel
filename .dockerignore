@@ -7,6 +7,5 @@ docs
 *.log
 README.md
 DOCKER.md
-# sibling apps — they build from their own Dockerfiles / dev servers
-b2c
+# the content admin portal runs as its own plain-node process, not in this image
 admin

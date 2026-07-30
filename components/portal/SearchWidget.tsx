@@ -17,15 +17,15 @@ export function SearchWidget({ tabs, origins }: { tabs: string[]; origins: strin
   const [pax, setPax] = useState('1');
 
   const destinationFor: Record<string, string> = {
-    Flights: '/flights',
-    Hotels: '/hotels',
-    'Hajj & Umrah': '/packages',
-    Visa: '/visa'
+    Flights: '/portal/flights',
+    Hotels: '/portal/hotels',
+    'Hajj & Umrah': '/portal/packages',
+    Visa: '/portal/visa'
   };
 
   function submit(e: React.FormEvent) {
     e.preventDefault();
-    const base = destinationFor[tab] ?? '/flights';
+    const base = destinationFor[tab] ?? '/portal/flights';
     const q = new URLSearchParams();
     if (from) q.set('from', from);
     if (to) q.set('to', to);

@@ -31,7 +31,7 @@ export function RouteCard({ r }: { r: Route }) {
           <div className="tnum text-[20px] font-bold text-navy-900">{bdt(r.priceFrom)}</div>
         </div>
         <Link
-          href={`/flights?from=${encodeURIComponent(r.from)}&to=${encodeURIComponent(r.to)}`}
+          href={`/portal/flights?from=${encodeURIComponent(r.from)}&to=${encodeURIComponent(r.to)}`}
           className="rounded-lg border border-hair px-4 py-2 text-[13px] font-semibold text-teal-700 transition-colors hover:border-teal-500 hover:bg-teal-600/5"
         >
           View fares
@@ -68,7 +68,7 @@ export function PackageCard({ p }: { p: Package }) {
           <div className="tnum text-[20px] font-bold text-navy-900">{bdt(p.priceFrom)}</div>
         </div>
         <Link
-          href="/contact"
+          href="/portal/contact"
           className="rounded-lg bg-navy-900 px-4 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-navy-800"
         >
           Enquire
@@ -95,7 +95,7 @@ export function HotelCard({ h }: { h: Hotel }) {
           <div className="tnum text-[18px] font-bold text-navy-900">{bdt(h.priceFrom)}</div>
         </div>
         <Link
-          href="/contact"
+          href="/portal/contact"
           className="rounded-lg border border-hair px-4 py-2 text-[13px] font-semibold text-teal-700 transition-colors hover:border-teal-500"
         >
           Check dates

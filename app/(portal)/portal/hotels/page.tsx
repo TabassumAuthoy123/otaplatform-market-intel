@@ -1,5 +1,5 @@
-import { HotelCard } from '@/components/cards';
-import { Section, SectionTitle } from '@/components/ui';
+import { HotelCard } from '@/components/portal/cards';
+import { Section, SectionTitle } from '@/components/portal/ui';
 import { getContent } from '@/lib/content';
 
 export const dynamic = 'force-dynamic';

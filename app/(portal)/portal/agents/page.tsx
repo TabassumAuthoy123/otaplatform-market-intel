@@ -1,5 +1,5 @@
-import { EnquiryForm } from '@/components/EnquiryForm';
-import { Chip, Icon, Section, SectionTitle } from '@/components/ui';
+import { EnquiryForm } from '@/components/portal/EnquiryForm';
+import { Chip, Icon, Section, SectionTitle } from '@/components/portal/ui';
 import { getContent } from '@/lib/content';
 
 export const dynamic = 'force-dynamic';

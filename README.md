@@ -1,10 +1,9 @@
 # OTA Platform — Bangladesh Market Intelligence Dashboard
 
-> This repo now holds three local apps. The market-intelligence dashboard below,
-> plus a **B2C consumer storefront** (`b2c/`, port 3001) and a **content admin
-> portal** (`admin/`, port 4001) built for the CTO walkthrough — see
-> [B2C-ADMIN.md](B2C-ADMIN.md). When all three run together the dashboard moves
-> to port 3002 (`npm run dev:alt`).
+> This app now also serves a **B2C consumer storefront** at `/portal`, reachable
+> from the **B2C Portal ↗** item in the nav bar. Its content is edited from a
+> separate **admin portal** on port 4001 (`npm run admin`) — see
+> [B2C-ADMIN.md](B2C-ADMIN.md).
 
 Lead-intelligence dashboard for **Softifybd OTA Platform**. Built to be shown to the CEO
 and used on the phone the same day.
@@ -39,6 +38,7 @@ npm run build && npm start   # production build
 | **Agency Database** | `/agencies` | All 114 records. Live filters on priority, segment, cluster, district, free text. Click-to-dial and click-to-WhatsApp. CSV export of the current filter |
 | **Segments** | `/segments` | S1–S6 explained with live counts and the disqualification rules |
 | **API** | `/api/agencies` | JSON + CSV for anyone who wants the raw data |
+| **B2C Portal** | `/portal` | The consumer-facing storefront — flights, Hajj/Umrah, hotels, visa, agent signup. Content editable from the admin portal on 4001. See [B2C-ADMIN.md](B2C-ADMIN.md) |
 
 The two numbers the CEO asks for are the first two tiles in the hero:
 **Civil Aviation certificate holders** and **IATA registered**.
@@ -83,16 +83,27 @@ Do not present an inferred credential to a client as a fact.
 ## Project structure
 
 ```
-data/schema.ts        <- CANONICAL data schema. Types, segments, clusters. Change here first.
-data/agencies.ts      <- the 114-record dataset + derived STATS / PIPELINE aggregates
-prisma/schema.prisma  <- Prisma mirror (MySQL 8): agencies, contacts, activities, deals, data_sources
-db/schema.sql         <- plain MySQL DDL + 3 reporting views, for the dev/DBA team
-app/page.tsx          <- dashboard
-app/agencies/         <- database page
-app/segments/         <- segment explainer
-app/api/agencies/     <- JSON + CSV endpoint
-components/           <- Nav, AgencyTable, ui primitives (StatCard, Donut, BarRow, chips)
-docs/                 <- source documents: market pack (docx), deck brief (md), rendered deck (pdf), Sabre API logs
+data/schema.ts          <- CANONICAL data schema. Types, segments, clusters. Change here first.
+data/agencies.ts        <- the 114-record dataset + derived STATS / PIPELINE aggregates
+prisma/schema.prisma    <- Prisma mirror (MySQL 8): agencies, contacts, activities, deals, data_sources
+db/schema.sql           <- plain MySQL DDL + 3 reporting views, for the dev/DBA team
+
+app/layout.tsx          <- shell only: <html><body> + globals.css
+app/(dashboard)/        <- Market Intelligence. Own nav + footer
+  page.tsx              <- dashboard
+  agencies/             <- database page
+  segments/             <- segment explainer
+app/(portal)/           <- B2C storefront. Own header + footer
+  portal/               <- /portal, /portal/flights, packages, hotels, visa, agents, about, contact
+app/api/agencies/       <- JSON + CSV endpoint
+app/api/enquiry/        <- demo-request capture -> content/leads.json
+
+components/             <- Nav, AgencyTable, ui primitives (StatCard, Donut, BarRow, chips)
+components/portal/      <- storefront components: Header, Footer, SearchWidget, cards, ui, EnquiryForm
+lib/content.ts          <- loads content/site.json for the storefront
+content/site.json       <- all storefront copy. Written by the admin portal on :4001
+admin/server.js         <- the admin portal. Zero dependencies, plain node
+docs/                   <- source documents: market pack (docx), deck brief (md), rendered deck (pdf), Sabre API logs
 ```
 
 ---
@@ -122,8 +133,8 @@ Three reporting views ship with the DDL:
 - `v_cluster_rollup` — agencies, A/B/C split and IATA count per cluster
 - `v_call_sheet` — the dial-ready list: A and B priority, no existing platform
 
-Once the DB is live, replace the `AGENCIES` import in `app/page.tsx` and
-`app/agencies/page.tsx` with a Prisma query. Nothing else changes — the schema is
+Once the DB is live, replace the `AGENCIES` import in `app/(dashboard)/page.tsx` and
+`app/(dashboard)/agencies/page.tsx` with a Prisma query. Nothing else changes — the schema is
 identical.
 
 ---

@@ -1,4 +1,4 @@
-import { Section, SectionTitle } from '@/components/ui';
+import { Section, SectionTitle } from '@/components/portal/ui';
 import { getContent } from '@/lib/content';
 
 export const dynamic = 'force-dynamic';

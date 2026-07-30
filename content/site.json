@@ -24,27 +24,27 @@
   "nav": [
     {
       "label": "Flights",
-      "href": "/flights"
+      "href": "/portal/flights"
     },
     {
       "label": "Hajj & Umrah",
-      "href": "/packages"
+      "href": "/portal/packages"
     },
     {
       "label": "Hotels",
-      "href": "/hotels"
+      "href": "/portal/hotels"
     },
     {
       "label": "Visa",
-      "href": "/visa"
+      "href": "/portal/visa"
     },
     {
       "label": "For Agents",
-      "href": "/agents"
+      "href": "/portal/agents"
     },
     {
       "label": "About",
-      "href": "/about"
+      "href": "/portal/about"
     }
   ],
   "hero": {
@@ -53,11 +53,11 @@
     "subtitle": "Three live GDS connections, fares in BDT, and a support team in Dhaka that answers in Bangla.",
     "primaryCta": {
       "label": "Search flights",
-      "href": "/flights"
+      "href": "/portal/flights"
     },
     "secondaryCta": {
       "label": "Become a sub-agent",
-      "href": "/agents"
+      "href": "/portal/agents"
     },
     "searchTabs": [
       "Flights",
@@ -445,7 +445,7 @@
     ],
     "cta": {
       "label": "Request a 15-minute demo",
-      "href": "/agents"
+      "href": "/portal/agents"
     }
   },
   "agentTiers": [
@@ -635,19 +635,19 @@
         "links": [
           {
             "label": "Flights",
-            "href": "/flights"
+            "href": "/portal/flights"
           },
           {
             "label": "Hajj & Umrah",
-            "href": "/packages"
+            "href": "/portal/packages"
           },
           {
             "label": "Hotels",
-            "href": "/hotels"
+            "href": "/portal/hotels"
           },
           {
             "label": "Visa",
-            "href": "/visa"
+            "href": "/portal/visa"
           }
         ]
       },
@@ -656,15 +656,15 @@
         "links": [
           {
             "label": "Become a sub-agent",
-            "href": "/agents"
+            "href": "/portal/agents"
           },
           {
             "label": "Platform tiers",
-            "href": "/agents"
+            "href": "/portal/agents"
           },
           {
             "label": "Request a demo",
-            "href": "/agents"
+            "href": "/portal/agents"
           }
         ]
       },
@@ -673,15 +673,15 @@
         "links": [
           {
             "label": "About Softifybd",
-            "href": "/about"
+            "href": "/portal/about"
           },
           {
             "label": "Contact",
-            "href": "/contact"
+            "href": "/portal/contact"
           },
           {
             "label": "otaplatform.net",
-            "href": "/about"
+            "href": "/portal/about"
           }
         ]
       }

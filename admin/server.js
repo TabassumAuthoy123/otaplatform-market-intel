@@ -2,10 +2,14 @@
 /**
  * OTA Platform — Admin content portal
  * ---------------------------------------------------------------------------
- * Edits ../content/site.json, which the B2C portal on :3001 renders.
+ * Edits ../content/site.json, which the /portal B2C storefront inside the
+ * Market Intelligence app renders.
  *
- *   node admin/server.js          (or: npm start, from the admin folder)
+ *   node admin/server.js          (or: npm run admin, from the project root)
  *   http://localhost:4001
+ *
+ * Set APP_URL if the main app is not on the default port, e.g.
+ *   set APP_URL=http://localhost:3000
  *
  * Deliberately zero-dependency: Node's own http/crypto/fs only. Nothing to
  * npm install, nothing native to compile on Windows, starts in under a second.
@@ -24,6 +28,11 @@ const path = require('node:path');
 
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.ADMIN_PORT || 4001);
+
+// Where the Market Intelligence app (which serves /portal) is running.
+// 3000 is this app's canonical port; override when it is taken.
+const APP_URL = (process.env.APP_URL || 'http://localhost:3002').replace(/\/+$/, '');
+const PORTAL_URL = `${APP_URL}/portal`;
 
 const ROOT = path.resolve(__dirname, '..');
 const CONTENT_DIR = path.join(ROOT, 'content');
@@ -442,7 +451,7 @@ function loginView(error, seeded) {
     session: null,
     body: `<div class="login"><form class="box" method="post" action="/login">
       <h1>OTA Platform Admin</h1>
-      <p class="sub">Content for the B2C portal on :3001</p>
+      <p class="sub">Content for the B2C storefront at ${esc(PORTAL_URL)}</p>
       ${hint}
       ${error ? `<p class="err">${esc(error)}</p>` : ''}
       <label class="row"><span class="lab">Email</span>
@@ -487,7 +496,8 @@ function dashboardView(session, content, leadCount, flash) {
       </div>
       <div class="card">
         <p style="margin:0;font-size:13px;color:var(--muted)">
-          B2C portal: <a href="http://localhost:3001" target="_blank" rel="noreferrer">http://localhost:3001</a> ·
+          B2C storefront: <a href="${esc(PORTAL_URL)}" target="_blank" rel="noreferrer">${esc(PORTAL_URL)}</a> ·
+          dashboard: <a href="${esc(APP_URL)}" target="_blank" rel="noreferrer">${esc(APP_URL)}</a> ·
           revision <span class="tnum">${esc(content._meta?.revision ?? 1)}</span>,
           last edited by ${esc(content._meta?.lastEditedBy ?? 'seed')} on ${esc(content._meta?.lastEditedAt ?? '—')}
         </p>
@@ -534,12 +544,13 @@ function leadsView(session, leads, flash) {
     active: 'leads',
     body: `
       <h1>Demo requests</h1>
-      <p class="sub">Submitted from the B2C portal's agent form. Stored in content/leads.json (not committed to git).</p>
+      <p class="sub">Submitted from the storefront's agent form. Stored in content/leads.json (not committed to git).</p>
       ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
       <div class="card" style="padding:0;overflow:hidden">
       ${
         leads.length === 0
-          ? '<p class="empty" style="padding:22px">No requests yet. Submit the form at http://localhost:3001/agents to test it.</p>'
+          ? `<p class="empty" style="padding:22px">No requests yet. Submit the form at
+             <a href="${esc(PORTAL_URL)}/agents" target="_blank" rel="noreferrer">${esc(PORTAL_URL)}/agents</a> to test it.</p>`
           : `<form method="post" action="/leads/delete">
              <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
              <table>
@@ -831,7 +842,8 @@ server.listen(PORT, HOST, () => {
   console.log('');
   console.log('  OTA Platform — Admin content portal');
   console.log(`  http://localhost:${PORT}`);
-  console.log(`  editing: ${SITE_FILE}`);
+  console.log(`  editing:   ${SITE_FILE}`);
+  console.log(`  storefront ${PORTAL_URL}   (override with APP_URL)`);
   if (seeded) {
     console.log('');
     console.log('  First run — admin account created:');

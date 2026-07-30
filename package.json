@@ -9,8 +9,6 @@
     "build": "next build",
     "start": "next start -p 3000",
     "lint": "next lint",
-    "b2c:install": "npm --prefix b2c install --no-audit --no-fund",
-    "b2c": "npm --prefix b2c run dev",
     "admin": "node admin/server.js"
   },
   "dependencies": {

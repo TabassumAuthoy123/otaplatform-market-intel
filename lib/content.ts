@@ -2,8 +2,8 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
- * The single source of truth for every string on this site is
- * ../content/site.json, which the admin portal (port 4001) writes.
+ * The single source of truth for every string on the /portal storefront is
+ * content/site.json, which the admin portal (port 4001) writes.
  *
  * Read fresh on every request — the whole point is that an edit in admin shows
  * up on refresh here. Pages that render this must set `dynamic = 'force-dynamic'`.
@@ -63,7 +63,7 @@ export type SiteContent = {
   };
 };
 
-const CONTENT_FILE = path.join(process.cwd(), '..', 'content', 'site.json');
+const CONTENT_FILE = path.join(process.cwd(), 'content', 'site.json');
 
 export async function getContent(): Promise<SiteContent> {
   const raw = await readFile(CONTENT_FILE, 'utf8');

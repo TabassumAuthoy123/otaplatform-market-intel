@@ -1,6 +1,6 @@
-import { RouteCard } from '@/components/cards';
-import { SearchWidget } from '@/components/SearchWidget';
-import { Chip, Section, SectionTitle } from '@/components/ui';
+import { RouteCard } from '@/components/portal/cards';
+import { SearchWidget } from '@/components/portal/SearchWidget';
+import { Chip, Section, SectionTitle } from '@/components/portal/ui';
 import { getContent } from '@/lib/content';
 
 export const dynamic = 'force-dynamic';
