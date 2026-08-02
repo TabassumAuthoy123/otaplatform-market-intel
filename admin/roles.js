@@ -36,6 +36,8 @@ const CAPS = {
   books_delete: 'Delete accounting records',
   leads_read: 'View demo requests from the storefront',
   users: 'Add, edit and remove admin users',
+  audit: 'Read the audit log — who changed what',
+  backup: 'Download a backup and restore the book from one',
   settings: 'Company settings and raw JSON editing'
 };
 
@@ -52,7 +54,7 @@ const ROLES = {
   accountant: {
     label: 'Accountant',
     summary: 'All vouchers, reports and statements. No settings, no user management',
-    caps: ['books_read', 'books_sales', 'books_purchase', 'books_masters', 'books_credit', 'books_delete', 'leads_read', 'agencies_read']
+    caps: ['books_read', 'books_sales', 'books_purchase', 'books_masters', 'books_credit', 'books_delete', 'leads_read', 'agencies_read', 'audit']
   },
   sales_exec: {
     label: 'Sales Executive',
@@ -67,7 +69,7 @@ const ROLES = {
   manager: {
     label: 'Manager',
     summary: 'Read everything, reassign leads, approve cancellations',
-    caps: ['crm_read', 'crm_assign', 'books_read', 'books_credit', 'leads_read', 'agencies_read', 'integrations']
+    caps: ['crm_read', 'crm_assign', 'books_read', 'books_credit', 'leads_read', 'agencies_read', 'integrations', 'audit']
   },
   read_only: {
     label: 'Read Only',
@@ -109,7 +111,10 @@ const CREDIT_COLLECTIONS = ['creditNotes', 'supplierCreditNotes'];
 const PURCHASE_COLLECTIONS = ['bills', 'payments', 'supplierDeposits', 'inventory', 'suppliers'];
 /** Moving money between the till and the bank is a treasury act, not a sales or purchase one. */
 const TREASURY_COLLECTIONS = ['transfers'];
-const MASTER_COLLECTIONS = ['services', 'banks', 'expenseCategories', 'employees', 'customers', 'suppliers'];
+const MASTER_COLLECTIONS = [
+  'services', 'banks', 'expenseCategories', 'employees', 'customers', 'suppliers',
+  'airlines', 'hotels', 'visaTypes', 'countries', 'currencies'
+];
 
 /**
  * Returns the capability a request needs, or null when it needs none
@@ -127,6 +132,10 @@ function requiredCap(pathname, method, col) {
   if (pathname.startsWith('/integrations')) return 'integrations';
   if (pathname.startsWith('/users')) return 'users';
   if (pathname === '/raw') return 'settings';
+  if (pathname === '/audit') return 'audit';
+  // Restoring overwrites the whole book, so it sits behind its own capability
+  // rather than being folded into settings.
+  if (pathname.startsWith('/backup')) return 'backup';
 
   if (pathname === '/leads') return 'leads_read';
   if (pathname === '/leads/delete') return 'settings';
@@ -190,6 +199,8 @@ function visible(role) {
     books: can(role, 'books_read'),
     leads: can(role, 'leads_read'),
     users: can(role, 'users'),
+    audit: can(role, 'audit'),
+    backup: can(role, 'backup'),
     raw: can(role, 'settings')
   };
 }

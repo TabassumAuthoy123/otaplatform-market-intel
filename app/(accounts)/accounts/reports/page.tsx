@@ -1,7 +1,7 @@
 import { ExportBar } from '@/components/accounts/ExportBar';
 import { PageHead, Panel, Table, Td, Tile } from '@/components/accounts/ui';
 import {
-  bookingProfit, dailyRollup, getBook, money, payables, profitAndLoss,
+  billBase, bookingProfit, dailyRollup, getBook, money, payables, profitAndLoss,
   receivables, salesByService, trialBalance
 } from '@/lib/accounting';
 
@@ -153,7 +153,7 @@ export default async function ReportsPage({ searchParams }: { searchParams: { fr
               <tr key={r.bill.id} className="hover:bg-surface">
                 <Td mono className="font-semibold">{r.bill.no}</Td>
                 <Td>{sup(r.bill.supplierId)}</Td>
-                <Td right mono>{money(r.bill.amount, sym)}</Td>
+                <Td right mono>{money(billBase(r.bill), sym)}</Td>
                 <Td right mono className="font-semibold text-amber-700">{money(r.due, sym)}</Td>
               </tr>
             ))}

@@ -5,7 +5,13 @@
  * wants the Excel to work in, the owner wants a Word pack to read, a developer
  * wants the Markdown, and somebody's ancient software only imports CSV.
  * They are all built from the same derivation, so the figures cannot differ.
+ *
+ * Print is the fifth, and it is the PDF route: the browser's own dialog saves
+ * the page exactly as reviewed, which a separate PDF renderer could not promise
+ * for long.
  */
+import { PrintButton } from './PrintButton';
+
 export function ExportBar({
   section,
   from,
@@ -36,6 +42,7 @@ export function ExportBar({
       <a href={qs('docx')} className={btn}>Word</a>
       <a href={qs('md')} className={btn}>Markdown</a>
       <a href={qs('csv')} className={btn}>CSV</a>
+      <PrintButton />
       {(from || to) && (
         <span className="text-[11.5px] text-muted">
           {from || 'start'} → {to || 'today'}

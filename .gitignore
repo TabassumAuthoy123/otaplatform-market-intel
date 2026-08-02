@@ -29,3 +29,8 @@ content/crm-activities.json
 
 # Storefront bookings — passenger names, passports and contact details.
 content/bookings.json
+
+# Audit log — who changed what, keyed by staff email address. Working data
+# about named employees, and this repository is public.
+content/audit-log.json
+content/pre-restore-backup.json

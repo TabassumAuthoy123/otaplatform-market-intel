@@ -17,6 +17,7 @@ const QUICK = [
   { href: '/accounts/reports', label: 'Reports' },
   { href: '/accounts/ledger', label: 'General ledger' },
   { href: '/accounts/financials', label: 'Financial statements' },
+  { href: '/accounts/reminders', label: 'Payment reminders' },
   { href: '/accounts/gds', label: 'GDS live check' }
 ];
 

@@ -1,5 +1,8 @@
+import { Attachments } from '@/components/accounts/Attachments';
 import { PageHead, Panel, StatusChip, Table, Td, Tile } from '@/components/accounts/ui';
-import { billPaid, getBook, LABEL, money, payables, summarise } from '@/lib/accounting';
+import {
+  LABEL, billBase, billDue, billPaid, fxOf, getBook, isForeign, money, payables, summarise
+} from '@/lib/accounting';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +16,7 @@ export default async function BillsPage() {
 
   const rows = [...book.bills]
     .map((b) => ({ bill: b, paid: billPaid(b, book.payments) }))
-    .map((r) => ({ ...r, due: Math.max(0, r.bill.amount - r.paid) }))
+    .map((r) => ({ ...r, due: billDue(r.bill, book.payments, book.creditNotes, book.supplierCreditNotes) }))
     .sort((a, b) => b.bill.date.localeCompare(a.bill.date) || b.bill.no.localeCompare(a.bill.no));
 
   return (
@@ -39,7 +42,15 @@ export default async function BillsPage() {
               <Td mono>{bill.date}</Td>
               <Td>{sup(bill.supplierId)}</Td>
               <Td mono className="text-muted">{book.invoices.find((i) => i.id === bill.invoiceRef)?.no ?? '—'}</Td>
-              <Td right mono className="font-semibold">{money(bill.amount, sym)}</Td>
+              <Td right mono className="font-semibold">
+                {money(billBase(bill), sym)}
+                <Attachments items={bill.attachments} />
+                {isForeign(bill, book.company.currency) && (
+                  <div className="text-[11px] font-normal text-muted">
+                    {bill.currency} {bill.amount.toLocaleString('en-IN')} @ {fxOf(bill)}
+                  </div>
+                )}
+              </Td>
               <Td right mono>{money(paid, sym)}</Td>
               <Td right mono className={due > 0 ? 'font-semibold text-amber-700' : 'text-muted'}>{money(due, sym)}</Td>
               <Td><StatusChip value={due <= 0 ? 'paid' : paid > 0 ? 'partially_paid' : 'unpaid'} /></Td>

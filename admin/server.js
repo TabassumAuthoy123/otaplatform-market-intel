@@ -69,6 +69,93 @@ function readJson(file, fallback) {
   }
 }
 
+/**
+ * What a backup contains.
+ *
+ * Deliberately not `users.json` or `.session-secret`. A backup gets emailed
+ * around and pasted into chat windows; a password hash and a signing key must
+ * not travel that way, and a restore that swapped the user table could lock
+ * everybody out or let somebody in.
+ */
+const BACKUP_SET = [
+  'accounting.json', 'site.json', 'agencies.json', 'crm-leads.json',
+  'crm-users.json', 'competitors.json', 'audit-log.json'
+];
+
+const BACKUP_WHAT = {
+  'accounting.json': 'The whole accounting book — every voucher and master',
+  'site.json': 'Storefront copy, theme and section toggles',
+  'agencies.json': 'The researched agency dataset',
+  'crm-leads.json': '400 prospects and their call state',
+  'crm-users.json': 'Sales reps the CRM assigns leads to',
+  'competitors.json': 'Competitor profiles',
+  'audit-log.json': 'Who changed what'
+};
+
+const AUDIT_FILE = () => path.join(CONTENT_DIR, 'audit-log.json');
+
+/**
+ * Who changed what, and what it looked like before.
+ *
+ * Six people share this portal and every one of them can move money. An
+ * accounting system that cannot answer "who cancelled that invoice" is not one
+ * you can put in front of a client, and asking the people involved is not an
+ * audit trail.
+ *
+ * The `before` snapshot is the part that matters. Knowing a record changed is
+ * mildly useful; being able to say what it used to say is what settles an
+ * argument. Both sides are stored, trimmed to keep the file readable.
+ *
+ * Failures here are swallowed on purpose. A full disk must not stop somebody
+ * recording a receipt — losing one log line is bad, losing the receipt is
+ * worse.
+ */
+async function audit(session, action, entry) {
+  try {
+    const log = readJson(AUDIT_FILE(), []);
+    log.unshift({
+      at: new Date().toISOString(),
+      user: session ? session.email : 'system',
+      role: session ? session.role : '',
+      action,
+      collection: entry.collection || '',
+      recordId: entry.id || '',
+      label: entry.label || '',
+      summary: entry.summary || '',
+      before: entry.before === undefined ? null : trimForLog(entry.before),
+      after: entry.after === undefined ? null : trimForLog(entry.after)
+    });
+    // 5000 entries is months of real use and keeps the file openable by hand.
+    await writeJsonAtomic(AUDIT_FILE(), log.slice(0, 5000));
+  } catch (err) {
+    console.error('audit log write failed:', err.message);
+  }
+}
+
+/** Keep a snapshot readable: long strings clipped, deep nesting flattened. */
+function trimForLog(value, depth = 0) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string') return value.length > 300 ? value.slice(0, 300) + '…' : value;
+  if (typeof value !== 'object') return value;
+  if (depth > 2) return Array.isArray(value) ? `[${value.length} items]` : '{…}';
+  if (Array.isArray(value)) return value.slice(0, 20).map((v) => trimForLog(v, depth + 1));
+  const out = {};
+  for (const [k, v] of Object.entries(value)) out[k] = trimForLog(v, depth + 1);
+  return out;
+}
+
+/** The fields that actually differ, for a one-line "what changed". */
+function diffSummary(before, after) {
+  if (!before || typeof before !== 'object') return '';
+  const changed = [];
+  for (const k of new Set([...Object.keys(before), ...Object.keys(after || {})])) {
+    const a = JSON.stringify(before[k]);
+    const b = JSON.stringify((after || {})[k]);
+    if (a !== b) changed.push(k);
+  }
+  return changed.length ? changed.join(', ') : 'no field changed';
+}
+
 async function writeJsonAtomic(file, value) {
   const tmp = `${file}.tmp`;
   await fsp.writeFile(tmp, JSON.stringify(value, null, 2), 'utf8');
@@ -191,6 +278,25 @@ function setPath(obj, dotted, value) {
     cur = cur[k];
   }
   cur[keys[keys.length - 1]] = value;
+}
+
+/**
+ * What to add to an array that is still empty.
+ *
+ * "Add item" normally copies the shape of the first row, which works until the
+ * array has no rows — the first attachment anyone tried to add would arrive as
+ * a bare string and render as one nameless text box. These are the shapes that
+ * cannot be inferred.
+ */
+const EMPTY_ARRAY_SHAPES = {
+  attachments: { name: '', url: '', note: '' },
+  lines: { serviceId: '', description: '', pnr: '', pax: 1, qty: 1, unitPrice: 0, supplierCost: 0, supplierId: '' }
+};
+
+function blankRowFor(arrPath) {
+  const key = String(arrPath).split('.').pop();
+  const shape = EMPTY_ARRAY_SHAPES[key];
+  return shape ? JSON.parse(JSON.stringify(shape)) : '';
 }
 
 /** A blank item shaped like `sample`, so "Add item" produces usable fields. */
@@ -392,7 +498,10 @@ function page({ title, session, body, active = '' }) {
           (s) => `<a href="/edit/${s.key}" class="${active === s.key ? 'on' : ''}">${esc(s.label)}</a>`
         ).join('')}
         ${vis.users ? `<div class="sep">Administration</div>
-        <a href="/users" class="${active === 'users' ? 'on' : ''}">Users &amp; roles</a>` : ''}
+        <a href="/users" class="${active === 'users' ? 'on' : ''}">Users &amp; roles</a>
+` : ''}
+        ${vis.audit ? `<a href="/audit" class="${active === 'audit' ? 'on' : ''}">Audit log</a>` : ''}
+        ${vis.backup ? `<a href="/backup" class="${active === 'backup' ? 'on' : ''}">Backup &amp; restore</a>` : ''}
         ${vis.raw ? `<a href="/raw" class="${active === 'raw' ? 'on' : ''}">Raw JSON</a>` : ''}
       </nav>
       <form method="post" action="/logout" class="out">
@@ -755,7 +864,7 @@ function usersView(session, users, flash, errors, seededPassword) {
  * up in the form without any wiring.
  */
 const BOOK_COLLECTIONS = [
-  { key: 'invoices', label: 'Customer invoices', hint: 'Sales. Lines carry supplier cost, which is where margin comes from.', idPrefix: 'INV-', noPrefix: 'invoicePrefix', title: ['no'], search: ['no', 'notes'], amount: null, party: 'customerId' },
+  { key: 'invoices', label: 'Customer invoices', hint: 'Sales. Lines carry supplier cost, which is where margin comes from. Leave currency blank for the book\'s own.', idPrefix: 'INV-', noPrefix: 'invoicePrefix', title: ['no'], search: ['no', 'notes'], amount: null, party: 'customerId' },
   { key: 'receipts', label: 'Customer receipts', hint: 'Money in against an invoice.', idPrefix: 'RCP-', noPrefix: 'receiptPrefix', title: ['no'], search: ['no', 'ref'], amount: 'amount', party: 'customerId' },
   { key: 'bills', label: 'Supplier bills', hint: 'What a supplier charged us for a booking.', idPrefix: 'BIL-', noPrefix: 'billPrefix', title: ['no'], search: ['no', 'notes'], amount: 'amount', party: 'supplierId' },
   { key: 'payments', label: 'Supplier payments', hint: 'Money out against a bill.', idPrefix: 'PAY-', noPrefix: 'paymentPrefix', title: ['no'], search: ['no', 'ref'], amount: 'amount', party: 'supplierId' },
@@ -800,6 +909,11 @@ const BOOK_COLLECTIONS = [
   { key: 'services', label: 'Services', hint: 'What can appear on an invoice line.', idPrefix: 'SRV-', noPrefix: null, title: ['name'], search: ['name'], amount: null, party: null },
   { key: 'banks', label: 'Bank accounts', hint: 'MFS wallets count as banks.', idPrefix: 'BNK-', noPrefix: null, title: ['name'], search: ['name', 'accountNo'], amount: null, party: null },
   { key: 'expenseCategories', label: 'Expense categories', hint: '', idPrefix: 'EXC-', noPrefix: null, title: ['name'], search: ['name'], amount: null, party: null },
+  { key: 'airlines', label: 'Airlines', hint: 'IATA and accounting codes, for ticket lines and BSP reconciliation.', idPrefix: 'AIR-', noPrefix: null, title: ['name'], search: ['name', 'iataCode'], amount: null, party: null, template: { id: '', name: '', iataCode: '', accountingCode: '', hub: '', note: '' } },
+  { key: 'hotels', label: 'Hotels', hint: 'Properties that can appear on a hotel or package line.', idPrefix: 'HTL-', noPrefix: null, title: ['name'], search: ['name', 'city'], amount: null, party: null, template: { id: '', name: '', city: '', country: '', stars: '', segment: '' } },
+  { key: 'visaTypes', label: 'Visa types', hint: 'Category, validity, service fee and processing window.', idPrefix: 'VIS-', noPrefix: null, title: ['name'], search: ['name', 'category'], amount: null, party: null, template: { id: '', name: '', category: '', validityDays: '', serviceFee: '', processingDays: '' } },
+  { key: 'countries', label: 'Countries', hint: 'ISO code, currency and dialling code.', idPrefix: 'CTR-', noPrefix: null, title: ['name'], search: ['name', 'iso2'], amount: null, party: null, template: { id: '', name: '', iso2: '', currency: '', dialCode: '' } },
+  { key: 'currencies', label: 'Currencies', hint: 'Rate to the base currency. Documents copy the rate when raised, so changing one here never restates a past sale.', idPrefix: 'CUR-', noPrefix: null, title: ['name'], search: ['name', 'code'], amount: null, party: null, template: { id: '', name: '', code: '', symbol: '', rateToBase: 0, isBase: 0 } },
   { key: 'employees', label: 'Employees', hint: '', idPrefix: 'EMP-', noPrefix: null, title: ['name'], search: ['name', 'role'], amount: null, party: null }
 ];
 
@@ -892,6 +1006,24 @@ const BOOK_ENUMS = {
       { value: 'other', label: 'Other' }
     ]
   },
+  visaTypes: {
+    category: [
+      { value: 'Tourist', label: 'Tourist' },
+      { value: 'Business', label: 'Business' },
+      { value: 'Religious', label: 'Religious — Hajj / Umrah' },
+      { value: 'Student', label: 'Student' },
+      { value: 'Employment', label: 'Employment' },
+      { value: 'Medical', label: 'Medical' },
+      { value: 'Transit', label: 'Transit' }
+    ]
+  },
+  hotels: {
+    segment: [
+      { value: 'Corporate', label: 'Corporate' },
+      { value: 'Leisure', label: 'Leisure' },
+      { value: 'Hajj / Umrah', label: 'Hajj / Umrah' }
+    ]
+  },
   services: {
     category: [
       { value: 'air', label: 'Air ticket' },
@@ -925,7 +1057,18 @@ function bookEnums(book, spec) {
   const custName = (id) => (book.customers || []).find((c) => c.id === id)?.name || id;
   const supName = (id) => (book.suppliers || []).find((x) => x.id === id)?.name || id;
 
+  /**
+   * A document's currency is picked from the Currencies master, so a rate
+   * always exists for whatever is chosen. Free text here would let somebody
+   * type "usd" and quietly get a rate of 1.
+   */
+  const currencyOptions = (book.currencies || []).map((c) => ({
+    value: c.code,
+    label: `${c.code} — ${c.name}${Number(c.isBase) ? ' (base)' : ` @ ${c.rateToBase}`}`
+  }));
+
   const shared = {
+    currency: currencyOptions.length ? currencyOptions : [{ value: '', label: 'No currencies configured' }],
     customerId: opt(book.customers, (c) => `${c.name} · ${c.id}`),
     supplierId: opt(book.suppliers, (x) => `${x.name} · ${x.id}`),
     serviceId: opt(book.services, (x) => `${x.name} · ${x.id}`),
@@ -1066,6 +1209,26 @@ function bookListView(session, book, spec, q, flash) {
   });
 }
 
+/**
+ * Fields that are optional in the data but must still be editable.
+ *
+ * Older invoices and bills have no currency, rate or attachments on them, and
+ * the form is generated from whatever keys the record happens to carry — so
+ * without this they would be uneditable forever, and only brand-new records
+ * could ever be foreign. Adding the keys with empty values costs nothing: a
+ * blank currency means the book's own, and fxOf() treats a missing rate as 1.
+ */
+function withOptionalFields(spec, rec) {
+  if (['invoices', 'bills'].includes(spec.key)) {
+    if (rec.currency === undefined) rec.currency = '';
+    if (rec.fxRate === undefined) rec.fxRate = 0;
+  }
+  if (['invoices', 'bills', 'expenses'].includes(spec.key) && !Array.isArray(rec.attachments)) {
+    rec.attachments = [];
+  }
+  return rec;
+}
+
 function bookEditView(session, book, spec, rec, flash, errors) {
   const boolPaths = [];
   const numPaths = [];
@@ -1130,9 +1293,55 @@ function validateBookRecord(spec, rec) {
       }
     }
   }
+  /**
+   * A foreign document has to carry the rate it was raised at. Leaving it blank
+   * would silently value a dollar invoice at one taka, which is not an error
+   * anybody notices until the month is closed.
+   */
+  if (['invoices', 'bills'].includes(spec.key) && rec.currency) {
+    const book = bookFile();
+    const base = (book.company && book.company.currencySettings && book.company.currencySettings.baseCurrency)
+      || (book.company && book.company.currency) || 'BDT';
+    const known = (book.currencies || []).some((c) => c.code === rec.currency);
+    if (!known) errors.push(`${rec.currency} is not in the Currencies master. Add it there first, with its rate.`);
+    if (rec.currency === base) {
+      if (rec.fxRate !== undefined && num(rec.fxRate) !== 1 && num(rec.fxRate) !== 0) {
+        errors.push(`${base} is the book's own currency, so its rate is 1.`);
+      }
+    } else if (num(rec.fxRate) <= 0) {
+      const cur = (book.currencies || []).find((c) => c.code === rec.currency);
+      errors.push(
+        `A ${rec.currency} document needs the rate it was raised at.` +
+        (cur ? ` Today the master says ${cur.rateToBase} — but use the rate on the day of the document, not today's.` : '')
+      );
+    }
+  }
+  if (spec.key === 'currencies') {
+    if (!String(rec.code || '').match(/^[A-Z]{3}$/)) errors.push('Currency code must be three capital letters, like BDT or USD.');
+    if (num(rec.rateToBase) <= 0) errors.push('Rate to base must be greater than zero — a currency worth nothing cannot price anything.');
+    if (num(rec.isBase) === 1 && num(rec.rateToBase) !== 1) errors.push('The base currency has a rate of exactly 1 against itself.');
+  }
+  if (spec.key === 'countries' && rec.iso2 && !String(rec.iso2).match(/^[A-Z]{2}$/)) {
+    errors.push('ISO code must be two capital letters, like BD or AE.');
+  }
+  if (spec.key === 'airlines' && rec.iataCode && !String(rec.iataCode).match(/^[0-9A-Z]{2}$/)) {
+    errors.push('An IATA airline code is two characters, like BG or 6E.');
+  }
   if (spec.key === 'inventory') {
     if (num(rec.sold) > num(rec.purchased)) errors.push('Sold cannot exceed purchased.');
     if (num(rec.unitCost) < 0 || num(rec.unitSell) < 0) errors.push('Unit cost and unit sell cannot be negative.');
+  }
+  // Attachments are references to where a document lives, not uploads. A link
+  // that goes nowhere is worse than no link, so an entry needs both a name and
+  // a destination.
+  if (Array.isArray(rec.attachments)) {
+    for (const [i, a] of rec.attachments.entries()) {
+      if (!a) continue;
+      const hasName = String(a.name || '').trim().length > 0;
+      const hasUrl = String(a.url || '').trim().length > 0;
+      if (hasUrl && !hasName) errors.push(`Attachment ${i + 1}: give it a name so somebody knows what they are opening.`);
+      if (hasName && !hasUrl) errors.push(`Attachment ${i + 1}: give it a link or a file path.`);
+    }
   }
   if (rec.date && !/^\d{4}-\d{2}-\d{2}$/.test(String(rec.date))) errors.push('Date must be YYYY-MM-DD.');
   return errors;
@@ -2606,15 +2815,22 @@ const server = http.createServer(async (req, res) => {
       if (idx < 0) return send(res, 404, page({ title: 'Not found', session, body: '<h1>No record with that id</h1>' }));
 
       // reuse the storefront content editor's form engine on a single record
-      const holder = { rec: JSON.parse(JSON.stringify(book[spec.key][idx])) };
+      const holder = { rec: withOptionalFields(spec, JSON.parse(JSON.stringify(book[spec.key][idx]))) };
       applyForm(holder, form);
       const next = holder.rec;
 
       const errors = validateBookRecord(spec, next);
       if (errors.length) return send(res, 422, bookEditView(session, book, spec, next, null, errors));
 
+      const before = book[spec.key][idx];
       book[spec.key][idx] = next;
       await writeJsonAtomic(path.join(CONTENT_DIR, 'accounting.json'), book);
+      await audit(session, 'update', {
+        collection: spec.key, id: next.id,
+        label: spec.title.map((f) => next[f]).find(Boolean) || next.id,
+        summary: `Changed ${diffSummary(before, next)}`,
+        before, after: next
+      });
       return redirect(res, `/books/edit?col=${encodeURIComponent(spec.key)}&id=${encodeURIComponent(next.id)}&saved=1`);
     }
 
@@ -2629,7 +2845,7 @@ const server = http.createServer(async (req, res) => {
       // A collection that is still empty has no row to copy the shape from, so
       // the spec carries a template. Without it the first credit note anyone
       // creates is a form with two boxes on it.
-      const rec = rows.length ? blankLike(rows[rows.length - 1]) : blankLike(spec.template || { id: '', date: '' });
+      const rec = withOptionalFields(spec, rows.length ? blankLike(rows[rows.length - 1]) : blankLike(spec.template || { id: '', date: '' }));
       if (spec.template) for (const [k, v] of Object.entries(spec.template)) if (v !== '' && v !== 0) rec[k] = v;
       rec.id = nextBookId(rows, spec.idPrefix);
       if ('no' in rec && spec.noPrefix && book.company) {
@@ -2638,6 +2854,11 @@ const server = http.createServer(async (req, res) => {
       if ('date' in rec) rec.date = new Date().toISOString().slice(0, 10);
       rows.push(rec);
       await writeJsonAtomic(path.join(CONTENT_DIR, 'accounting.json'), book);
+      await audit(session, 'create', {
+        collection: spec.key, id: rec.id, label: rec.no || rec.id,
+        summary: `Created a blank ${spec.label.toLowerCase().replace(/s$/, '')}`,
+        after: rec
+      });
       return redirect(res, `/books/edit?col=${encodeURIComponent(spec.key)}&id=${encodeURIComponent(rec.id)}`);
     }
 
@@ -2649,10 +2870,215 @@ const server = http.createServer(async (req, res) => {
       const remove = new Set([].concat(form.remove ?? []));
       if (remove.size) {
         const book = bookFile();
+        const gone = (book[spec.key] || []).filter((r) => remove.has(r.id));
         book[spec.key] = (book[spec.key] || []).filter((r) => !remove.has(r.id));
         await writeJsonAtomic(path.join(CONTENT_DIR, 'accounting.json'), book);
+        for (const rec of gone) {
+          // Deletions are logged one per record with the whole record kept, so
+          // a voucher removed by mistake can be typed back in from the log.
+          await audit(session, 'delete', {
+            collection: spec.key, id: rec.id,
+            label: spec.title.map((f) => rec[f]).find(Boolean) || rec.id,
+            summary: `Deleted from ${spec.label}`,
+            before: rec
+          });
+        }
       }
       return redirect(res, `/books/list?col=${encodeURIComponent(spec.key)}&saved=1`);
+    }
+
+    if (pathname === '/audit' && req.method === 'GET') {
+      const log = readJson(AUDIT_FILE(), []);
+      const q = (url.searchParams.get('q') || '').toLowerCase();
+      const who = url.searchParams.get('user') || '';
+      const what = url.searchParams.get('collection') || '';
+      const act = url.searchParams.get('action') || '';
+
+      let rows = log;
+      if (who) rows = rows.filter((r) => r.user === who);
+      if (what) rows = rows.filter((r) => r.collection === what);
+      if (act) rows = rows.filter((r) => r.action === act);
+      if (q) {
+        rows = rows.filter((r) =>
+          [r.user, r.label, r.summary, r.recordId, r.collection].join(' ').toLowerCase().includes(q));
+      }
+
+      const users = [...new Set(log.map((r) => r.user))].sort();
+      const colls = [...new Set(log.map((r) => r.collection).filter(Boolean))].sort();
+      const page1 = rows.slice(0, 300);
+
+      const chip = (a) => {
+        const c = a === 'delete' ? 'var(--amber)' : a === 'create' ? 'var(--teal)' : 'var(--navy)';
+        return `<span style="display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:600;color:#fff;background:${c}">${esc(a)}</span>`;
+      };
+      const sel = (name, cur, opts, blank) =>
+        `<select name="${name}"><option value="">${blank}</option>${opts
+          .map((o) => `<option value="${esc(o)}"${o === cur ? ' selected' : ''}>${esc(o)}</option>`)
+          .join('')}</select>`;
+
+      return send(res, 200, page({
+        title: 'Audit log',
+        session,
+        active: 'audit',
+        body: `
+          <h1>Audit log</h1>
+          <p class="sub">Every create, edit and delete against the accounting book, with what the record said before the change. ${log.length} entries held, newest first.</p>
+
+          <form method="get" action="/audit" class="card" style="display:flex;gap:9px;align-items:flex-end;flex-wrap:wrap">
+            <label style="flex:1;min-width:200px"><span class="lab">Search</span>
+              <input type="text" name="q" value="${esc(url.searchParams.get('q') || '')}" placeholder="user, record, field"></label>
+            <label><span class="lab">User</span>${sel('user', who, users, 'Everyone')}</label>
+            <label><span class="lab">Collection</span>${sel('collection', what, colls, 'All')}</label>
+            <label><span class="lab">Action</span>${sel('action', act, ['create', 'update', 'delete'], 'All')}</label>
+            <button class="primary" type="submit">Filter</button>
+            <a class="secondary" href="/audit">Reset</a>
+          </form>
+
+          <div class="card" style="padding:0;overflow:hidden">
+            <table>
+              <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Record</th><th>What changed</th><th>Before</th></tr></thead>
+              <tbody>
+                ${page1.length === 0
+                  ? '<tr><td colspan="6" style="padding:26px;text-align:center;color:var(--muted)">Nothing logged yet. Every change made from here on is recorded.</td></tr>'
+                  : page1.map((r) => `
+                  <tr>
+                    <td class="tnum" style="white-space:nowrap">${esc(String(r.at).slice(0, 16).replace('T', ' '))}</td>
+                    <td>${esc(r.user)}<div style="font-size:11px;color:var(--muted)">${esc(r.role || '')}</div></td>
+                    <td>${chip(r.action)}</td>
+                    <td><span class="tnum">${esc(r.recordId)}</span><div style="font-size:11.5px;color:var(--muted)">${esc(r.collection)} · ${esc(r.label || '')}</div></td>
+                    <td style="font-size:12.5px">${esc(r.summary || '')}</td>
+                    <td style="font-size:11px;color:var(--muted);max-width:340px;word-break:break-word">
+                      ${r.before ? esc(JSON.stringify(r.before).slice(0, 220)) : '—'}</td>
+                  </tr>`).join('')}
+              </tbody>
+            </table>
+          </div>
+          ${rows.length > 300 ? `<p class="sub">Showing the first 300 of ${rows.length}. Narrow the filter to see the rest.</p>` : ''}`
+      }));
+    }
+
+    /* ---- backup & restore ---- */
+
+    if (pathname === '/backup' && req.method === 'GET') {
+      const files = BACKUP_SET.map((f) => {
+        const full = path.join(CONTENT_DIR, f);
+        let size = 0, when = '';
+        try {
+          const st = fs.statSync(full);
+          size = st.size;
+          when = st.mtime.toISOString().slice(0, 16).replace('T', ' ');
+        } catch { /* a file that does not exist yet is not an error */ }
+        return { f, size, when, exists: size > 0 };
+      });
+
+      return send(res, 200, page({
+        title: 'Backup & restore',
+        session,
+        active: 'backup',
+        body: `
+          <h1>Backup &amp; restore</h1>
+          <p class="sub">The whole book is a handful of JSON files. A backup is those files in one download; a restore puts them back.</p>
+          ${url.searchParams.get('restored') ? '<div class="flash">Restored. Every figure in the app is derived on the next page load, so the change is already live.</div>' : ''}
+          ${url.searchParams.get('error') ? `<div class="flash warn">${esc(url.searchParams.get('error'))}</div>` : ''}
+
+          <div class="card">
+            <h2 style="margin:0 0 12px;font-size:13.5px;color:var(--navy)">What is in a backup</h2>
+            <table>
+              <thead><tr><th>File</th><th>Holds</th><th style="text-align:right">Size</th><th>Last written</th></tr></thead>
+              <tbody>${files.map((x) => `
+                <tr>
+                  <td class="tnum">${esc(x.f)}</td>
+                  <td style="font-size:12.5px;color:var(--muted)">${esc(BACKUP_WHAT[x.f] || '')}</td>
+                  <td class="tnum" style="text-align:right">${x.exists ? (x.size / 1024).toFixed(1) + ' KB' : '—'}</td>
+                  <td class="tnum" style="font-size:12px;color:var(--muted)">${esc(x.when || 'not present')}</td>
+                </tr>`).join('')}</tbody>
+            </table>
+            <div class="bar">
+              <a class="primary" href="/backup/download" style="text-decoration:none;display:inline-block;padding:9px 18px;border-radius:8px">Download backup</a>
+              <span style="font-size:12.5px;color:var(--muted)">One JSON file containing every file above, plus the time and who took it.</span>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2 style="margin:0 0 6px;font-size:13.5px;color:var(--navy)">Restore</h2>
+            <p style="margin:0 0 12px;font-size:12.5px;color:var(--muted);line-height:1.7">
+              Paste a backup below. <strong>Every file it contains is overwritten.</strong> A copy of what is
+              on disk right now is written to <code>content/pre-restore-backup.json</code> first, so a
+              restore of the wrong file can itself be undone. Type <code>RESTORE</code> to confirm — the
+              word is there because this is the one action on this portal that cannot be fixed by editing
+              one record.
+            </p>
+            <form method="post" action="/backup/restore">
+              <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+              <label class="row"><span class="lab">Backup JSON</span>
+                <textarea name="payload" rows="10" placeholder="Paste the contents of a downloaded backup file"></textarea></label>
+              <label class="row"><span class="lab">Type RESTORE to confirm</span>
+                <input type="text" name="confirm" autocomplete="off" placeholder="RESTORE"></label>
+              <div class="bar"><button class="primary" type="submit">Restore from this backup</button></div>
+            </form>
+          </div>`
+      }));
+    }
+
+    if (pathname === '/backup/download' && req.method === 'GET') {
+      const payload = {
+        takenAt: new Date().toISOString(),
+        takenBy: session.email,
+        app: 'OTA Platform admin portal',
+        files: {}
+      };
+      for (const f of BACKUP_SET) {
+        const full = path.join(CONTENT_DIR, f);
+        if (fs.existsSync(full)) payload.files[f] = readJson(full, null);
+      }
+      const body = JSON.stringify(payload, null, 2);
+      const name = `otaplatform-backup-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.json`;
+      res.writeHead(200, {
+        'content-type': 'application/json; charset=utf-8',
+        'content-disposition': `attachment; filename="${name}"`,
+        'cache-control': 'no-store'
+      });
+      await audit(session, 'update', { collection: 'backup', id: name, summary: 'Downloaded a backup' });
+      return res.end(body);
+    }
+
+    if (pathname === '/backup/restore' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const bad = (msg) => redirect(res, `/backup?error=${encodeURIComponent(msg)}`);
+
+      if (String(form.confirm || '').trim() !== 'RESTORE') return bad('Type RESTORE in the confirmation box. Nothing was changed.');
+
+      let parsed;
+      try {
+        parsed = JSON.parse(form.payload || '');
+      } catch (err) {
+        return bad(`That is not valid JSON: ${err.message}. Nothing was changed.`);
+      }
+      if (!parsed || typeof parsed.files !== 'object' || parsed.files === null) {
+        return bad('That JSON is not a backup — it has no "files" object. Nothing was changed.');
+      }
+      const names = Object.keys(parsed.files).filter((f) => BACKUP_SET.includes(f));
+      if (names.length === 0) {
+        return bad('The backup contains none of the files this portal manages. Nothing was changed.');
+      }
+
+      // snapshot what is on disk BEFORE overwriting, so this is reversible
+      const rollback = { takenAt: new Date().toISOString(), takenBy: session.email, reason: 'automatic, before a restore', files: {} };
+      for (const f of names) {
+        const full = path.join(CONTENT_DIR, f);
+        if (fs.existsSync(full)) rollback.files[f] = readJson(full, null);
+      }
+      await writeJsonAtomic(path.join(CONTENT_DIR, 'pre-restore-backup.json'), rollback);
+
+      for (const f of names) await writeJsonAtomic(path.join(CONTENT_DIR, f), parsed.files[f]);
+
+      await audit(session, 'update', {
+        collection: 'backup',
+        id: parsed.takenAt || 'unknown',
+        summary: `Restored ${names.length} file(s): ${names.join(', ')}. Taken ${parsed.takenAt || 'at an unknown time'} by ${parsed.takenBy || 'unknown'}.`
+      });
+      return redirect(res, '/backup?restored=1');
     }
 
     /* ---- design & integrations ---- */
@@ -3078,7 +3504,7 @@ function applyForm(content, form) {
   if (form.addto) {
     const arrPath = Array.isArray(form.addto) ? form.addto[0] : form.addto;
     const arr = getPath(content, arrPath);
-    if (Array.isArray(arr)) arr.push(arr.length ? blankLike(arr[0]) : '');
+    if (Array.isArray(arr)) arr.push(arr.length ? blankLike(arr[0]) : blankRowFor(arrPath));
   }
 }
 

@@ -26,9 +26,42 @@ body { background: #F5F8FA; color: #1F2933; }
 .scroll-thin::-webkit-scrollbar-thumb { background: #C7D5DE; border-radius: 8px; }
 .scroll-thin::-webkit-scrollbar-track { background: transparent; }
 
+/* ------------------------------------------------------------------- print
+   "Save as PDF" in the browser print dialog IS the PDF export. A PDF library
+   would add a second renderer that has to be kept looking like the first one,
+   and the first one is already the thing people checked. What matters is that
+   the printed page is a document and not a screenshot of an app: no navigation,
+   no filter controls, tables that break across pages without losing their
+   headers, and every panel showing its full contents rather than a scroll
+   window. */
 @media print {
-  .no-print { display: none !important; }
-  body { background: #fff; }
+  .no-print,
+  header.sticky,
+  nav { display: none !important; }
+
+  body { background: #fff; color: #000; }
+
+  /* Panels are cards on screen; on paper a heavy shadow is just grey mud. */
+  .shadow-card,
+  .card { box-shadow: none !important; }
+
+  .rounded-xl2,
+  .card { border: 1px solid #cfd8de !important; border-radius: 0 !important; }
+
+  /* A table that scrolls sideways on screen must print in full. */
+  .overflow-x-auto,
+  .scroll-thin { overflow: visible !important; }
+
+  table { width: 100% !important; page-break-inside: auto; }
+  thead { display: table-header-group; }  /* repeat headings on every page */
+  tr { page-break-inside: avoid; }
+
+  /* Keep a panel and its heading together where the page allows. */
+  section, .print-block { page-break-inside: avoid; }
+
+  a[href]::after { content: ''; }  /* no URLs printed after every link */
+
+  @page { margin: 14mm 12mm; }
 }
 
 /* ------------------------------------------------------------------ /portal */

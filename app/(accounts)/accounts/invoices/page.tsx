@@ -1,3 +1,4 @@
+import { Attachments } from '@/components/accounts/Attachments';
 import { ExportBar } from '@/components/accounts/ExportBar';
 import { Empty, PageHead, Panel, StatusChip, Table, Td, Tile } from '@/components/accounts/ui';
 import { getBook, invoiceTotals, isLive, LABEL, money, receivables, summarise } from '@/lib/accounting';
@@ -97,6 +98,7 @@ export default async function InvoicesPage({
                 <Td mono>{inv.date}</Td>
                 <Td>{customer}</Td>
                 <Td className="text-muted">
+                  <Attachments items={inv.attachments} />
                   {inv.lines.map((l, i) => (
                     <div key={i} className="whitespace-nowrap text-[12px]">
                       {l.description}
@@ -104,7 +106,14 @@ export default async function InvoicesPage({
                     </div>
                   ))}
                 </Td>
-                <Td right mono className="font-semibold">{money(t.total, sym)}</Td>
+                <Td right mono className="font-semibold">
+                  {money(t.total, sym)}
+                  {t.fx !== 1 && (
+                    <div className="text-[11px] font-normal text-muted">
+                      {inv.currency} {t.totalDoc.toLocaleString('en-IN')} @ {t.fx}
+                    </div>
+                  )}
+                </Td>
                 <Td right mono className="text-muted">
                   {money(t.cost, sym)}
                   {t.creditedAll > 0 && (

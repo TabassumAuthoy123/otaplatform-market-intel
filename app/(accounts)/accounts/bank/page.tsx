@@ -26,6 +26,31 @@ export default async function BankPage({ searchParams }: { searchParams: { bank?
       date: e.date, ref: e.no,
       detail: `Expense — ${book.expenseCategories.find((c) => c.id === e.categoryId)?.name ?? ''}`,
       in: 0, out: e.amount
+    })),
+    ...bb.refundsOut.map((c) => ({
+      date: c.date, ref: c.no,
+      detail: `Refund to ${book.customers.find((x) => x.id === c.customerId)?.name ?? c.customerId}`,
+      in: 0, out: c.amount
+    })),
+    ...bb.supplierCreditsIn.map((c) => ({
+      date: c.date, ref: c.no,
+      detail: `Supplier credit — ${book.suppliers.find((x) => x.id === c.supplierId)?.name ?? c.supplierId}`,
+      in: c.amount, out: 0
+    })),
+    ...bb.depositsOut.map((d) => ({
+      date: d.date, ref: d.no,
+      detail: `Advance to ${book.suppliers.find((x) => x.id === d.supplierId)?.name ?? d.supplierId}`,
+      in: 0, out: d.amount
+    })),
+    ...bb.transfersIn.map((t) => ({
+      date: t.date, ref: t.no,
+      detail: `Cash deposited — ${t.ref}`,
+      in: t.amount, out: 0
+    })),
+    ...bb.transfersOut.map((t) => ({
+      date: t.date, ref: t.no,
+      detail: `Cash withdrawn — ${t.ref}`,
+      in: 0, out: t.amount
     }))
   ].sort((a, b) => a.date.localeCompare(b.date) || a.ref.localeCompare(b.ref));
 

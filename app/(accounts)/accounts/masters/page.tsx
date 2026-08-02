@@ -93,6 +93,77 @@ export default async function MastersPage() {
             ))}
           </Table>
         </Panel>
+
+        <Panel title={`Airlines (${book.airlines?.length ?? 0})`} sub="IATA and accounting codes, for ticket lines and BSP reconciliation">
+          <Table head={['Airline', 'IATA', 'Accounting', 'Hub']}>
+            {(book.airlines ?? []).map((a) => (
+              <tr key={a.id} className="hover:bg-surface">
+                <Td className="font-semibold text-navy-900">{a.name}</Td>
+                <Td mono>{a.iataCode}</Td>
+                <Td mono className="text-muted">{a.accountingCode || '—'}</Td>
+                <Td className="text-muted">{a.hub}</Td>
+              </tr>
+            ))}
+          </Table>
+        </Panel>
+
+        <Panel title={`Hotels (${book.hotels?.length ?? 0})`} sub="Properties that can appear on a hotel or package line">
+          <Table head={['Hotel', 'City', 'Country', 'Stars', 'Segment']}>
+            {(book.hotels ?? []).map((h) => (
+              <tr key={h.id} className="hover:bg-surface">
+                <Td className="font-semibold text-navy-900">{h.name}</Td>
+                <Td>{h.city}</Td>
+                <Td className="text-muted">{h.country}</Td>
+                <Td mono>{h.stars}</Td>
+                <Td className="text-muted">{h.segment}</Td>
+              </tr>
+            ))}
+          </Table>
+        </Panel>
+
+        <Panel title={`Visa types (${book.visaTypes?.length ?? 0})`} sub="Category, validity, service fee and processing window">
+          <Table head={['Visa', 'Category', 'Validity', 'Service fee', 'Processing']} right={[2, 3, 4]}>
+            {(book.visaTypes ?? []).map((v) => (
+              <tr key={v.id} className="hover:bg-surface">
+                <Td className="font-semibold text-navy-900">{v.name}</Td>
+                <Td className="text-muted">{v.category}</Td>
+                <Td right mono>{v.validityDays} d</Td>
+                <Td right mono>{v.serviceFee ? money(Number(v.serviceFee), sym) : '—'}</Td>
+                <Td right mono className="text-muted">{v.processingDays} d</Td>
+              </tr>
+            ))}
+          </Table>
+        </Panel>
+
+        <Panel title={`Countries (${book.countries?.length ?? 0})`} sub="ISO code, local currency and dialling code">
+          <Table head={['Country', 'ISO', 'Currency', 'Dial']}>
+            {(book.countries ?? []).map((c) => (
+              <tr key={c.id} className="hover:bg-surface">
+                <Td className="font-semibold text-navy-900">{c.name}</Td>
+                <Td mono>{c.iso2}</Td>
+                <Td mono className="text-muted">{c.currency}</Td>
+                <Td mono className="text-muted">{c.dialCode}</Td>
+              </tr>
+            ))}
+          </Table>
+        </Panel>
+
+        <Panel
+          title={`Currencies (${book.currencies?.length ?? 0})`}
+          sub="Rate to the base currency. A document copies the rate when it is raised, so changing one here never restates a past sale."
+        >
+          <Table head={['Currency', 'Code', 'Symbol', 'Rate to base', '']} right={[3]}>
+            {(book.currencies ?? []).map((c) => (
+              <tr key={c.id} className="hover:bg-surface">
+                <Td className="font-semibold text-navy-900">{c.name}</Td>
+                <Td mono>{c.code}</Td>
+                <Td mono>{c.symbol}</Td>
+                <Td right mono>{c.rateToBase.toLocaleString('en-IN')}</Td>
+                <Td>{c.isBase ? <span className="chip border-teal-600/30 bg-teal-600/10 text-teal-700">Base</span> : null}</Td>
+              </tr>
+            ))}
+          </Table>
+        </Panel>
       </div>
     </div>
   );

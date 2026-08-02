@@ -26,7 +26,41 @@
     "openingCash": 900000,
     "financialYearStart": "2026-07-01",
     "transferPrefix": "SFT-TRF-",
-    "supplierCreditPrefix": "SFT-SCN-"
+    "supplierCreditPrefix": "SFT-SCN-",
+    "vat": {
+      "enabled": 0,
+      "defaultRate": 0,
+      "registrationNo": "",
+      "note": "Set enabled to 1 and a default rate to apply VAT to new invoices. Existing invoices keep their own stored rate."
+    },
+    "currencySettings": {
+      "baseCurrency": "BDT",
+      "symbol": "৳",
+      "decimals": 0,
+      "note": "Documents may be raised in any currency in the Currencies master. The rate is copied onto the document when it is raised, so a later rate change cannot restate a past sale."
+    },
+    "messaging": {
+      "smsEnabled": 0,
+      "smsSenderId": "",
+      "smsProvider": "",
+      "whatsappEnabled": 0,
+      "whatsappNumber": "",
+      "note": "API keys belong in the environment, not here. SMS_API_KEY and WHATSAPP_TOKEN."
+    },
+    "reminders": {
+      "dueAfterDays": 14,
+      "escalateAfterDays": 30,
+      "chaseFrom": 5000
+    },
+    "smtp": {
+      "enabled": 0,
+      "fromName": "Softifybd Limited",
+      "fromAddress": "",
+      "smtpHost": "",
+      "smtpPort": 587,
+      "smtpUser": "",
+      "note": "The SMTP password is never stored here. Put it in the SMTP_PASSWORD environment variable — this file is committed to git."
+    }
   },
   "roles": [
     {
@@ -3284,6 +3318,36 @@
         }
       ],
       "notes": ""
+    },
+    {
+      "id": "INV-0118",
+      "no": "SFT-INV-0118",
+      "date": "2026-07-20",
+      "customerId": "CUS-003",
+      "status": "confirmed",
+      "vatRate": 0,
+      "currency": "USD",
+      "fxRate": 122.5,
+      "lines": [
+        {
+          "serviceId": "SRV-001",
+          "description": "DAC-JFK business class, 2 pax",
+          "pnr": "USD001",
+          "pax": 2,
+          "qty": 2,
+          "unitPrice": 2400,
+          "supplierCost": 2180,
+          "supplierId": "SUP-001"
+        }
+      ],
+      "notes": "Raised in USD at the rate on the day. Book value is converted.",
+      "attachments": [
+        {
+          "name": "Signed booking form",
+          "url": "file:///D:/agency-docs/2026/BF-1180.pdf",
+          "note": "Customer countersigned"
+        }
+      ]
     }
   ],
   "receipts": [
@@ -6085,6 +6149,19 @@
       "status": "paid",
       "amount": 18000,
       "notes": ""
+    },
+    {
+      "id": "BIL-0163",
+      "no": "SFT-BIL-0163",
+      "date": "2026-07-20",
+      "supplierId": "SUP-001",
+      "invoiceRef": "INV-0118",
+      "status": "unpaid",
+      "currency": "USD",
+      "fxRate": 122.5,
+      "amount": 4360,
+      "notes": "Carrier billed in USD",
+      "attachments": []
     }
   ],
   "payments": [
@@ -8614,5 +8691,419 @@
       "notes": "Cash banked"
     }
   ],
-  "supplierCreditNotes": []
+  "supplierCreditNotes": [],
+  "airlines": [
+    {
+      "id": "AIR-001",
+      "name": "Biman Bangladesh Airlines",
+      "iataCode": "BG",
+      "accountingCode": "997",
+      "hub": "Dhaka",
+      "note": "IATA member, national carrier"
+    },
+    {
+      "id": "AIR-002",
+      "name": "US-Bangla Airlines",
+      "iataCode": "BS",
+      "accountingCode": "827",
+      "hub": "Dhaka",
+      "note": "Largest private carrier"
+    },
+    {
+      "id": "AIR-003",
+      "name": "Novoair",
+      "iataCode": "VQ",
+      "accountingCode": "",
+      "hub": "Dhaka",
+      "note": "Domestic and regional"
+    },
+    {
+      "id": "AIR-004",
+      "name": "Air Astra",
+      "iataCode": "2A",
+      "accountingCode": "",
+      "hub": "Dhaka",
+      "note": "Domestic"
+    },
+    {
+      "id": "AIR-005",
+      "name": "Emirates",
+      "iataCode": "EK",
+      "accountingCode": "176",
+      "hub": "Dubai",
+      "note": "Highest-volume foreign carrier on DAC"
+    },
+    {
+      "id": "AIR-006",
+      "name": "Qatar Airways",
+      "iataCode": "QR",
+      "accountingCode": "157",
+      "hub": "Doha",
+      "note": ""
+    },
+    {
+      "id": "AIR-007",
+      "name": "Singapore Airlines",
+      "iataCode": "SQ",
+      "accountingCode": "618",
+      "hub": "Singapore",
+      "note": ""
+    },
+    {
+      "id": "AIR-008",
+      "name": "Malaysia Airlines",
+      "iataCode": "MH",
+      "accountingCode": "232",
+      "hub": "Kuala Lumpur",
+      "note": ""
+    },
+    {
+      "id": "AIR-009",
+      "name": "Thai Airways",
+      "iataCode": "TG",
+      "accountingCode": "217",
+      "hub": "Bangkok",
+      "note": ""
+    },
+    {
+      "id": "AIR-010",
+      "name": "Saudia",
+      "iataCode": "SV",
+      "accountingCode": "065",
+      "hub": "Jeddah",
+      "note": "Hajj and Umrah volume"
+    },
+    {
+      "id": "AIR-011",
+      "name": "IndiGo",
+      "iataCode": "6E",
+      "accountingCode": "312",
+      "hub": "Delhi",
+      "note": ""
+    },
+    {
+      "id": "AIR-012",
+      "name": "Turkish Airlines",
+      "iataCode": "TK",
+      "accountingCode": "235",
+      "hub": "Istanbul",
+      "note": ""
+    }
+  ],
+  "hotels": [
+    {
+      "id": "HTL-001",
+      "name": "Pan Pacific Sonargaon",
+      "city": "Dhaka",
+      "country": "Bangladesh",
+      "stars": "5",
+      "segment": "Corporate"
+    },
+    {
+      "id": "HTL-002",
+      "name": "InterContinental Dhaka",
+      "city": "Dhaka",
+      "country": "Bangladesh",
+      "stars": "5",
+      "segment": "Corporate"
+    },
+    {
+      "id": "HTL-003",
+      "name": "Le Meridien Dhaka",
+      "city": "Dhaka",
+      "country": "Bangladesh",
+      "stars": "5",
+      "segment": "Corporate"
+    },
+    {
+      "id": "HTL-004",
+      "name": "Sea Pearl Beach Resort",
+      "city": "Cox's Bazar",
+      "country": "Bangladesh",
+      "stars": "5",
+      "segment": "Leisure"
+    },
+    {
+      "id": "HTL-005",
+      "name": "Hotel Sea Crown",
+      "city": "Cox's Bazar",
+      "country": "Bangladesh",
+      "stars": "3",
+      "segment": "Leisure"
+    },
+    {
+      "id": "HTL-006",
+      "name": "Swissotel Al Maqam",
+      "city": "Makkah",
+      "country": "Saudi Arabia",
+      "stars": "5",
+      "segment": "Hajj / Umrah"
+    },
+    {
+      "id": "HTL-007",
+      "name": "Pullman Zamzam Madina",
+      "city": "Madinah",
+      "country": "Saudi Arabia",
+      "stars": "5",
+      "segment": "Hajj / Umrah"
+    },
+    {
+      "id": "HTL-008",
+      "name": "Grand Hyatt Dubai",
+      "city": "Dubai",
+      "country": "UAE",
+      "stars": "5",
+      "segment": "Leisure"
+    },
+    {
+      "id": "HTL-009",
+      "name": "Hotel Royal Kuala Lumpur",
+      "city": "Kuala Lumpur",
+      "country": "Malaysia",
+      "stars": "4",
+      "segment": "Leisure"
+    }
+  ],
+  "visaTypes": [
+    {
+      "id": "VIS-001",
+      "name": "Tourist — Single Entry",
+      "category": "Tourist",
+      "validityDays": "30",
+      "serviceFee": "5500",
+      "processingDays": "7"
+    },
+    {
+      "id": "VIS-002",
+      "name": "Tourist — Multiple Entry",
+      "category": "Tourist",
+      "validityDays": "90",
+      "serviceFee": "12500",
+      "processingDays": "10"
+    },
+    {
+      "id": "VIS-003",
+      "name": "Business — Single Entry",
+      "category": "Business",
+      "validityDays": "30",
+      "serviceFee": "9500",
+      "processingDays": "7"
+    },
+    {
+      "id": "VIS-004",
+      "name": "Business — Multiple Entry",
+      "category": "Business",
+      "validityDays": "180",
+      "serviceFee": "22000",
+      "processingDays": "12"
+    },
+    {
+      "id": "VIS-005",
+      "name": "Umrah",
+      "category": "Religious",
+      "validityDays": "30",
+      "serviceFee": "4500",
+      "processingDays": "5"
+    },
+    {
+      "id": "VIS-006",
+      "name": "Hajj",
+      "category": "Religious",
+      "validityDays": "45",
+      "serviceFee": "0",
+      "processingDays": "30"
+    },
+    {
+      "id": "VIS-007",
+      "name": "Student",
+      "category": "Student",
+      "validityDays": "365",
+      "serviceFee": "18000",
+      "processingDays": "21"
+    },
+    {
+      "id": "VIS-008",
+      "name": "Work Permit",
+      "category": "Employment",
+      "validityDays": "730",
+      "serviceFee": "35000",
+      "processingDays": "45"
+    },
+    {
+      "id": "VIS-009",
+      "name": "Medical",
+      "category": "Medical",
+      "validityDays": "60",
+      "serviceFee": "7500",
+      "processingDays": "7"
+    },
+    {
+      "id": "VIS-010",
+      "name": "Transit",
+      "category": "Transit",
+      "validityDays": "4",
+      "serviceFee": "2500",
+      "processingDays": "3"
+    }
+  ],
+  "countries": [
+    {
+      "id": "CTR-001",
+      "name": "Bangladesh",
+      "iso2": "BD",
+      "currency": "BDT",
+      "dialCode": "+880"
+    },
+    {
+      "id": "CTR-002",
+      "name": "United Arab Emirates",
+      "iso2": "AE",
+      "currency": "AED",
+      "dialCode": "+971"
+    },
+    {
+      "id": "CTR-003",
+      "name": "Saudi Arabia",
+      "iso2": "SA",
+      "currency": "SAR",
+      "dialCode": "+966"
+    },
+    {
+      "id": "CTR-004",
+      "name": "Qatar",
+      "iso2": "QA",
+      "currency": "QAR",
+      "dialCode": "+974"
+    },
+    {
+      "id": "CTR-005",
+      "name": "Malaysia",
+      "iso2": "MY",
+      "currency": "MYR",
+      "dialCode": "+60"
+    },
+    {
+      "id": "CTR-006",
+      "name": "Singapore",
+      "iso2": "SG",
+      "currency": "SGD",
+      "dialCode": "+65"
+    },
+    {
+      "id": "CTR-007",
+      "name": "Thailand",
+      "iso2": "TH",
+      "currency": "THB",
+      "dialCode": "+66"
+    },
+    {
+      "id": "CTR-008",
+      "name": "India",
+      "iso2": "IN",
+      "currency": "INR",
+      "dialCode": "+91"
+    },
+    {
+      "id": "CTR-009",
+      "name": "United Kingdom",
+      "iso2": "GB",
+      "currency": "GBP",
+      "dialCode": "+44"
+    },
+    {
+      "id": "CTR-010",
+      "name": "United States",
+      "iso2": "US",
+      "currency": "USD",
+      "dialCode": "+1"
+    },
+    {
+      "id": "CTR-011",
+      "name": "Turkey",
+      "iso2": "TR",
+      "currency": "TRY",
+      "dialCode": "+90"
+    },
+    {
+      "id": "CTR-012",
+      "name": "Oman",
+      "iso2": "OM",
+      "currency": "OMR",
+      "dialCode": "+968"
+    }
+  ],
+  "currencies": [
+    {
+      "id": "CUR-001",
+      "name": "Bangladeshi Taka",
+      "code": "BDT",
+      "symbol": "৳",
+      "rateToBase": 1,
+      "isBase": 1
+    },
+    {
+      "id": "CUR-002",
+      "name": "US Dollar",
+      "code": "USD",
+      "symbol": "$",
+      "rateToBase": 122.5,
+      "isBase": 0
+    },
+    {
+      "id": "CUR-003",
+      "name": "UAE Dirham",
+      "code": "AED",
+      "symbol": "AED",
+      "rateToBase": 33.35,
+      "isBase": 0
+    },
+    {
+      "id": "CUR-004",
+      "name": "Saudi Riyal",
+      "code": "SAR",
+      "symbol": "SR",
+      "rateToBase": 32.65,
+      "isBase": 0
+    },
+    {
+      "id": "CUR-005",
+      "name": "Euro",
+      "code": "EUR",
+      "symbol": "€",
+      "rateToBase": 132.0,
+      "isBase": 0
+    },
+    {
+      "id": "CUR-006",
+      "name": "Pound Sterling",
+      "code": "GBP",
+      "symbol": "£",
+      "rateToBase": 155.0,
+      "isBase": 0
+    },
+    {
+      "id": "CUR-007",
+      "name": "Indian Rupee",
+      "code": "INR",
+      "symbol": "₹",
+      "rateToBase": 1.42,
+      "isBase": 0
+    },
+    {
+      "id": "CUR-008",
+      "name": "Malaysian Ringgit",
+      "code": "MYR",
+      "symbol": "RM",
+      "rateToBase": 27.6,
+      "isBase": 0
+    },
+    {
+      "id": "CUR-009",
+      "name": "Singapore Dollar",
+      "code": "SGD",
+      "symbol": "S$",
+      "rateToBase": 91.2,
+      "isBase": 0
+    }
+  ]
 }

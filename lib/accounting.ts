@@ -27,6 +27,19 @@ export type Supplier = { id: string; name: string; type: string; phone: string; 
 export type Service = { id: string; name: string; category: string };
 export type Bank = { id: string; name: string; accountNo: string; branch: string; openingBalance: number };
 export type Named = { id: string; name: string };
+export type Airline = { id: string; name: string; iataCode: string; accountingCode: string; hub: string; note: string };
+export type Hotel = { id: string; name: string; city: string; country: string; stars: string; segment: string };
+export type VisaType = { id: string; name: string; category: string; validityDays: string; serviceFee: string; processingDays: string };
+export type Country = { id: string; name: string; iso2: string; currency: string; dialCode: string };
+
+/**
+ * A currency and what it was worth in the base currency.
+ *
+ * `rateToBase` is a stored reference, not a live feed, and it is deliberately
+ * copied onto a document when the document is raised. A rate that moves next
+ * month must not restate a sale that was already made and already paid.
+ */
+export type Currency = { id: string; name: string; code: string; symbol: string; rateToBase: number; isBase: number };
 export type Employee = { id: string; name: string; role: string; phone: string };
 
 export type InvoiceLine = {
@@ -34,9 +47,34 @@ export type InvoiceLine = {
   qty: number; unitPrice: number; supplierCost: number; supplierId: string;
 };
 
-export type Invoice = {
+/**
+ * A document raised in a currency other than the book's.
+ *
+ * `fxRate` is copied onto the document when it is raised and never looked up
+ * again. A rate that moves next month must not restate a sale that was already
+ * made and already paid — that is the whole reason it is stored here instead of
+ * read from the Currencies master at display time.
+ *
+ * Line amounts stay in the DOCUMENT currency, exactly as the customer sees
+ * them. Everything the book totals is converted at this rate, so the ledger is
+ * always in one currency and the invoice always reads in the other.
+ *
+ * Receipts and payments are base currency only. Money moved through a real bank
+ * account at a real amount, and pretending otherwise would put an unrealised
+ * gain nobody asked for into a book that has no place to hold it.
+ */
+export type ForeignDoc = { currency?: string; fxRate?: number };
+
+/** 1 unless the document says otherwise, so untouched data behaves as before. */
+export const fxOf = (d: ForeignDoc) => (d.fxRate && d.fxRate > 0 ? d.fxRate : 1);
+export const isForeign = (d: ForeignDoc, base: string) => Boolean(d.currency && d.currency !== base);
+
+export type Attachment = { name: string; url: string; note: string };
+
+export type Invoice = ForeignDoc & {
   id: string; no: string; date: string; customerId: string;
   status: InvoiceStatus; vatRate: number; lines: InvoiceLine[]; notes: string;
+  attachments?: Attachment[];
 };
 
 export type Receipt = {
@@ -44,10 +82,20 @@ export type Receipt = {
   method: PayMethod; bankId: string | null; amount: number; ref: string;
 };
 
-export type Bill = {
+export type Bill = ForeignDoc & {
   id: string; no: string; date: string; supplierId: string; invoiceRef: string;
   status: BillStatus; amount: number; notes: string;
+  attachments?: Attachment[];
 };
+
+/**
+ * A bill's value in the book's own currency.
+ *
+ * Every total in this file goes through here rather than reading `amount`
+ * directly, because `amount` is what the supplier invoiced — which may be in
+ * dollars.
+ */
+export const billBase = (b: Bill) => Math.round(b.amount * fxOf(b));
 
 export type Payment = {
   id: string; no: string; date: string; supplierId: string; billId: string;
@@ -133,6 +181,7 @@ export type SupplierCreditNote = {
 export type Expense = {
   id: string; no: string; date: string; categoryId: string; method: PayMethod;
   bankId: string | null; amount: number; description: string; employeeId: string | null;
+  attachments?: Attachment[];
 };
 
 export type Book = {
@@ -143,6 +192,14 @@ export type Book = {
     invoicePrefix: string; receiptPrefix: string; billPrefix: string;
     paymentPrefix: string; expensePrefix: string;
     openingCash: number; financialYearStart: string;
+    creditNotePrefix: string; transferPrefix: string; supplierCreditPrefix: string;
+    vat: { enabled: number; defaultRate: number; registrationNo: string; note: string };
+    currencySettings: { baseCurrency: string; symbol: string; decimals: number; note: string };
+    /** SMTP setup. `company.email` above is the contact address on documents; this is the sender. */
+    smtp: { enabled: number; fromName: string; fromAddress: string; smtpHost: string; smtpPort: number; smtpUser: string; note: string };
+    messaging: { smsEnabled: number; smsSenderId: string; smsProvider: string; whatsappEnabled: number; whatsappNumber: string; note: string };
+    /** How long an invoice may sit before it is chased, and from what value. */
+    reminders: { dueAfterDays: number; escalateAfterDays: number; chaseFrom: number };
   };
   roles: { name: string; can: string }[];
   customers: Customer[];
@@ -161,6 +218,11 @@ export type Book = {
   supplierCreditNotes: SupplierCreditNote[];
   supplierDeposits: SupplierDeposit[];
   inventory: InventoryItem[];
+  airlines: Airline[];
+  hotels: Hotel[];
+  visaTypes: VisaType[];
+  countries: Country[];
+  currencies: Currency[];
 };
 
 const BOOK_FILE = path.join(process.cwd(), 'content', 'accounting.json');
@@ -261,11 +323,25 @@ export type InvoiceTotals = {
   net: number;
   cancelled: boolean;
   effectiveStatus: InvoiceStatus;
+  /** Rate this document was raised at. 1 for anything in the book's currency. */
+  fx: number;
+  /** Face value as the customer sees it, before conversion. */
+  grossDoc: number;
+  totalDoc: number;
 };
 
 export function invoiceTotals(inv: Invoice, receipts: Receipt[], creditNotes: CreditNote[] = []): InvoiceTotals {
-  const gross = inv.lines.reduce((t, l) => t + l.qty * l.unitPrice, 0);
-  const cost = inv.lines.reduce((t, l) => t + l.qty * l.supplierCost, 0);
+  /**
+   * Lines are in the document currency; everything below is in the book's.
+   * Rounding happens once, on the converted figure, so the parts always add up
+   * to the whole — converting each line separately and summing would leave the
+   * total a rupee or two off its own components.
+   */
+  const fx = fxOf(inv);
+  const grossDoc = inv.lines.reduce((t, l) => t + l.qty * l.unitPrice, 0);
+  const costDoc = inv.lines.reduce((t, l) => t + l.qty * l.supplierCost, 0);
+  const gross = Math.round(grossDoc * fx);
+  const cost = Math.round(costDoc * fx);
   const vat = Math.round(gross * (inv.vatRate || 0) / 100);
   const total = gross + vat;
   const paid = receipts.filter((r) => r.invoiceId === inv.id).reduce((t, r) => t + r.amount, 0);
@@ -291,7 +367,8 @@ export function invoiceTotals(inv: Invoice, receipts: Receipt[], creditNotes: Cr
     gross, vat, total, cost,
     profit: gross - cost,
     marginPct: gross > 0 ? ((gross - cost) / gross) * 100 : 0,
-    paid, due, credited, creditedAll, net, cancelled, effectiveStatus
+    paid, due, credited, creditedAll, net, cancelled, effectiveStatus,
+    fx, grossDoc, totalDoc: grossDoc + Math.round(grossDoc * (inv.vatRate || 0) / 100)
   };
 }
 
@@ -315,7 +392,7 @@ export function billDue(
 ): number {
   return Math.max(
     0,
-    bill.amount - billPaid(bill, payments) - refundOnBill(bill.id, creditNotes) - supplierCreditOnBill(bill.id, supplierNotes)
+    billBase(bill) - billPaid(bill, payments) - refundOnBill(bill.id, creditNotes) - supplierCreditOnBill(bill.id, supplierNotes)
   );
 }
 
@@ -383,7 +460,7 @@ export function summarise(book: Book, from?: string, to?: string) {
     paidOut,
     expenses: spent,
     netProfit: sales - cost - spent,
-    billed: bills.reduce((t, b) => t + b.amount, 0)
+    billed: bills.reduce((t, b) => t + billBase(b), 0)
   };
 }
 
@@ -407,7 +484,7 @@ export function payables(book: Book) {
       refunded: refundOnBill(b.id, notes),
       credited: supplierCreditOnBill(b.id, supplierNotes)
     }))
-    .map((r) => ({ ...r, due: Math.max(0, r.bill.amount - r.paid - r.refunded - r.credited) }))
+    .map((r) => ({ ...r, due: Math.max(0, billBase(r.bill) - r.paid - r.refunded - r.credited) }))
     .filter((r) => r.due > 0);
   return { rows, total: rows.reduce((t, r) => t + r.due, 0) };
 }
@@ -554,10 +631,11 @@ export function salesByService(book: Book, from?: string, to?: string) {
   const m = new Map<string, { sales: number; cost: number; count: number }>();
   const notes = book.creditNotes ?? [];
   for (const inv of book.invoices.filter((i) => isTrading(i, notes) && inRange(i.date))) {
+    const fx = fxOf(inv);
     for (const l of inv.lines) {
       const cur = m.get(l.serviceId) ?? { sales: 0, cost: 0, count: 0 };
-      cur.sales += l.qty * l.unitPrice;
-      cur.cost += l.qty * l.supplierCost;
+      cur.sales += Math.round(l.qty * l.unitPrice * fx);
+      cur.cost += Math.round(l.qty * l.supplierCost * fx);
       cur.count += 1;
       m.set(l.serviceId, cur);
     }
@@ -595,7 +673,7 @@ export function customerLedger(book: Book, customerId: string) {
 export function supplierLedger(book: Book, supplierId: string) {
   const rows: { date: string; ref: string; detail: string; debit: number; credit: number }[] = [];
   for (const b of book.bills.filter((x) => x.supplierId === supplierId)) {
-    rows.push({ date: b.date, ref: b.no, detail: 'Supplier bill', debit: 0, credit: b.amount });
+    rows.push({ date: b.date, ref: b.no, detail: 'Supplier bill', debit: 0, credit: billBase(b) });
   }
   for (const p of book.payments.filter((x) => x.supplierId === supplierId)) {
     rows.push({ date: p.date, ref: p.no, detail: `Payment — ${LABEL[p.method] ?? p.method}`, debit: p.amount, credit: 0 });
@@ -675,7 +753,7 @@ export function trialBalance(book: Book) {
    */
   const supplierRefunds = (book.creditNotes ?? []).reduce((t, c) => t + c.supplierRefund, 0);
   const supplierCredits = (book.supplierCreditNotes ?? []).reduce((t, c) => t + c.amount, 0);
-  const purchases = book.bills.reduce((t, b) => t + b.amount, 0) - supplierRefunds - supplierCredits;
+  const purchases = book.bills.reduce((t, b) => t + billBase(b), 0) - supplierRefunds - supplierCredits;
   const opening = book.company.openingCash + book.banks.reduce((t, b) => t + b.openingBalance, 0);
 
   /**
@@ -868,7 +946,7 @@ export function supplierDeposits(book: Book) {
 
   const rows = book.suppliers.map((s) => {
     const paidIn = deposits.filter((d) => d.supplierId === s.id).reduce((t, d) => t + d.amount, 0);
-    const billed = book.bills.filter((b) => b.supplierId === s.id).reduce((t, b) => t + b.amount, 0);
+    const billed = book.bills.filter((b) => b.supplierId === s.id).reduce((t, b) => t + billBase(b), 0);
     const settled = book.payments.filter((p) => p.supplierId === s.id).reduce((t, p) => t + p.amount, 0);
     // the float is what we advanced, less anything the bills have not already paid for
     const outstandingBills = Math.max(0, billed - settled);
@@ -1085,8 +1163,8 @@ export function journal(book: Book): JournalLine[] {
   /* --- purchases -------------------------------------------------------- */
   for (const b of book.bills) {
     post(b.date, b.no, 'Supplier bill', sup(b.supplierId), b.notes, [
-      { account: AC.PURCHASES, debit: b.amount },
-      { account: AC.AP, credit: b.amount }
+      { account: AC.PURCHASES, debit: billBase(b) },
+      { account: AC.AP, credit: billBase(b) }
     ]);
   }
 
@@ -1302,5 +1380,88 @@ export function cashFlow(book: Book, from?: string, to?: string) {
     investing, netInvesting,
     movement,
     closing: opening + movement
+  };
+}
+
+/**
+ * Who to chase, in the order worth chasing them.
+ *
+ * Sorted by value at risk rather than by age. A 14-day-old invoice for six lakh
+ * costs the agency more than a 90-day-old one for three thousand, and a chase
+ * list ordered by age quietly buries the one that matters.
+ *
+ * Thresholds come from company.reminders so an agency can set its own terms
+ * instead of arguing with a number somebody hard-coded.
+ */
+export function paymentReminders(book: Book, today = todayISO(book)) {
+  const cfg = book.company.reminders ?? { dueAfterDays: 14, escalateAfterDays: 30, chaseFrom: 0 };
+  const days = (from: string) => Math.round((Date.parse(today) - Date.parse(from)) / 86400000);
+
+  const rows = receivables(book).rows
+    .map(({ inv, t }) => {
+      const age = days(inv.date);
+      const stage =
+        age >= cfg.escalateAfterDays ? 'escalate' : age >= cfg.dueAfterDays ? 'chase' : 'within_terms';
+      const customer = book.customers.find((c) => c.id === inv.customerId);
+      const lastPaid = book.receipts
+        .filter((r) => r.invoiceId === inv.id)
+        .map((r) => r.date)
+        .sort()
+        .pop();
+      return { invoice: inv, totals: t, customer, age, stage, lastPaid: lastPaid ?? null };
+    })
+    .filter((r) => r.totals.due >= (cfg.chaseFrom ?? 0))
+    .sort((a, b) => b.totals.due - a.totals.due || b.age - a.age);
+
+  const of = (stage: string) => rows.filter((r) => r.stage === stage);
+
+  /** Standard ageing buckets, because that is how a receivables review is run. */
+  const buckets = [
+    { label: 'Not yet due', min: 0, max: cfg.dueAfterDays - 1 },
+    { label: `${cfg.dueAfterDays}–${cfg.escalateAfterDays - 1} days`, min: cfg.dueAfterDays, max: cfg.escalateAfterDays - 1 },
+    { label: `${cfg.escalateAfterDays}–60 days`, min: cfg.escalateAfterDays, max: 60 },
+    { label: '61–90 days', min: 61, max: 90 },
+    { label: 'Over 90 days', min: 91, max: Number.MAX_SAFE_INTEGER }
+  ].map((b) => {
+    const hit = rows.filter((r) => r.age >= b.min && r.age <= b.max);
+    return { ...b, count: hit.length, amount: hit.reduce((t, r) => t + r.totals.due, 0) };
+  });
+
+  return {
+    rows,
+    buckets,
+    config: cfg,
+    total: rows.reduce((t, r) => t + r.totals.due, 0),
+    dueNow: of('chase').reduce((t, r) => t + r.totals.due, 0),
+    overdue: of('escalate').reduce((t, r) => t + r.totals.due, 0),
+    chaseCount: of('chase').length + of('escalate').length,
+    escalateCount: of('escalate').length,
+    /**
+     * A reminder written out, ready to be copied into an email or WhatsApp.
+     * Generated rather than sent: nothing on this machine is wired to a mail
+     * server, and a system that claims to have sent something it did not is
+     * worse than one that hands you the text.
+     */
+    message(row: (typeof rows)[number]) {
+      const sym = book.company.currencySymbol;
+      const refs = row.invoice.lines.map((l) => l.pnr).filter(Boolean).join(', ');
+      const overdueBy = row.age - cfg.dueAfterDays;
+      return [
+        `Dear ${row.customer?.name ?? 'Customer'},`,
+        '',
+        `Invoice ${row.invoice.no} dated ${row.invoice.date}${refs ? ` (${refs})` : ''} shows ` +
+          `${money(row.totals.due, sym)} outstanding of ${money(row.totals.total, sym)}.` +
+          (row.totals.paid > 0 ? ` We have received ${money(row.totals.paid, sym)}, thank you.` : ''),
+        '',
+        row.stage === 'escalate'
+          ? `This is now ${overdueBy} days past our ${cfg.dueAfterDays}-day terms. Please settle it or tell us when you can, so we can keep your account open.`
+          : row.stage === 'chase'
+            ? `Our terms are ${cfg.dueAfterDays} days, so this is now due. Please arrange payment at your convenience.`
+            : `This is not yet due — it is a courtesy note ahead of the ${cfg.dueAfterDays}-day terms.`,
+        '',
+        `${book.company.name}`,
+        `${book.company.phone} · ${book.company.email}`
+      ].join('\n');
+    }
   };
 }

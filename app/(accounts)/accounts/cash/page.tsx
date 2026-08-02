@@ -25,6 +25,31 @@ export default async function CashPage({ searchParams }: { searchParams: { from?
       date: e.date, ref: e.no,
       detail: `Expense — ${book.expenseCategories.find((c) => c.id === e.categoryId)?.name ?? ''}`,
       in: 0, out: e.amount
+    })),
+    ...cb.refundsOut.map((c) => ({
+      date: c.date, ref: c.no,
+      detail: `Refund to ${book.customers.find((x) => x.id === c.customerId)?.name ?? c.customerId}`,
+      in: 0, out: c.amount
+    })),
+    ...cb.supplierCreditsIn.map((c) => ({
+      date: c.date, ref: c.no,
+      detail: `Supplier credit — ${book.suppliers.find((x) => x.id === c.supplierId)?.name ?? c.supplierId}`,
+      in: c.amount, out: 0
+    })),
+    ...cb.depositsOut.map((d) => ({
+      date: d.date, ref: d.no,
+      detail: `Advance to ${book.suppliers.find((x) => x.id === d.supplierId)?.name ?? d.supplierId}`,
+      in: 0, out: d.amount
+    })),
+    ...cb.transfersIn.map((t) => ({
+      date: t.date, ref: t.no,
+      detail: `Withdrawn from ${book.banks.find((x) => x.id === t.bankId)?.name ?? t.bankId}`,
+      in: t.amount, out: 0
+    })),
+    ...cb.transfersOut.map((t) => ({
+      date: t.date, ref: t.no,
+      detail: `Banked to ${book.banks.find((x) => x.id === t.bankId)?.name ?? t.bankId}`,
+      in: 0, out: t.amount
     }))
   ].sort((a, b) => a.date.localeCompare(b.date) || a.ref.localeCompare(b.ref));
 

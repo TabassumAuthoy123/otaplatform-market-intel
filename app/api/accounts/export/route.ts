@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import {
-  allBankBalances, balanceSheet, billPaid, cashBook, cashFlow, creditNoteReport, expensesByCategory,
+  allBankBalances, balanceSheet, billBase, billDue, billPaid, cashBook, cashFlow, creditNoteReport, expensesByCategory,
   generalLedger, getBook, inventory, invoiceTotals, isRefunded, journal, journalTrialBalance, LABEL,
   payables, profitAndLoss, receivables, reconciliation, salesByService, summarise, supplierDeposits,
   trialBalance, type Book
@@ -220,7 +220,7 @@ function buildSheets(book: Book, from?: string, to?: string): Sheet[] {
         const refunded = notes.filter((c) => c.billId === b.id).reduce((t, c) => t + c.supplierRefund, 0);
         return [
           b.no, b.date, supp(b.supplierId), invNo(b.invoiceRef),
-          n0(b.amount), n0(paid), n0(refunded), n0(Math.max(0, b.amount - paid - refunded)),
+          n0(billBase(b)), n0(paid), n0(refunded), n0(billDue(b, book.payments, notes, book.supplierCreditNotes ?? [])),
           LABEL[b.status] ?? b.status, b.notes
         ];
       })
@@ -282,7 +282,7 @@ function buildSheets(book: Book, from?: string, to?: string): Sheet[] {
     note: 'A point-in-time balance — the period filter does not apply.',
     rows: ap.rows
       .sort((a, b) => a.bill.date.localeCompare(b.bill.date))
-      .map((r): Row => [r.bill.no, r.bill.date, supp(r.bill.supplierId), n0(r.bill.amount), n0(r.paid), n0(r.refunded), n0(r.due)])
+      .map((r): Row => [r.bill.no, r.bill.date, supp(r.bill.supplierId), n0(billBase(r.bill)), n0(r.paid), n0(r.refunded), n0(r.due)])
   });
 
   /* -------------------------------------------------------- 12 cash/bank */

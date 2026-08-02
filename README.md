@@ -155,6 +155,100 @@ with no rebuild.
 
 ---
 
+## Against the accounting specification
+
+Every line of `Travel_Tourism_Accounting_Software_Structure.docx`, and where it
+lives. Marked honestly: **built** means you can use it now, **partial** says what
+is missing, **config only** means the settings exist but nothing sends.
+
+| § | Specification | State | Where |
+|---|---|---|---|
+| 1 | Dashboard — today's sales, cash, bank, pending in and out, expenses, profit, recent transactions, quick actions | built | `/accounts` |
+| 2 | Quotation → confirmed invoice, five statuses, receipts, five payment methods, receipt voucher | built | `/accounts/invoices` |
+| 2 | Customer credit note — refund, cancellation, adjustment | built | `/accounts/credit-notes` |
+| 3 | Supplier booking, supplier invoice, three statuses, payment voucher | built | `/accounts/bills` |
+| 3 | Supplier credit note | built | admin → Supplier credit notes |
+| 4 | Daily cash receipt, cash payment, cash book with opening/closing | built | `/accounts/cash` |
+| 5 | Bank receipts, payments, **deposit, withdrawal**, bank book | built | `/accounts/bank` |
+| 6 | Eight expense categories | built | `/accounts/expenses` |
+| 7 | Daily sales / cash / bank / expense / profit, supplier payment, customer collection, outstanding both ways | built | `/accounts/reports` |
+| 8 | Customer, supplier, cash, bank and company statements; daily → yearly and custom filters | built | `/accounts/statements`, `/accounts/financials` |
+| 9 | Sales, profit, expense, supplier, customer, commission, outstanding both ways | built | `/accounts/reports` |
+| 9 | **Cancelled booking report, refund report** | built | `/accounts/credit-notes`, export sheets 22 and 23 |
+| 9 | **Cash flow, general ledger, trial balance, P&L, balance sheet** | built | `/accounts/ledger`, `/accounts/financials` |
+| 10 | Customers, suppliers, services, **airlines, hotels, visa types, countries, currencies**, banks, expense categories, employees, users | built | `/accounts/masters`, admin → Records |
+| 11 | Company info, four voucher prefixes, VAT, currency, **backup & restore** | built | `/accounts/settings`, admin → Backup |
+| 11 | Email, SMS and WhatsApp settings | config only | see below |
+| 12 | Six user roles | built and **enforced at the route** | `admin/roles.js` |
+| + | Booking management, PNR tracking, supplier cost vs selling price, gross profit per booking | built | `/accounts/reports`, `/portal/book` |
+| + | Partial payments, VAT support, automatic numbering | built | throughout |
+| + | **Multi-currency** | built | any invoice or bill can name a currency and a rate |
+| + | **Audit log** | built | admin → Audit log |
+| + | **Payment reminders** | built, but nothing is sent | `/accounts/reminders` |
+| + | **Document attachments** | built as links, not uploads | see below |
+| + | **PDF & Excel export** | built | every screen; Excel has 25 sheets |
+
+### The three that are deliberately less than they sound
+
+**Email, SMS and WhatsApp are configuration, not a transport.** No mail server or
+gateway is wired up. The reminders screen composes the message and hands it to
+you with an `mailto:` and a WhatsApp link; it never claims to have sent
+anything. A system that reports chasing a customer it never contacted is worse
+than one that admits it did nothing.
+
+**Attachments are references, not uploads.** The admin portal is plain Node with
+no dependencies; accepting binaries would mean multipart parsing, a storage
+path, size limits and a way to serve files back. A link to where the scan
+actually lives — a shared drive, Drive, a folder on the office server — is what
+agencies already do. A `file://` path opens on the machine it points at and not
+from another computer; that is a property of the link, not a fault here.
+
+**PDF is the browser's print dialog.** `globals.css` has a real print
+stylesheet: navigation and filters drop out, table headings repeat across pages,
+nothing stays trapped in a scroll window. A PDF library would be a second
+renderer to keep in step with the pages people actually reviewed, and it would
+drift.
+
+---
+
+## How the accounting stays honest
+
+Three properties, each of which has caught a real bug in this codebase.
+
+**Nothing is stored twice.** Every total is derived from the vouchers at request
+time. A hand edit to a voucher cannot leave a total stale, because there is no
+total to go stale.
+
+**The same data is derived twice, on purpose.** Control accounts feed the
+dashboards; journal postings feed the ledger. `/accounts/financials` leads with
+the two side by side, and says so in red if they ever disagree. This caught a
+sign error where credit notes were being subtracted from a contra-income account
+that was already negative — the ledger read 1,097,800 high, exactly twice the
+credit notes.
+
+**Differences are displayed, not assumed.** The trial balance prints its own
+difference row; the balance sheet prints the gap between its two sides; the
+reconciliation panel prints all six. Every one of them reads zero today, and if
+one stops, the page says so rather than hiding it.
+
+### Bugs this approach found, and what each one would have cost
+
+| Found | Was reporting |
+|---|---|
+| Supplier cost booked as the base fare, not the whole fare | 35,657 "profit" on a 35,800 ticket — the airline's tax counted as margin |
+| Supplier deposits never left the bank | 88 lakh of advances recorded with no outflow; available funds overstated by the same |
+| Purchases taken from invoice cost lines, payables from bills | Trial balance out by 867,000 |
+| Sabre `baseFareAmount` quoted in the fare construction currency | Base 143 and tax 16,663 against a total of 34,300 — the 143 was USD |
+| Credit notes subtracted from a contra-income account | Revenue 1,097,800 too high |
+| Seeded cash and bank running negative on real dates | The book claiming money was spent that was never there |
+
+`scripts/reconcile-funds.mjs` is the fix for the last one and is worth reading:
+it walks every account day by day, finds its worst moment and raises the opening
+balance so that moment clears a floor. Opening balances sit on the equity side,
+so the trial balance does not move.
+
+---
+
 ## Roles, enforced
 
 Six roles from the accounting specification. They used to be described on a
@@ -172,15 +266,23 @@ direction for a mistake to fall.
 | Role | Can |
 |---|---|
 | Super Admin | Everything, including settings and user management |
-| Accountant | All vouchers, credit notes, reports and statements. No settings, no users |
+| Accountant | All vouchers, credit notes, reports, statements and the audit log. No settings, no users |
 | Sales Executive | Prospect queue, invoices and customer receipts |
 | Operations Staff | Supplier bookings, bills, payments and stock only |
-| Manager | Read everything, reassign leads, approve cancellations |
+| Manager | Read everything, reassign leads, approve cancellations, read the audit log |
 | Read Only | Reports and statements. Nothing editable anywhere |
 
 **A Sales Executive can raise an invoice but cannot reverse one.** Credit notes
 are a separate capability held by Accountant, Manager and Super Admin, because
 the person who made the sale should not be the person who cancels it.
+
+**Only a Super Admin can restore a backup.** Restoring overwrites the whole
+book, so it is its own capability rather than being folded in with settings. A
+copy of what is on disk is written to `content/pre-restore-backup.json` first,
+so restoring the wrong file can itself be undone, and the confirmation box wants
+the word RESTORE typed out. Backups deliberately exclude `users.json` and the
+session secret: a backup gets emailed around, and a password hash must not
+travel that way.
 
 ---
 
@@ -231,7 +333,8 @@ status field is a label; where it and the money disagree, the money wins.
 |---|---|---|
 | `content/crm-leads.json` | 400 prospects from TOAB, BAIRA, ATAB and the MoRA Hajj register | yes |
 | `content/site.json` | Every word on the storefront, plus theme and section toggles | yes |
-| `content/accounting.json` | Invoices, credit notes, bills, receipts, payments, expenses, deposits, inventory | yes |
+| `content/accounting.json` | The whole book — 22 collections, from invoices to currencies | yes |
+| `content/audit-log.json` | Who changed what, keyed by staff email | **no** |
 | `content/competitors.json` | 28 vendors profiled; only two publish a price | yes |
 | `content/crm-activities.json` | Call notes about named individuals | **no** |
 | `content/bookings.json` | Passenger names and passport numbers | **no** |
@@ -254,10 +357,12 @@ Two export endpoints, both producing real files rather than CSV in a costume.
 
 ### `/api/accounts/export?format=xlsx|docx|md|csv`
 
-The whole book. The Excel workbook has **sixteen sheets** — summary, P&L, trial
-balance, invoices, receipts, credit notes, bills, payments, expenses,
+The whole book. The Excel workbook has **twenty-five sheets** — summary, P&L,
+trial balance, invoices, receipts, credit notes, bills, payments, expenses,
 receivables, payables, cash and bank, sales by service, expenses by category,
-inventory and supplier deposits. The Word version is a management accounts pack;
+inventory, supplier deposits, balance sheet, cash flow, general ledger, the full
+journal, the reconciliation, cancelled bookings, refunds paid, supplier credits
+and bank transfers. The Word version is a management accounts pack;
 Word cannot scroll sideways, so a very wide ledger is trimmed to eight columns
 **and says so in the document** rather than reading as complete when it is not.
 
@@ -372,6 +477,27 @@ Three reporting views ship with the DDL:
 Once the DB is live, swap the file reads in `lib/agencies.ts` for Prisma queries.
 Every page and the API route go through that one module, so nothing else changes — the schema is
 identical.
+
+---
+
+## Multi-currency
+
+Any invoice or bill can name a currency and the rate it was raised at. Line
+amounts stay in the document currency — exactly what the customer sees — and
+everything the book totals is converted at the document's own stored rate.
+
+The rate is copied onto the document and never looked up again. A rate that
+moves next month must not restate a sale that was already made and already paid,
+which is the whole reason it lives on the document rather than being read from
+the Currencies master at display time.
+
+Receipts and payments are base currency only. Money moved through a real bank
+account at a real amount, and inventing an unrealised gain would put a figure in
+a book that has nowhere to hold it.
+
+Verified end to end: a USD 4,800 invoice at 122.5 adds exactly 588,000 to
+receivables and to revenue, the USD 4,360 bill behind it adds 534,100 to
+payables, and all six reconciliation checks stay at zero.
 
 ---
 
