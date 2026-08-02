@@ -69,7 +69,8 @@ export function Table({ head, children, right = [] }: { head: string[]; children
   );
 }
 
-export function Td({ children, right = false, mono = false, className = '' }: { children: ReactNode; right?: boolean; mono?: boolean; className?: string }) {
+/** `children` is optional so a spacer cell can be written as a bare <Td />. */
+export function Td({ children = null, right = false, mono = false, className = '' }: { children?: ReactNode; right?: boolean; mono?: boolean; className?: string }) {
   return (
     <td className={`border-b border-hair px-4 py-2.5 text-[13px] ${right ? 'text-right' : ''} ${mono ? 'tnum' : ''} ${className}`}>
       {children}

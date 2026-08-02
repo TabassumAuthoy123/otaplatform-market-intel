@@ -14,6 +14,8 @@ const ITEMS = [
   { href: '/accounts/expenses', label: 'Expenses' },
   { href: '/accounts/inventory', label: 'Inventory' },
   { href: '/accounts/reports', label: 'Reports' },
+  { href: '/accounts/ledger', label: 'Ledger' },
+  { href: '/accounts/financials', label: 'Financials' },
   { href: '/accounts/statements', label: 'Statements' },
   { href: '/accounts/masters', label: 'Masters' },
   { href: '/accounts/gds', label: 'GDS check' },

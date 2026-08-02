@@ -15,6 +15,8 @@ const QUICK = [
   { href: '/accounts/expenses', label: 'Record expenses' },
   { href: '/accounts/inventory', label: 'Inventory & float' },
   { href: '/accounts/reports', label: 'Reports' },
+  { href: '/accounts/ledger', label: 'General ledger' },
+  { href: '/accounts/financials', label: 'Financial statements' },
   { href: '/accounts/gds', label: 'GDS live check' }
 ];
 

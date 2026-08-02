@@ -772,7 +772,28 @@ const BOOK_COLLECTIONS = [
       supplierRefund: 0, notes: ''
     }
   },
-  { key: 'supplierDeposits', label: 'Supplier deposits', hint: 'Advances placed with consolidators and airlines.', idPrefix: 'DEP-', noPrefix: null, title: ['no'], search: ['no', 'reference', 'note'], amount: 'amount', party: 'supplierId' },
+  {
+    key: 'supplierCreditNotes',
+    label: 'Supplier credit notes',
+    hint: 'What a supplier gave back — ADM reversal, overbilling, service failure.',
+    idPrefix: 'SCN-', noPrefix: 'supplierCreditPrefix', title: ['no'], search: ['no', 'notes'],
+    amount: 'amount', party: 'supplierId',
+    template: {
+      id: '', no: '', date: '', supplierId: '', billId: '', reason: 'overbilled',
+      amount: 0, settlement: 'credit_balance', bankId: '', notes: ''
+    }
+  },
+  {
+    key: 'transfers',
+    label: 'Deposits & withdrawals',
+    hint: 'Cash banked, or drawn back out. Total funds never change, only where they sit.',
+    idPrefix: 'TRF-', noPrefix: 'transferPrefix', title: ['no'], search: ['no', 'ref', 'notes'],
+    amount: 'amount', party: 'bankId',
+    template: {
+      id: '', no: '', date: '', direction: 'deposit', bankId: '', amount: 0, ref: '', notes: ''
+    }
+  },
+  { key: 'supplierDeposits', label: 'Supplier deposits', hint: 'Advances placed with consolidators and airlines. This is real money leaving cash or bank.', idPrefix: 'DEP-', noPrefix: null, title: ['no'], search: ['no', 'reference', 'note'], amount: 'amount', party: 'supplierId' },
   { key: 'inventory', label: 'Inventory blocks', hint: 'Seats, room nights and quota bought up front.', idPrefix: 'INV-BLK-', noPrefix: null, title: ['name'], search: ['name', 'note'], amount: null, party: 'supplierId' },
   { key: 'customers', label: 'Customers', hint: 'Who we invoice.', idPrefix: 'CUS-', noPrefix: null, title: ['name'], search: ['name', 'phone', 'email'], amount: null, party: null },
   { key: 'suppliers', label: 'Suppliers & vendors', hint: 'Airlines, consolidators, hotels, visa handlers.', idPrefix: 'SUP-', noPrefix: null, title: ['name'], search: ['name', 'phone'], amount: null, party: null },
@@ -795,6 +816,12 @@ const PAY_METHODS = [
   { value: 'online', label: 'Online' }
 ];
 
+/** Only a supplier payment can be settled out of a float already advanced. */
+const PAYMENT_METHODS = [
+  ...PAY_METHODS,
+  { value: 'supplier_deposit', label: 'Drawn from supplier deposit — no fresh money moves' }
+];
+
 const BOOK_ENUMS = {
   invoices: {
     status: [
@@ -806,7 +833,7 @@ const BOOK_ENUMS = {
     ]
   },
   receipts: { method: PAY_METHODS },
-  payments: { method: PAY_METHODS },
+  payments: { method: PAYMENT_METHODS },
   expenses: { method: PAY_METHODS },
   supplierDeposits: { method: PAY_METHODS, kind: [{ value: 'deposit', label: 'Deposit' }] },
   bills: {
@@ -814,6 +841,25 @@ const BOOK_ENUMS = {
       { value: 'unpaid', label: 'Unpaid' },
       { value: 'partially_paid', label: 'Partially paid' },
       { value: 'paid', label: 'Paid' }
+    ]
+  },
+  supplierCreditNotes: {
+    reason: [
+      { value: 'overbilled', label: 'Overbilled' },
+      { value: 'adm_reversal', label: 'ADM reversal' },
+      { value: 'service_failure', label: 'Service failure' },
+      { value: 'rebate', label: 'Volume rebate' },
+      { value: 'other', label: 'Other' }
+    ],
+    settlement: [
+      { value: 'credit_balance', label: 'Credit balance — the bill was unpaid, so we simply owe less' },
+      ...PAY_METHODS.map((m) => ({ value: m.value, label: `Received back by ${m.label.toLowerCase()}` }))
+    ]
+  },
+  transfers: {
+    direction: [
+      { value: 'deposit', label: 'Deposit — cash goes from the till into the bank' },
+      { value: 'withdrawal', label: 'Withdrawal — cash comes out of the bank into the till' }
     ]
   },
   creditNotes: {
@@ -891,7 +937,12 @@ function bookEnums(book, spec) {
     billId: blank(opt(book.bills, (b) => `${b.no} · ${supName(b.supplierId)} · ${b.amount}`))
   };
 
-  return { ...shared, ...(BOOK_ENUMS[spec.key] || {}) };
+  const merged = { ...shared, ...(BOOK_ENUMS[spec.key] || {}) };
+  // A transfer and a supplier credit note both name a required document, so
+  // neither offers the blank "none" that optional references get.
+  if (spec.key === 'transfers') merged.bankId = opt(book.banks, (b) => `${b.name} · ${b.accountNo || b.id}`);
+  if (spec.key === 'supplierCreditNotes') merged.billId = opt(book.bills, (b) => `${b.no} · ${supName(b.supplierId)} · ${b.amount}`);
+  return merged;
 }
 
 const bookFile = () => readJson(path.join(CONTENT_DIR, 'accounting.json'), {});
@@ -1065,6 +1116,11 @@ function validateBookRecord(spec, rec) {
   }
   if (['bills'].includes(spec.key) && num(rec.amount) < 0) errors.push('A bill cannot be negative.');
   if (spec.key === 'creditNotes') errors.push(...validateCreditNote(rec));
+  if (spec.key === 'supplierCreditNotes') errors.push(...validateSupplierCreditNote(rec));
+  if (spec.key === 'transfers') errors.push(...validateTransfer(rec));
+  if (spec.key === 'payments' && rec.method === 'supplier_deposit') {
+    errors.push(...validateDepositDrawdown(rec));
+  }
   if (spec.key === 'invoices') {
     if (!Array.isArray(rec.lines) || rec.lines.length === 0) errors.push('An invoice needs at least one line.');
     else for (const [i, l] of rec.lines.entries()) {
@@ -1171,6 +1227,129 @@ function validateCreditNote(rec, bookArg) {
     errors.push('Choose the supplier bill the refund comes off.');
   }
 
+  return errors;
+}
+
+/**
+ * A supplier credit note, mirrored on the customer one and refused for the same
+ * reasons: unsettled credit cannot exceed what is still owed on the bill, and
+ * money cannot come back that was never paid out.
+ */
+function validateSupplierCreditNote(rec, bookArg) {
+  const errors = [];
+  const book = bookArg || bookFile();
+  const num = (v) => Number(v || 0);
+  const amount = num(rec.amount);
+
+  if (amount <= 0) errors.push('A supplier credit note needs an amount.');
+  if (!rec.supplierId) errors.push('Choose the supplier.');
+  if (!rec.billId) errors.push('Choose the bill this credits — a supplier credit must point at a bill.');
+
+  const bill = (book.bills || []).find((b) => b.id === rec.billId);
+  if (rec.billId && !bill) {
+    errors.push(`Bill ${rec.billId} is not in the book.`);
+  } else if (bill) {
+    if (rec.supplierId && bill.supplierId !== rec.supplierId) {
+      errors.push('That bill belongs to a different supplier.');
+    }
+    const paid = (book.payments || []).filter((p) => p.billId === bill.id).reduce((t, p) => t + num(p.amount), 0);
+    const refunded = (book.creditNotes || [])
+      .filter((c) => c.billId === bill.id)
+      .reduce((t, c) => t + num(c.supplierRefund), 0);
+    const others = (book.supplierCreditNotes || []).filter((c) => c.id !== rec.id && c.billId === bill.id);
+    const otherAll = others.reduce((t, c) => t + num(c.amount), 0);
+    const otherOpen = others.filter((c) => c.settlement === 'credit_balance').reduce((t, c) => t + num(c.amount), 0);
+
+    if (otherAll + refunded + amount > num(bill.amount)) {
+      const left = num(bill.amount) - otherAll - refunded;
+      errors.push(`That would credit more than ${bill.no} is worth. At most ${Math.max(0, left)} is left to credit.`);
+    }
+    if (rec.settlement === 'credit_balance') {
+      const owed = num(bill.amount) - paid - refunded - otherOpen;
+      if (amount > owed) {
+        errors.push(`Only ${Math.max(0, owed)} is still owed on ${bill.no}. If the supplier is sending money back on a bill already settled, choose the method it arrives by.`);
+      }
+    } else {
+      const recoverable = paid - (otherAll - otherOpen);
+      if (amount > recoverable) {
+        errors.push(`Only ${Math.max(0, recoverable)} has been paid on ${bill.no}, so no more than that can come back. Use "Credit balance" for the unpaid part.`);
+      }
+      if (!rec.bankId && rec.settlement !== 'cash') {
+        errors.push('Choose the bank or wallet the money arrives in.');
+      }
+    }
+  }
+
+  return errors;
+}
+
+/**
+ * A transfer must move money that exists.
+ *
+ * The balance is walked to the transfer's own date rather than to today,
+ * because an overdraft in March is still an overdraft even if the account is
+ * healthy now.
+ */
+function validateTransfer(rec, bookArg) {
+  const errors = [];
+  const book = bookArg || bookFile();
+  const num = (v) => Number(v || 0);
+  const amount = num(rec.amount);
+
+  if (amount <= 0) errors.push('A transfer needs an amount.');
+  if (!rec.bankId) errors.push('Choose the bank account.');
+  if (!['deposit', 'withdrawal'].includes(rec.direction)) errors.push('Direction must be deposit or withdrawal.');
+  if (!rec.date) return errors;
+
+  const upto = (arr, f) => (arr || []).filter((x) => x.date <= rec.date).reduce((t, x) => t + f(x), 0);
+  const isCash = rec.direction === 'deposit';
+  const hits = (m, b) => (isCash ? m === 'cash' : m !== 'cash' && b === rec.bankId);
+
+  let available = isCash
+    ? num(book.company && book.company.openingCash)
+    : num(((book.banks || []).find((b) => b.id === rec.bankId) || {}).openingBalance);
+
+  available += upto(book.receipts, (r) => (hits(r.method, r.bankId) ? num(r.amount) : 0));
+  available -= upto(book.payments, (p) => (p.method !== 'supplier_deposit' && hits(p.method, p.bankId) ? num(p.amount) : 0));
+  available -= upto(book.expenses, (e) => (hits(e.method, e.bankId) ? num(e.amount) : 0));
+  available -= upto(book.supplierDeposits, (d) => (hits(d.method, d.bankId) ? num(d.amount) : 0));
+  available -= upto(book.creditNotes, (c) => (c.settlement !== 'credit_balance' && hits(c.settlement, c.bankId) ? num(c.amount) : 0));
+  available += upto(book.supplierCreditNotes, (c) => (c.settlement !== 'credit_balance' && hits(c.settlement, c.bankId) ? num(c.amount) : 0));
+  for (const t of book.transfers || []) {
+    if (t.id === rec.id || t.date > rec.date) continue;
+    if (isCash) available += t.direction === 'deposit' ? -num(t.amount) : num(t.amount);
+    else if (t.bankId === rec.bankId) available += t.direction === 'deposit' ? num(t.amount) : -num(t.amount);
+  }
+
+  if (amount > available) {
+    const where = isCash ? 'the till' : 'that account';
+    errors.push(`Only ${Math.max(0, Math.round(available))} was in ${where} on ${rec.date}. A transfer cannot move money that is not there.`);
+  }
+  return errors;
+}
+
+/**
+ * Settling a bill out of a supplier float can only spend float that is left.
+ * Overdrawing it would show an advance the agency never placed.
+ */
+function validateDepositDrawdown(rec, bookArg) {
+  const errors = [];
+  const book = bookArg || bookFile();
+  const num = (v) => Number(v || 0);
+  if (!rec.supplierId) return ['Choose the supplier whose deposit this draws on.'];
+
+  const placed = (book.supplierDeposits || [])
+    .filter((d) => d.supplierId === rec.supplierId)
+    .reduce((t, d) => t + num(d.amount), 0);
+  const drawn = (book.payments || [])
+    .filter((p) => p.id !== rec.id && p.supplierId === rec.supplierId && p.method === 'supplier_deposit')
+    .reduce((t, p) => t + num(p.amount), 0);
+  const left = placed - drawn;
+
+  if (num(rec.amount) > left) {
+    errors.push(`Only ${Math.max(0, left)} of deposit is left with that supplier. Pay the rest from cash or a bank account.`);
+  }
+  if (rec.bankId) errors.push('A payment drawn from a deposit does not come out of a bank account — clear the bank field.');
   return errors;
 }
 

@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 import {
-  allBankBalances, billPaid, cashBook, creditNoteReport, expensesByCategory, getBook, inventory,
-  invoiceTotals, isRefunded, isTrading, LABEL, payables, profitAndLoss, receivables, salesByService,
-  summarise, supplierDeposits, trialBalance, type Book
+  allBankBalances, balanceSheet, billPaid, cashBook, cashFlow, creditNoteReport, expensesByCategory,
+  generalLedger, getBook, inventory, invoiceTotals, isRefunded, journal, journalTrialBalance, LABEL,
+  payables, profitAndLoss, receivables, reconciliation, salesByService, summarise, supplierDeposits,
+  trialBalance, type Book
 } from '@/lib/accounting';
 
 /**
@@ -52,6 +53,11 @@ function buildSheets(book: Book, from?: string, to?: string): Sheet[] {
   const cn = creditNoteReport(book);
   const inv = inventory(book);
   const dep = supplierDeposits(book);
+  const bs = balanceSheet(book);
+  const cf = cashFlow(book, from, to);
+  const gl = generalLedger(book, undefined, from, to);
+  const jtb = journalTrialBalance(book);
+  const recon = reconciliation(book);
 
   const cust = (id: string) => book.customers.find((c) => c.id === id)?.name ?? id;
   const supp = (id: string) => book.suppliers.find((x) => x.id === id)?.name ?? id;
@@ -347,6 +353,162 @@ function buildSheets(book: Book, from?: string, to?: string): Sheet[] {
       r.supplier.name, r.depositCount, n0(r.deposited), n0(r.billed), n0(r.settled),
       n0(r.outstandingBills), n0(r.available)
     ])
+  });
+
+  /* --------------------------------------------------- 17 balance sheet */
+  sheets.push({
+    name: '17_BALANCE_SHEET',
+    title: 'Balance sheet (as at today)',
+    head: ['Section', 'Account', 'Amount'],
+    widths: [22, 40, 20],
+    note:
+      'Built from the journal. Retained earnings is income less expenses out of the same postings, not a ' +
+      'stored figure, which is why the two sides meet without a plug. The difference row must read zero.',
+    rows: [
+      ...bs.assets.map((r): Row => ['Assets', r.name, n0(r.amount)]),
+      ['Assets', 'Total assets', n0(bs.totalAssets)],
+      ['', '', ''],
+      ...bs.liabilities.map((r): Row => ['Liabilities', r.name, n0(r.amount)]),
+      ['Liabilities', 'Total liabilities', n0(bs.totalLiabilities)],
+      ['', '', ''],
+      ...bs.equity.map((r): Row => ['Equity', r.name, n0(r.amount)]),
+      ['Equity', 'Total equity', n0(bs.totalEquity)],
+      ['', '', ''],
+      ['Check', 'Total liabilities and equity', n0(bs.totalLiabilities + bs.totalEquity)],
+      ['Check', 'Difference', n0(bs.difference)]
+    ]
+  });
+
+  /* ------------------------------------------------------- 18 cash flow */
+  sheets.push({
+    name: '18_CASH_FLOW',
+    title: 'Cash flow (direct method)',
+    head: ['Section', 'Line', 'Amount'],
+    widths: [20, 44, 20],
+    note:
+      `Period: ${period}. Cash and every bank account together. Transfers between them are excluded — ` +
+      'banking the day\'s takings is not cash generated.',
+    rows: [
+      ['Opening', 'Funds at start', n0(cf.opening)],
+      ['', '', ''],
+      ...cf.operating.map((r): Row => ['Operating', r.name, n0(r.amount)]),
+      ['Operating', 'Net cash from operations', n0(cf.netOperating)],
+      ['', '', ''],
+      ...cf.investing.map((r): Row => ['Investing', r.name, n0(r.amount)]),
+      ['Investing', 'Net cash from investing', n0(cf.netInvesting)],
+      ['', '', ''],
+      ['Total', 'Net movement', n0(cf.movement)],
+      ['Total', 'Funds at close', n0(cf.closing)]
+    ]
+  });
+
+  /* -------------------------------------------------- 19 general ledger */
+  sheets.push({
+    name: '19_GENERAL_LEDGER',
+    title: 'General ledger — account balances',
+    head: ['Code', 'Account', 'Group', 'Debits', 'Credits', 'Balance'],
+    widths: [16, 38, 14, 18, 18, 18],
+    note: `Period: ${period}. Balance is signed by the account's natural side.`,
+    rows: gl.summary.map((r): Row => [
+      r.account.code, r.account.name, r.account.group, n0(r.debit), n0(r.credit), n0(r.balance)
+    ])
+  });
+
+  /* -------------------------------------------------------- 20 journal */
+  sheets.push({
+    name: '20_JOURNAL',
+    title: 'Journal — every posting',
+    head: ['Date', 'Voucher', 'Type', 'Party', 'Account', 'Debit', 'Credit', 'Narration'],
+    widths: [12, 16, 18, 28, 18, 15, 15, 46],
+    note: 'Two or more lines per voucher, always balanced. This is what the ledger and balance sheet are built from.',
+    rows: journal(book)
+      .filter((l) => inRange(l.date))
+      .map((l): Row => [l.date, l.ref, l.voucherType, l.party, l.account, n0(l.debit), n0(l.credit), l.narration])
+  });
+
+  /* ------------------------------------------------- 21 reconciliation */
+  sheets.push({
+    name: '21_RECONCILIATION',
+    title: 'Control accounts vs the journal',
+    head: ['Account', 'Control total', 'Ledger balance', 'Difference'],
+    widths: [40, 20, 20, 18],
+    note:
+      'Two independent derivations of the same vouchers. Every difference must be zero; a non-zero row means ' +
+      'the dashboard and the ledger disagree about a voucher.',
+    rows: [
+      ...recon.checks.map((c): Row => [c.name, n0(c.control), n0(c.ledger), n0(c.difference)]),
+      ['Trial balance — control basis', n0(tb.totalDebit), n0(tb.totalCredit), n0(tb.difference)],
+      ['Trial balance — journal basis', n0(jtb.totalDebit), n0(jtb.totalCredit), n0(jtb.difference)]
+    ]
+  });
+
+  /* -------------------------------------------- 22 cancelled bookings */
+  sheets.push({
+    name: '22_CANCELLED_BOOKINGS',
+    title: 'Cancelled bookings',
+    head: ['Invoice', 'Date', 'Customer', 'PNR', 'Original value', 'Credited', 'Recovered from supplier', 'Cost to us', 'Credit note', 'Reason'],
+    widths: [15, 12, 26, 14, 15, 14, 20, 14, 15, 22],
+    note: 'Invoices reversed in full. These count as zero revenue everywhere in the book.',
+    rows: cn.rows
+      .filter((r) => r.fullCancellation && r.invoice && inRange(r.note.date))
+      .map((r): Row => [
+        r.invoice!.no, r.invoice!.date, r.customer,
+        r.invoice!.lines.map((l) => l.pnr).filter(Boolean).join(' '),
+        n0(r.invoiceTotal), n0(r.note.amount), n0(r.note.supplierRefund),
+        n0(r.note.amount - r.note.supplierRefund), r.note.no,
+        LABEL[r.note.reason] ?? r.note.reason
+      ])
+  });
+
+  /* ---------------------------------------------------- 23 refunds out */
+  sheets.push({
+    name: '23_REFUNDS',
+    title: 'Refunds paid out',
+    head: ['Credit note', 'Date', 'Customer', 'Against invoice', 'Method', 'Bank', 'Amount', 'Reason'],
+    widths: [15, 12, 26, 16, 20, 22, 15, 24],
+    note: `Period: ${period}. Only credits settled in money — credit left on account is not a refund.`,
+    rows: cn.rows
+      .filter((r) => isRefunded(r.note) && inRange(r.note.date))
+      .map((r): Row => [
+        r.note.no, r.note.date, r.customer, r.invoice?.no ?? '',
+        LABEL[r.note.settlement] ?? r.note.settlement, bank(r.note.bankId),
+        n0(r.note.amount), LABEL[r.note.reason] ?? r.note.reason
+      ])
+  });
+
+  /* ------------------------------------------- 24 supplier credit notes */
+  sheets.push({
+    name: '24_SUPPLIER_CREDITS',
+    title: 'Supplier credit notes',
+    head: ['Credit note', 'Date', 'Supplier', 'Against bill', 'Reason', 'Settlement', 'Bank', 'Amount', 'Notes'],
+    widths: [15, 12, 28, 16, 22, 26, 20, 15, 40],
+    note: 'The purchase-side mirror: either the bill was unpaid and we owe less, or it was paid and money came back in.',
+    rows: (book.supplierCreditNotes ?? [])
+      .filter((c) => inRange(c.date))
+      .sort((a, b) => b.date.localeCompare(a.date))
+      .map((c): Row => [
+        c.no, c.date, supp(c.supplierId), billNo(c.billId),
+        LABEL[c.reason] ?? c.reason,
+        c.settlement === 'credit_balance' ? 'Credit balance' : `Received back — ${LABEL[c.settlement] ?? c.settlement}`,
+        bank(c.bankId), n0(c.amount), c.notes
+      ])
+  });
+
+  /* ---------------------------------------------------- 25 transfers */
+  sheets.push({
+    name: '25_BANK_TRANSFERS',
+    title: 'Deposits and withdrawals',
+    head: ['Voucher', 'Date', 'Direction', 'Bank', 'Amount', 'Reference', 'Notes'],
+    widths: [15, 12, 26, 28, 15, 22, 40],
+    note: 'Cash moved between the till and a bank account. Total funds never change, only where they sit.',
+    rows: (book.transfers ?? [])
+      .filter((t) => inRange(t.date))
+      .sort((a, b) => b.date.localeCompare(a.date))
+      .map((t): Row => [
+        t.no, t.date, LABEL[t.direction] ?? t.direction,
+        book.banks.find((b) => b.id === t.bankId)?.name ?? t.bankId,
+        n0(t.amount), t.ref, t.notes
+      ])
   });
 
   return sheets;

@@ -13,7 +13,12 @@ import path from 'node:path';
 
 /* ------------------------------------------------------------------- types */
 
-export type PayMethod = 'cash' | 'bank_transfer' | 'card' | 'mfs' | 'online';
+/**
+ * `supplier_deposit` settles a bill out of a float already advanced to that
+ * supplier. No fresh money moves — the advance is drawn down instead. Without
+ * it, paying from a deposit would take the same money out of the bank twice.
+ */
+export type PayMethod = 'cash' | 'bank_transfer' | 'card' | 'mfs' | 'online' | 'supplier_deposit';
 export type InvoiceStatus = 'draft' | 'confirmed' | 'partially_paid' | 'paid' | 'cancelled';
 export type BillStatus = 'unpaid' | 'partially_paid' | 'paid';
 
@@ -84,6 +89,47 @@ export type CreditNote = {
   notes: string;
 };
 
+/**
+ * Cash moved between the till and a bank account.
+ *
+ *   deposit    cash leaves the till and lands in the bank
+ *   withdrawal cash comes out of the bank and into the till
+ *
+ * Without this the two books cannot be reconciled against each other: an
+ * agency that banks its counter takings every evening had no way to say so, and
+ * the cash book would keep growing while the bank statement disagreed.
+ *
+ * A transfer never changes total funds, only where they sit, so it can never
+ * move the trial balance.
+ */
+export type Transfer = {
+  id: string; no: string; date: string;
+  direction: 'deposit' | 'withdrawal';
+  bankId: string; amount: number; ref: string; notes: string;
+};
+
+/**
+ * A supplier credit note — the purchase-side mirror of a customer credit note.
+ *
+ * An airline reverses an ADM, a consolidator over-billed, a hotel refunds an
+ * unused night. `settlement` works the same way and for the same reason: either
+ * the bill was unpaid and we now owe less, or it was paid and money comes back
+ * IN. Never both.
+ *
+ * This is separate from the `supplierRefund` field on a customer credit note.
+ * That one is the supplier side of a cancelled sale and belongs with it. This
+ * one has no customer behind it at all.
+ */
+export type SupplierCreditNote = {
+  id: string; no: string; date: string;
+  supplierId: string; billId: string;
+  reason: 'overbilled' | 'adm_reversal' | 'service_failure' | 'rebate' | 'other';
+  amount: number;
+  settlement: 'credit_balance' | PayMethod;
+  bankId: string | null;
+  notes: string;
+};
+
 export type Expense = {
   id: string; no: string; date: string; categoryId: string; method: PayMethod;
   bankId: string | null; amount: number; description: string; employeeId: string | null;
@@ -111,6 +157,10 @@ export type Book = {
   payments: Payment[];
   expenses: Expense[];
   creditNotes: CreditNote[];
+  transfers: Transfer[];
+  supplierCreditNotes: SupplierCreditNote[];
+  supplierDeposits: SupplierDeposit[];
+  inventory: InventoryItem[];
 };
 
 const BOOK_FILE = path.join(process.cwd(), 'content', 'accounting.json');
@@ -138,6 +188,7 @@ export function moneyShort(n: number, symbol = '৳'): string {
 
 export const LABEL: Record<string, string> = {
   cash: 'Cash', bank_transfer: 'Bank transfer', card: 'Card', mfs: 'bKash / Nagad', online: 'Online',
+  supplier_deposit: 'Drawn from supplier deposit',
   draft: 'Draft', confirmed: 'Confirmed', partially_paid: 'Partially paid', paid: 'Paid', cancelled: 'Cancelled',
   unpaid: 'Unpaid',
   agency: 'Agency', walk_in: 'Walk-in', corporate: 'Corporate',
@@ -145,7 +196,10 @@ export const LABEL: Record<string, string> = {
   air: 'Air ticket', hajj_umrah: 'Hajj / Umrah', tour: 'Tour', other: 'Other',
   cancellation: 'Cancellation', partial_refund: 'Partial refund', date_change: 'Date change',
   overcharge: 'Overcharge', goodwill: 'Goodwill', write_off: 'Write-off',
-  credit_balance: 'Credit balance (no money moved)'
+  credit_balance: 'Credit balance (no money moved)',
+  deposit: 'Cash deposited to bank', withdrawal: 'Cash withdrawn from bank',
+  overbilled: 'Overbilled', adm_reversal: 'ADM reversal', service_failure: 'Service failure',
+  rebate: 'Volume rebate'
 };
 
 /* --------------------------------------------------------------- credit notes */
@@ -168,9 +222,29 @@ export function creditedTotal(invoiceId: string, notes: CreditNote[]): number {
   return notes.filter((n) => n.invoiceId === invoiceId).reduce((t, n) => t + n.amount, 0);
 }
 
-/** What a supplier gave back against one bill. */
+/** What a supplier gave back against one bill, from a cancelled sale. */
 export function refundOnBill(billId: string, notes: CreditNote[]): number {
   return notes.filter((n) => n.billId === billId).reduce((t, n) => t + n.supplierRefund, 0);
+}
+
+/** Supplier credit that reduces what we owe, as opposed to money already returned. */
+export function supplierCreditOnBill(billId: string, notes: SupplierCreditNote[]): number {
+  return notes
+    .filter((c) => c.billId === billId && c.settlement === 'credit_balance')
+    .reduce((t, c) => t + c.amount, 0);
+}
+
+/** Everything a supplier credited on one bill, settled or not. */
+export function supplierCreditedTotal(billId: string, notes: SupplierCreditNote[]): number {
+  return notes.filter((c) => c.billId === billId).reduce((t, c) => t + c.amount, 0);
+}
+
+/**
+ * Total credit a bill carries from both directions — the supplier's own credit
+ * note and the supplier-refund leg of a cancelled sale.
+ */
+export function billCredited(billId: string, book: Book): number {
+  return refundOnBill(billId, book.creditNotes ?? []) + supplierCreditedTotal(billId, book.supplierCreditNotes ?? []);
 }
 
 /* -------------------------------------------------------------- invoice math */
@@ -225,9 +299,24 @@ export function billPaid(bill: Bill, payments: Payment[]): number {
   return payments.filter((p) => p.billId === bill.id).reduce((t, p) => t + p.amount, 0);
 }
 
-/** What is still owed on a bill after payments and any supplier refund. */
-export function billDue(bill: Bill, payments: Payment[], creditNotes: CreditNote[] = []): number {
-  return Math.max(0, bill.amount - billPaid(bill, payments) - refundOnBill(bill.id, creditNotes));
+/**
+ * What is still owed on a bill after payments and every kind of credit.
+ *
+ * Only UNSETTLED supplier credit reduces the debt. A supplier credit that was
+ * settled in money has already arrived in the bank, so counting it here as well
+ * would relieve the same debt twice — the same trap as a refunded customer
+ * credit, in the other direction.
+ */
+export function billDue(
+  bill: Bill,
+  payments: Payment[],
+  creditNotes: CreditNote[] = [],
+  supplierNotes: SupplierCreditNote[] = []
+): number {
+  return Math.max(
+    0,
+    bill.amount - billPaid(bill, payments) - refundOnBill(bill.id, creditNotes) - supplierCreditOnBill(bill.id, supplierNotes)
+  );
 }
 
 /* -------------------------------------------------------------- aggregations */
@@ -254,6 +343,7 @@ export function summarise(book: Book, from?: string, to?: string) {
   const payments = book.payments.filter((p) => inRange(p.date));
   const expenses = book.expenses.filter((e) => inRange(e.date));
   const notes = (book.creditNotes ?? []).filter((n) => inRange(n.date));
+  const supplierNotes = (book.supplierCreditNotes ?? []).filter((c) => inRange(c.date));
 
   /**
    * Credit notes land in the period they were issued, not the period of the
@@ -266,8 +356,10 @@ export function summarise(book: Book, from?: string, to?: string) {
   const supplierRefunds = notes.reduce((t, n) => t + n.supplierRefund, 0);
   const grossCost = invoices.reduce((t, i) => t + invoiceTotals(i, book.receipts).cost, 0);
 
+  const supplierCredits = supplierNotes.reduce((t, c) => t + c.amount, 0);
+
   const sales = grossSales - credited;
-  const cost = grossCost - supplierRefunds;
+  const cost = grossCost - supplierRefunds - supplierCredits;
   const collected = receipts.reduce((t, r) => t + r.amount, 0);
   const paidOut = payments.reduce((t, p) => t + p.amount, 0);
   const spent = expenses.reduce((t, e) => t + e.amount, 0);
@@ -278,6 +370,8 @@ export function summarise(book: Book, from?: string, to?: string) {
     credited,
     creditNoteCount: notes.length,
     supplierRefunds,
+    supplierCredits,
+    supplierCreditCount: supplierNotes.length,
     /** Net of credit notes. Every margin below is built on this, not on gross. */
     sales,
     cost,
@@ -305,9 +399,15 @@ export function receivables(book: Book) {
 /** Money we still owe suppliers. */
 export function payables(book: Book) {
   const notes = book.creditNotes ?? [];
+  const supplierNotes = book.supplierCreditNotes ?? [];
   const rows = book.bills
-    .map((b) => ({ bill: b, paid: billPaid(b, book.payments), refunded: refundOnBill(b.id, notes) }))
-    .map((r) => ({ ...r, due: Math.max(0, r.bill.amount - r.paid - r.refunded) }))
+    .map((b) => ({
+      bill: b,
+      paid: billPaid(b, book.payments),
+      refunded: refundOnBill(b.id, notes),
+      credited: supplierCreditOnBill(b.id, supplierNotes)
+    }))
+    .map((r) => ({ ...r, due: Math.max(0, r.bill.amount - r.paid - r.refunded - r.credited) }))
     .filter((r) => r.due > 0);
   return { rows, total: rows.reduce((t, r) => t + r.due, 0) };
 }
@@ -322,26 +422,58 @@ export function cashBook(book: Book, from?: string, to?: string) {
   /** A credit note only touches cash when it was settled by handing notes back. */
   const cashRefund = (c: CreditNote) => c.settlement === 'cash';
   const notes = book.creditNotes ?? [];
+  const transfers = book.transfers ?? [];
+  const supplierNotes = book.supplierCreditNotes ?? [];
+  /** Cash banked leaves the till; cash drawn from the bank arrives in it. */
+  const cashOutTransfer = (t: Transfer) => t.direction === 'deposit';
+  const cashInTransfer = (t: Transfer) => t.direction === 'withdrawal';
+  /** A supplier credit settled in cash is money coming back over the counter. */
+  const cashInSupplierCredit = (c: SupplierCreditNote) => c.settlement === 'cash';
+  /**
+   * An advance placed with a supplier is money that has genuinely left.
+   * It carried a method and a bank account from the day it was added and moved
+   * neither — 88 lakh of deposits sat in the book while the balances they were
+   * paid from never went down.
+   */
+  const deposits = book.supplierDeposits ?? [];
+  const cashDeposit = (d: SupplierDeposit) => d.method === 'cash';
 
   const opening =
     book.company.openingCash +
     book.receipts.filter((r) => cashIn(r) && before(r.date)).reduce((t, r) => t + r.amount, 0) -
     book.payments.filter((p) => cashOut(p) && before(p.date)).reduce((t, p) => t + p.amount, 0) -
     book.expenses.filter((e) => cashOut(e) && before(e.date)).reduce((t, e) => t + e.amount, 0) -
-    notes.filter((c) => cashRefund(c) && before(c.date)).reduce((t, c) => t + c.amount, 0);
+    notes.filter((c) => cashRefund(c) && before(c.date)).reduce((t, c) => t + c.amount, 0) -
+    transfers.filter((t) => cashOutTransfer(t) && before(t.date)).reduce((x, t) => x + t.amount, 0) +
+    transfers.filter((t) => cashInTransfer(t) && before(t.date)).reduce((x, t) => x + t.amount, 0) +
+    supplierNotes.filter((c) => cashInSupplierCredit(c) && before(c.date)).reduce((x, c) => x + c.amount, 0) -
+    deposits.filter((d) => cashDeposit(d) && before(d.date)).reduce((x, d) => x + d.amount, 0);
 
   const receiptsIn = book.receipts.filter((r) => cashIn(r) && inRange(r.date));
   const paymentsOut = book.payments.filter((p) => cashOut(p) && inRange(p.date));
   const expensesOut = book.expenses.filter((e) => cashOut(e) && inRange(e.date));
   const refundsOut = notes.filter((c) => cashRefund(c) && inRange(c.date));
+  const transfersOut = transfers.filter((t) => cashOutTransfer(t) && inRange(t.date));
+  const transfersIn = transfers.filter((t) => cashInTransfer(t) && inRange(t.date));
+  const supplierCreditsIn = supplierNotes.filter((c) => cashInSupplierCredit(c) && inRange(c.date));
+  const depositsOut = deposits.filter((d) => cashDeposit(d) && inRange(d.date));
 
-  const totalIn = receiptsIn.reduce((t, r) => t + r.amount, 0);
+  const totalIn =
+    receiptsIn.reduce((t, r) => t + r.amount, 0) +
+    transfersIn.reduce((x, t) => x + t.amount, 0) +
+    supplierCreditsIn.reduce((x, c) => x + c.amount, 0);
   const totalOut =
     paymentsOut.reduce((t, p) => t + p.amount, 0) +
     expensesOut.reduce((t, e) => t + e.amount, 0) +
-    refundsOut.reduce((t, c) => t + c.amount, 0);
+    refundsOut.reduce((t, c) => t + c.amount, 0) +
+    transfersOut.reduce((x, t) => x + t.amount, 0) +
+    depositsOut.reduce((x, d) => x + d.amount, 0);
 
-  return { opening, receiptsIn, paymentsOut, expensesOut, refundsOut, totalIn, totalOut, closing: opening + totalIn - totalOut };
+  return {
+    opening, receiptsIn, paymentsOut, expensesOut, refundsOut,
+    transfersIn, transfersOut, supplierCreditsIn, depositsOut,
+    totalIn, totalOut, closing: opening + totalIn - totalOut
+  };
 }
 
 /** Same shape as the cash book, for one bank account. */
@@ -351,27 +483,52 @@ export function bankBook(book: Book, bankId: string, from?: string, to?: string)
   const inRange = (d: string) => (!from || d >= from) && (!to || d <= to);
   const mine = (x: { bankId: string | null }) => x.bankId === bankId;
   const notes = book.creditNotes ?? [];
+  const transfers = (book.transfers ?? []).filter((t) => t.bankId === bankId);
+  const supplierNotes = book.supplierCreditNotes ?? [];
   const bankRefund = (c: CreditNote) => isRefunded(c) && mine(c);
+  /** A deposit arrives in this account; a withdrawal leaves it. */
+  const bankInTransfer = (t: Transfer) => t.direction === 'deposit';
+  const bankOutTransfer = (t: Transfer) => t.direction === 'withdrawal';
+  const bankInSupplierCredit = (c: SupplierCreditNote) => c.settlement !== 'credit_balance' && c.bankId === bankId;
+  const deposits = book.supplierDeposits ?? [];
+  const bankDeposit = (d: SupplierDeposit) => d.method !== 'cash' && d.bankId === bankId;
 
   const opening =
     (bank?.openingBalance ?? 0) +
     book.receipts.filter((r) => mine(r) && before(r.date)).reduce((t, r) => t + r.amount, 0) -
     book.payments.filter((p) => mine(p) && before(p.date)).reduce((t, p) => t + p.amount, 0) -
     book.expenses.filter((e) => mine(e) && before(e.date)).reduce((t, e) => t + e.amount, 0) -
-    notes.filter((c) => bankRefund(c) && before(c.date)).reduce((t, c) => t + c.amount, 0);
+    notes.filter((c) => bankRefund(c) && before(c.date)).reduce((t, c) => t + c.amount, 0) +
+    transfers.filter((t) => bankInTransfer(t) && before(t.date)).reduce((x, t) => x + t.amount, 0) -
+    transfers.filter((t) => bankOutTransfer(t) && before(t.date)).reduce((x, t) => x + t.amount, 0) +
+    supplierNotes.filter((c) => bankInSupplierCredit(c) && before(c.date)).reduce((x, c) => x + c.amount, 0) -
+    deposits.filter((d) => bankDeposit(d) && before(d.date)).reduce((x, d) => x + d.amount, 0);
 
   const receiptsIn = book.receipts.filter((r) => mine(r) && inRange(r.date));
   const paymentsOut = book.payments.filter((p) => mine(p) && inRange(p.date));
   const expensesOut = book.expenses.filter((e) => mine(e) && inRange(e.date));
   const refundsOut = notes.filter((c) => bankRefund(c) && inRange(c.date));
+  const transfersIn = transfers.filter((t) => bankInTransfer(t) && inRange(t.date));
+  const transfersOut = transfers.filter((t) => bankOutTransfer(t) && inRange(t.date));
+  const supplierCreditsIn = supplierNotes.filter((c) => bankInSupplierCredit(c) && inRange(c.date));
+  const depositsOut = deposits.filter((d) => bankDeposit(d) && inRange(d.date));
 
-  const totalIn = receiptsIn.reduce((t, r) => t + r.amount, 0);
+  const totalIn =
+    receiptsIn.reduce((t, r) => t + r.amount, 0) +
+    transfersIn.reduce((x, t) => x + t.amount, 0) +
+    supplierCreditsIn.reduce((x, c) => x + c.amount, 0);
   const totalOut =
     paymentsOut.reduce((t, p) => t + p.amount, 0) +
     expensesOut.reduce((t, e) => t + e.amount, 0) +
-    refundsOut.reduce((t, c) => t + c.amount, 0);
+    refundsOut.reduce((t, c) => t + c.amount, 0) +
+    transfersOut.reduce((x, t) => x + t.amount, 0) +
+    depositsOut.reduce((x, d) => x + d.amount, 0);
 
-  return { bank, opening, receiptsIn, paymentsOut, expensesOut, refundsOut, totalIn, totalOut, closing: opening + totalIn - totalOut };
+  return {
+    bank, opening, receiptsIn, paymentsOut, expensesOut, refundsOut,
+    transfersIn, transfersOut, supplierCreditsIn, depositsOut,
+    totalIn, totalOut, closing: opening + totalIn - totalOut
+  };
 }
 
 /** Every bank's closing balance, plus the combined figure. */
@@ -443,6 +600,18 @@ export function supplierLedger(book: Book, supplierId: string) {
   for (const p of book.payments.filter((x) => x.supplierId === supplierId)) {
     rows.push({ date: p.date, ref: p.no, detail: `Payment — ${LABEL[p.method] ?? p.method}`, debit: p.amount, credit: 0 });
   }
+  for (const c of (book.supplierCreditNotes ?? []).filter((x) => x.supplierId === supplierId)) {
+    const bill = book.bills.find((b) => b.id === c.billId);
+    const detail = `Supplier credit note — ${LABEL[c.reason] ?? c.reason}${bill ? ` on ${bill.no}` : ''}`;
+    if (c.settlement === 'credit_balance') {
+      rows.push({ date: c.date, ref: c.no, detail, debit: c.amount, credit: 0 });
+    } else {
+      // Credited then repaid to us: the debt comes down and the money arrives,
+      // so the running balance ends where it started.
+      rows.push({ date: c.date, ref: c.no, detail, debit: c.amount, credit: 0 });
+      rows.push({ date: c.date, ref: c.no, detail: `Received back — ${LABEL[c.settlement] ?? c.settlement}`, debit: 0, credit: c.amount });
+    }
+  }
   for (const c of (book.creditNotes ?? []).filter((x) => x.supplierRefund > 0 && x.billId)) {
     const bill = book.bills.find((b) => b.id === c.billId);
     if (bill?.supplierId !== supplierId) continue;
@@ -505,12 +674,23 @@ export function trialBalance(book: Book) {
    * one without the other is what would put the balance out.
    */
   const supplierRefunds = (book.creditNotes ?? []).reduce((t, c) => t + c.supplierRefund, 0);
-  const purchases = book.bills.reduce((t, b) => t + b.amount, 0) - supplierRefunds;
+  const supplierCredits = (book.supplierCreditNotes ?? []).reduce((t, c) => t + c.amount, 0);
+  const purchases = book.bills.reduce((t, b) => t + b.amount, 0) - supplierRefunds - supplierCredits;
   const opening = book.company.openingCash + book.banks.reduce((t, b) => t + b.openingBalance, 0);
+
+  /**
+   * Advances are an asset: money handed over that has not yet been consumed by
+   * a bill. Cash and bank are now reduced when a deposit is placed, so this
+   * debit is what keeps the two columns level.
+   */
+  const advances =
+    (book.supplierDeposits ?? []).reduce((t, d) => t + d.amount, 0) -
+    book.payments.filter((p) => p.method === 'supplier_deposit').reduce((t, p) => t + p.amount, 0);
 
   const debits = [
     { account: 'Cash in hand', amount: cash },
     { account: 'Bank accounts', amount: bank },
+    { account: 'Advances to suppliers', amount: advances },
     { account: 'Accounts receivable', amount: ar },
     { account: 'Purchases (supplier bills, net of refunds)', amount: purchases },
     { account: 'Operating expenses', amount: s.expenses }
@@ -534,7 +714,9 @@ export function dailyRollup(book: Book, days = 14) {
     ...book.receipts.map((r) => r.date),
     ...book.payments.map((p) => p.date),
     ...book.expenses.map((e) => e.date),
-    ...(book.creditNotes ?? []).map((c) => c.date)
+    ...(book.creditNotes ?? []).map((c) => c.date),
+    ...(book.supplierCreditNotes ?? []).map((c) => c.date),
+    ...(book.transfers ?? []).map((t) => t.date)
   ])).sort().reverse().slice(0, days);
 
   return dates.map((d) => {
@@ -573,6 +755,19 @@ export function recentTransactions(book: Book, limit = 12) {
   }
   for (const c of book.creditNotes ?? []) {
     rows.push({ date: c.date, type: 'Credit note', ref: c.no, party: cust(c.customerId), amount: c.amount, direction: 'out' });
+  }
+  for (const c of book.supplierCreditNotes ?? []) {
+    rows.push({ date: c.date, type: 'Supplier credit', ref: c.no, party: sup(c.supplierId), amount: c.amount, direction: 'in' });
+  }
+  for (const t of book.transfers ?? []) {
+    rows.push({
+      date: t.date,
+      type: t.direction === 'deposit' ? 'Bank deposit' : 'Bank withdrawal',
+      ref: t.no,
+      party: book.banks.find((b) => b.id === t.bankId)?.name ?? t.bankId,
+      amount: t.amount,
+      direction: t.direction === 'deposit' ? 'out' : 'in'
+    });
   }
 
   return rows.sort((a, b) => b.date.localeCompare(a.date) || b.ref.localeCompare(a.ref)).slice(0, limit);
@@ -669,7 +864,7 @@ export const INVENTORY_KIND: Record<string, string> = {
  * payable.
  */
 export function supplierDeposits(book: Book) {
-  const deposits = (book as unknown as { supplierDeposits?: SupplierDeposit[] }).supplierDeposits ?? [];
+  const deposits = book.supplierDeposits ?? [];
 
   const rows = book.suppliers.map((s) => {
     const paidIn = deposits.filter((d) => d.supplierId === s.id).reduce((t, d) => t + d.amount, 0);
@@ -732,5 +927,380 @@ export function inventory(book: Book, today = new Date().toISOString().slice(0, 
     potential: rows.reduce((t, r) => t + r.potentialMargin, 0),
     expiringSoon: rows.filter((r) => r.atRisk).length,
     expired: rows.filter((r) => r.expired && r.remaining > 0).length
+  };
+}
+
+/* ==========================================================================
+   DOUBLE-ENTRY LAYER — journal, general ledger, balance sheet, cash flow
+   ========================================================================== */
+
+/**
+ * Every voucher in the book, expressed as balanced journal lines.
+ *
+ * The rest of this file derives control-account totals directly from the
+ * vouchers, which is fast and readable but cannot produce a general ledger, a
+ * balance sheet or a cash flow statement — you need the individual postings for
+ * those. This layer emits them.
+ *
+ * The two are deliberately kept as independent derivations of the same data
+ * rather than one being built on the other, because that is what makes
+ * `reconciliation()` below worth running: if a control total and the sum of the
+ * journal lines for the same account ever disagree, one of the two has a bug,
+ * and the page says so instead of quietly showing the wrong one.
+ *
+ * ACCOUNT CODES are stable strings, not display names, so renaming a bank or an
+ * expense category cannot silently split an account in two.
+ */
+
+export type AccountGroup = 'asset' | 'liability' | 'equity' | 'income' | 'expense';
+
+export type Account = { code: string; name: string; group: AccountGroup };
+
+export type JournalLine = {
+  date: string;
+  /** Voucher number this posting came from. */
+  ref: string;
+  voucherType: string;
+  account: string;
+  debit: number;
+  credit: number;
+  narration: string;
+  party: string;
+};
+
+export const AC = {
+  CASH: 'CASH',
+  AR: 'AR',
+  AP: 'AP',
+  VAT: 'VAT',
+  ADVANCES: 'ADVANCES',
+  EQUITY: 'EQUITY_OPENING',
+  SALES: 'SALES',
+  RETURNS: 'SALES_RETURNS',
+  PURCHASES: 'PURCHASES',
+  bank: (id: string) => `BANK:${id}`,
+  expense: (id: string) => `EXP:${id}`
+} as const;
+
+/** The chart of accounts, built from the book so it always matches the data. */
+export function chartOfAccounts(book: Book): Account[] {
+  return [
+    { code: AC.CASH, name: 'Cash in hand', group: 'asset' },
+    ...book.banks.map((b): Account => ({ code: AC.bank(b.id), name: b.name, group: 'asset' })),
+    { code: AC.AR, name: 'Accounts receivable', group: 'asset' },
+    { code: AC.ADVANCES, name: 'Advances to suppliers', group: 'asset' },
+    { code: AC.AP, name: 'Accounts payable', group: 'liability' },
+    { code: AC.VAT, name: 'VAT payable', group: 'liability' },
+    { code: AC.EQUITY, name: 'Opening balances', group: 'equity' },
+    { code: AC.SALES, name: 'Sales revenue', group: 'income' },
+    { code: AC.RETURNS, name: 'Credit notes and cancellations', group: 'income' },
+    { code: AC.PURCHASES, name: 'Cost of sales — supplier bills', group: 'expense' },
+    ...book.expenseCategories.map((c): Account => ({ code: AC.expense(c.id), name: c.name, group: 'expense' }))
+  ];
+}
+
+export const accountName = (code: string, chart: Account[]) =>
+  chart.find((a) => a.code === code)?.name ?? code;
+
+export const accountGroup = (code: string, chart: Account[]): AccountGroup =>
+  chart.find((a) => a.code === code)?.group ?? 'asset';
+
+/**
+ * Which asset account a voucher touched.
+ *
+ * `supplier_deposit` is a payment settled out of money already advanced to that
+ * supplier, so no fresh cash leaves — it draws the advance down instead. That
+ * is the other half of recording a deposit properly; without it, paying a bill
+ * from a float you already funded would take the money out of the bank twice.
+ */
+function fundsAccount(method: string, bankId: string | null): string {
+  if (method === 'supplier_deposit') return AC.ADVANCES;
+  if (method === 'cash') return AC.CASH;
+  return bankId ? AC.bank(bankId) : AC.CASH;
+}
+
+export function journal(book: Book): JournalLine[] {
+  const lines: JournalLine[] = [];
+  const cust = (id: string) => book.customers.find((c) => c.id === id)?.name ?? id;
+  const sup = (id: string) => book.suppliers.find((s) => s.id === id)?.name ?? id;
+  const notes = book.creditNotes ?? [];
+
+  const post = (
+    date: string, ref: string, voucherType: string, party: string, narration: string,
+    entries: { account: string; debit?: number; credit?: number }[]
+  ) => {
+    for (const e of entries) {
+      if (!e.debit && !e.credit) continue;
+      lines.push({
+        date, ref, voucherType, party, narration,
+        account: e.account, debit: e.debit ?? 0, credit: e.credit ?? 0
+      });
+    }
+  };
+
+  /* --- opening balances ------------------------------------------------- */
+  const openingDate = book.company.financialYearStart;
+  const openingTotal = book.company.openingCash + book.banks.reduce((t, b) => t + b.openingBalance, 0);
+  post(openingDate, 'OPENING', 'Opening', '', 'Opening balances brought forward', [
+    { account: AC.CASH, debit: book.company.openingCash },
+    ...book.banks.map((b) => ({ account: AC.bank(b.id), debit: b.openingBalance })),
+    { account: AC.EQUITY, credit: openingTotal }
+  ]);
+
+  /* --- sales ------------------------------------------------------------ */
+  for (const i of book.invoices.filter(isLive)) {
+    const t = invoiceTotals(i, book.receipts);
+    post(i.date, i.no, 'Invoice', cust(i.customerId), i.lines.map((l) => l.description).join(' / '), [
+      { account: AC.AR, debit: t.total },
+      { account: AC.SALES, credit: t.gross },
+      { account: AC.VAT, credit: t.vat }
+    ]);
+  }
+
+  for (const r of book.receipts) {
+    post(r.date, r.no, 'Receipt', cust(r.customerId), `Received — ${LABEL[r.method] ?? r.method}`, [
+      { account: fundsAccount(r.method, r.bankId), debit: r.amount },
+      { account: AC.AR, credit: r.amount }
+    ]);
+  }
+
+  /* --- credit notes ----------------------------------------------------- */
+  for (const c of notes) {
+    // Unsettled credit relieves the receivable; a refunded one takes the money
+    // back out instead. Exactly one, which is the whole point of `settlement`.
+    post(c.date, c.no, 'Credit note', cust(c.customerId), LABEL[c.reason] ?? c.reason, [
+      { account: AC.RETURNS, debit: c.amount },
+      isRefunded(c)
+        ? { account: fundsAccount(c.settlement, c.bankId), credit: c.amount }
+        : { account: AC.AR, credit: c.amount }
+    ]);
+    if (c.supplierRefund > 0) {
+      post(c.date, c.no, 'Credit note', cust(c.customerId), 'Supplier refund on the cancelled booking', [
+        { account: AC.AP, debit: c.supplierRefund },
+        { account: AC.PURCHASES, credit: c.supplierRefund }
+      ]);
+    }
+  }
+
+  /* --- purchases -------------------------------------------------------- */
+  for (const b of book.bills) {
+    post(b.date, b.no, 'Supplier bill', sup(b.supplierId), b.notes, [
+      { account: AC.PURCHASES, debit: b.amount },
+      { account: AC.AP, credit: b.amount }
+    ]);
+  }
+
+  for (const p of book.payments) {
+    post(p.date, p.no, 'Supplier payment', sup(p.supplierId), `Paid — ${LABEL[p.method] ?? p.method}`, [
+      { account: AC.AP, debit: p.amount },
+      { account: fundsAccount(p.method, p.bankId), credit: p.amount }
+    ]);
+  }
+
+  for (const c of book.supplierCreditNotes ?? []) {
+    post(c.date, c.no, 'Supplier credit', sup(c.supplierId), LABEL[c.reason] ?? c.reason, [
+      c.settlement === 'credit_balance'
+        ? { account: AC.AP, debit: c.amount }
+        : { account: fundsAccount(c.settlement, c.bankId), debit: c.amount },
+      { account: AC.PURCHASES, credit: c.amount }
+    ]);
+  }
+
+  /* --- expenses --------------------------------------------------------- */
+  for (const e of book.expenses) {
+    post(e.date, e.no, 'Expense', book.expenseCategories.find((c) => c.id === e.categoryId)?.name ?? '', e.description, [
+      { account: AC.expense(e.categoryId), debit: e.amount },
+      { account: fundsAccount(e.method, e.bankId), credit: e.amount }
+    ]);
+  }
+
+  /* --- treasury --------------------------------------------------------- */
+  for (const t of book.transfers ?? []) {
+    const bankAc = AC.bank(t.bankId);
+    const bankName = book.banks.find((b) => b.id === t.bankId)?.name ?? t.bankId;
+    post(t.date, t.no, t.direction === 'deposit' ? 'Bank deposit' : 'Bank withdrawal', bankName, t.notes, [
+      t.direction === 'deposit' ? { account: bankAc, debit: t.amount } : { account: AC.CASH, debit: t.amount },
+      t.direction === 'deposit' ? { account: AC.CASH, credit: t.amount } : { account: bankAc, credit: t.amount }
+    ]);
+  }
+
+  for (const d of book.supplierDeposits ?? []) {
+    post(d.date, d.no, 'Supplier deposit', sup(d.supplierId), d.note, [
+      { account: AC.ADVANCES, debit: d.amount },
+      { account: fundsAccount(d.method, d.bankId), credit: d.amount }
+    ]);
+  }
+
+  return lines.sort((a, b) => a.date.localeCompare(b.date) || a.ref.localeCompare(b.ref));
+}
+
+/** Balance of every account, with the running total for one if asked. */
+export function generalLedger(book: Book, account?: string, from?: string, to?: string) {
+  const chart = chartOfAccounts(book);
+  const all = journal(book);
+  const inRange = (d: string) => (!from || d >= from) && (!to || d <= to);
+
+  const balances = new Map<string, { debit: number; credit: number }>();
+  for (const l of all.filter((x) => inRange(x.date))) {
+    const cur = balances.get(l.account) ?? { debit: 0, credit: 0 };
+    cur.debit += l.debit;
+    cur.credit += l.credit;
+    balances.set(l.account, cur);
+  }
+
+  /** Debit-natured groups carry a positive balance on the debit side. */
+  const natural = (g: AccountGroup) => (g === 'asset' || g === 'expense' ? 1 : -1);
+
+  const summary = chart
+    .map((a) => {
+      const b = balances.get(a.code) ?? { debit: 0, credit: 0 };
+      return { account: a, debit: b.debit, credit: b.credit, balance: (b.debit - b.credit) * natural(a.group) };
+    })
+    .filter((r) => r.debit !== 0 || r.credit !== 0);
+
+  if (!account) return { chart, summary, rows: [], opening: 0, closing: 0, account: null };
+
+  const sign = natural(accountGroup(account, chart));
+  const opening = all
+    .filter((l) => l.account === account && (from ? l.date < from : false))
+    .reduce((t, l) => t + (l.debit - l.credit) * sign, 0);
+
+  let running = opening;
+  const rows = all
+    .filter((l) => l.account === account && inRange(l.date))
+    .map((l) => ({ ...l, balance: (running += (l.debit - l.credit) * sign) }));
+
+  return { chart, summary, rows, opening, closing: running, account: chart.find((a) => a.code === account) ?? null };
+}
+
+/**
+ * Trial balance built from the journal, as opposed to `trialBalance()` which is
+ * built from the control accounts. Both must agree; `reconciliation()` checks.
+ */
+export function journalTrialBalance(book: Book, to?: string) {
+  const { summary } = generalLedger(book, undefined, undefined, to);
+  const rows = summary.map((r) => ({
+    account: r.account,
+    debit: Math.max(0, r.debit - r.credit),
+    credit: Math.max(0, r.credit - r.debit)
+  }));
+  const totalDebit = rows.reduce((t, r) => t + r.debit, 0);
+  const totalCredit = rows.reduce((t, r) => t + r.credit, 0);
+  return { rows, totalDebit, totalCredit, difference: totalDebit - totalCredit };
+}
+
+/**
+ * The two derivations, side by side.
+ *
+ * A difference is not cosmetic — it means a voucher is counted one way in the
+ * dashboard tiles and another way in the ledger. Shown rather than assumed
+ * away, on the same principle as the trial balance difference row.
+ */
+export function reconciliation(book: Book) {
+  const gl = generalLedger(book);
+  const bal = (code: string) => gl.summary.find((r) => r.account.code === code)?.balance ?? 0;
+  const s = summarise(book);
+
+  const checks = [
+    { name: 'Cash in hand', control: cashBook(book).closing, ledger: bal(AC.CASH) },
+    { name: 'Bank accounts', control: allBankBalances(book).total, ledger: book.banks.reduce((t, b) => t + bal(AC.bank(b.id)), 0) },
+    { name: 'Accounts receivable', control: receivables(book).total, ledger: bal(AC.AR) },
+    { name: 'Accounts payable', control: payables(book).total, ledger: bal(AC.AP) },
+    {
+      name: 'Sales revenue (net of credit notes)',
+      control: s.sales,
+      // RETURNS is contra-income: its natural sign already makes it negative, so
+      // it is added. Subtracting took the credit notes off twice.
+      ledger: bal(AC.SALES) + bal(AC.RETURNS)
+    },
+    { name: 'Operating expenses', control: s.expenses, ledger: book.expenseCategories.reduce((t, c) => t + bal(AC.expense(c.id)), 0) }
+  ].map((c) => ({ ...c, difference: Math.round(c.control - c.ledger) }));
+
+  return { checks, clean: checks.every((c) => c.difference === 0) };
+}
+
+/**
+ * Balance sheet as at a date.
+ *
+ * Retained earnings is not stored anywhere; it is income less expenses out of
+ * the same journal. That is what makes the two sides meet without a plug
+ * figure — and if they ever do not, `difference` says so.
+ */
+export function balanceSheet(book: Book, asAt?: string) {
+  const { summary } = generalLedger(book, undefined, undefined, asAt);
+  const of = (g: AccountGroup) => summary.filter((r) => r.account.group === g);
+
+  const assets = of('asset').map((r) => ({ name: r.account.name, amount: r.balance }));
+  const liabilities = of('liability').map((r) => ({ name: r.account.name, amount: r.balance }));
+  const income = of('income').reduce((t, r) => t + r.balance, 0);
+  const expense = of('expense').reduce((t, r) => t + r.balance, 0);
+  const retained = income - expense;
+  const openingEquity = of('equity').reduce((t, r) => t + r.balance, 0);
+
+  const equity = [
+    { name: 'Opening balances', amount: openingEquity },
+    { name: 'Retained earnings', amount: retained }
+  ];
+
+  const totalAssets = assets.reduce((t, r) => t + r.amount, 0);
+  const totalLiabilities = liabilities.reduce((t, r) => t + r.amount, 0);
+  const totalEquity = equity.reduce((t, r) => t + r.amount, 0);
+
+  return {
+    asAt: asAt ?? 'today',
+    assets, liabilities, equity,
+    totalAssets, totalLiabilities, totalEquity,
+    difference: totalAssets - (totalLiabilities + totalEquity)
+  };
+}
+
+/**
+ * Cash flow, direct method, over cash and every bank account together.
+ *
+ * Direct rather than indirect because this book has no accruals to unwind — the
+ * movements ARE the vouchers, so listing them is both simpler and more useful
+ * to somebody asking where the money went.
+ */
+export function cashFlow(book: Book, from?: string, to?: string) {
+  const inRange = (d: string) => (!from || d >= from) && (!to || d <= to);
+  const funds = new Set<string>([AC.CASH, ...book.banks.map((b) => AC.bank(b.id))]);
+  const all = journal(book);
+
+  const openingBefore = all
+    .filter((l) => funds.has(l.account) && (from ? l.date < from : false))
+    .reduce((t, l) => t + l.debit - l.credit, 0);
+  const opening = from ? openingBefore : book.company.openingCash + book.banks.reduce((t, b) => t + b.openingBalance, 0);
+
+  const moved = all.filter((l) => funds.has(l.account) && inRange(l.date) && l.voucherType !== 'Opening');
+
+  /**
+   * A transfer moves money between two accounts that are both in this set, so
+   * it nets to zero and must not appear as a flow. Banking the day's takings is
+   * not cash generated.
+   */
+  const flows = moved.filter((l) => l.voucherType !== 'Bank deposit' && l.voucherType !== 'Bank withdrawal');
+
+  const bucket = (types: string[]) =>
+    flows.filter((l) => types.includes(l.voucherType)).reduce((t, l) => t + l.debit - l.credit, 0);
+
+  const operating = [
+    { name: 'Received from customers', amount: bucket(['Receipt']) },
+    { name: 'Refunded to customers', amount: bucket(['Credit note']) },
+    { name: 'Paid to suppliers', amount: bucket(['Supplier payment']) },
+    { name: 'Received back from suppliers', amount: bucket(['Supplier credit']) },
+    { name: 'Operating expenses paid', amount: bucket(['Expense']) }
+  ];
+  const investing = [{ name: 'Advances placed with suppliers', amount: bucket(['Supplier deposit']) }];
+
+  const netOperating = operating.reduce((t, r) => t + r.amount, 0);
+  const netInvesting = investing.reduce((t, r) => t + r.amount, 0);
+  const movement = netOperating + netInvesting;
+
+  return {
+    opening,
+    operating, netOperating,
+    investing, netInvesting,
+    movement,
+    closing: opening + movement
   };
 }

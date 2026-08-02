@@ -105,8 +105,10 @@ const SALES_COLLECTIONS = ['invoices', 'receipts', 'customers'];
  * managers can; a sales executive cannot, which is the separation the Manager
  * role already promised with "approve cancellations".
  */
-const CREDIT_COLLECTIONS = ['creditNotes'];
+const CREDIT_COLLECTIONS = ['creditNotes', 'supplierCreditNotes'];
 const PURCHASE_COLLECTIONS = ['bills', 'payments', 'supplierDeposits', 'inventory', 'suppliers'];
+/** Moving money between the till and the bank is a treasury act, not a sales or purchase one. */
+const TREASURY_COLLECTIONS = ['transfers'];
 const MASTER_COLLECTIONS = ['services', 'banks', 'expenseCategories', 'employees', 'customers', 'suppliers'];
 
 /**
@@ -148,6 +150,7 @@ function requiredCap(pathname, method, col) {
   if (pathname === '/books/edit' || pathname === '/books/new') {
     // pick the narrowest capability that covers this collection
     if (CREDIT_COLLECTIONS.includes(col)) return 'books_credit';
+    if (TREASURY_COLLECTIONS.includes(col)) return 'books_purchase';
     if (SALES_COLLECTIONS.includes(col)) return 'books_sales';
     if (PURCHASE_COLLECTIONS.includes(col)) return 'books_purchase';
     if (MASTER_COLLECTIONS.includes(col)) return 'books_masters';

@@ -1,0 +1,237 @@
+import { ExportBar } from '@/components/accounts/ExportBar';
+import { Empty, PageHead, Panel, Table, Td, Tile } from '@/components/accounts/ui';
+import {
+  balanceSheet, cashFlow, getBook, journalTrialBalance, money, profitAndLoss,
+  reconciliation, trialBalance
+} from '@/lib/accounting';
+
+export const dynamic = 'force-dynamic';
+
+/**
+ * The four statements a company gets asked for, plus the check that says
+ * whether to believe them.
+ *
+ * The reconciliation panel is the reason this page is worth reading. Every
+ * figure above it is derived twice from the same vouchers by two independent
+ * routes — control accounts for the dashboards, journal postings for the
+ * ledger — and the panel puts them side by side. If they ever disagree the
+ * page says so in red rather than quietly showing whichever one loaded first.
+ */
+export default async function FinancialsPage({
+  searchParams
+}: {
+  searchParams: { from?: string; to?: string };
+}) {
+  const from = searchParams.from || undefined;
+  const to = searchParams.to || undefined;
+
+  const book = await getBook();
+  const sym = book.company.currencySymbol;
+
+  const bs = balanceSheet(book, to);
+  const cf = cashFlow(book, from, to);
+  const pl = profitAndLoss(book, from, to);
+  const tb = trialBalance(book);
+  const jtb = journalTrialBalance(book, to);
+  const recon = reconciliation(book);
+
+  const period = from || to ? `${from ?? 'start'} to ${to ?? 'today'}` : 'Whole book';
+
+  return (
+    <div className="space-y-7">
+      <PageHead
+        kicker="Module 9 · Statements"
+        title="Financial statements"
+        sub="Balance sheet, cash flow and profit & loss, built from the journal. Nothing here is stored — the postings are re-derived from the vouchers on every page load."
+      />
+
+      <form className="no-print flex flex-wrap items-end gap-3 rounded-xl2 border border-hair bg-white p-4">
+        <label className="block">
+          <span className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-muted">From</span>
+          <input type="date" name="from" defaultValue={from ?? ''} className="rounded-lg border border-hair bg-surface px-3 py-2 text-[13.5px] outline-none focus:border-teal-500" />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-muted">To</span>
+          <input type="date" name="to" defaultValue={to ?? ''} className="rounded-lg border border-hair bg-surface px-3 py-2 text-[13.5px] outline-none focus:border-teal-500" />
+        </label>
+        <button className="rounded-lg bg-teal-600 px-5 py-2.5 text-[13px] font-semibold text-white hover:bg-teal-700">Apply</button>
+        <a href="/accounts/financials" className="rounded-lg border border-hair px-4 py-2.5 text-[13px] font-semibold text-navy-900">Whole book</a>
+        <div className="ml-auto">
+          <ExportBar from={from} to={to} label="Download" />
+        </div>
+      </form>
+
+      {/* --------------------------------------------------- the integrity check */}
+      <Panel
+        title={recon.clean ? 'Reconciliation — clean' : 'Reconciliation — MISMATCH'}
+        sub="Control accounts and journal postings are two independent derivations of the same vouchers. Every difference must be zero."
+      >
+        <div
+          className={`border-l-[3px] px-5 py-3 text-[13px] font-semibold ${
+            recon.clean ? 'border-teal-600 bg-teal-600/5 text-teal-800' : 'border-red-600 bg-red-50 text-red-800'
+          }`}
+        >
+          {recon.clean
+            ? 'All six control accounts agree with the ledger, and both trial balances balance. The statements below can be relied on.'
+            : 'At least one control account disagrees with the ledger. A figure on this page contradicts a figure elsewhere in the app — do not file anything from it until the row below is explained.'}
+        </div>
+        <Table head={['Account', 'Control total', 'Ledger balance', 'Difference']} right={[1, 2, 3]}>
+          {recon.checks.map((c) => (
+            <tr key={c.name} className="hover:bg-surface">
+              <Td>{c.name}</Td>
+              <Td right mono>{money(c.control, sym)}</Td>
+              <Td right mono>{money(c.ledger, sym)}</Td>
+              <Td right mono className={c.difference === 0 ? 'text-muted' : 'font-bold text-red-700'}>
+                {money(c.difference, sym)}
+              </Td>
+            </tr>
+          ))}
+          <tr className="border-t border-hair bg-panel">
+            <Td className="font-semibold">Trial balance — control basis</Td>
+            <Td right mono>{money(tb.totalDebit, sym)}</Td>
+            <Td right mono>{money(tb.totalCredit, sym)}</Td>
+            <Td right mono className={tb.difference === 0 ? 'text-muted' : 'font-bold text-red-700'}>
+              {money(tb.difference, sym)}
+            </Td>
+          </tr>
+          <tr className="bg-panel">
+            <Td className="font-semibold">Trial balance — journal basis</Td>
+            <Td right mono>{money(jtb.totalDebit, sym)}</Td>
+            <Td right mono>{money(jtb.totalCredit, sym)}</Td>
+            <Td right mono className={jtb.difference === 0 ? 'text-muted' : 'font-bold text-red-700'}>
+              {money(jtb.difference, sym)}
+            </Td>
+          </tr>
+        </Table>
+      </Panel>
+
+      {/* ---------------------------------------------------------- balance sheet */}
+      <Panel
+        title="Balance sheet"
+        sub={`As at ${to ?? 'today'} — retained earnings is income less expenses out of the same journal, not a stored figure, which is why the two sides meet without a plug`}
+      >
+        <div className="grid gap-0 lg:grid-cols-2">
+          <div className="border-b border-hair p-5 lg:border-b-0 lg:border-r">
+            <h3 className="mb-3 text-[12px] font-bold uppercase tracking-wide text-muted">Assets</h3>
+            {bs.assets.map((r) => (
+              <Line key={r.name} label={r.name} value={money(r.amount, sym)} negative={r.amount < 0} />
+            ))}
+            <div className="my-3 border-t-2 border-navy-900" />
+            <Line label="Total assets" value={money(bs.totalAssets, sym)} bold />
+          </div>
+          <div className="p-5">
+            <h3 className="mb-3 text-[12px] font-bold uppercase tracking-wide text-muted">Liabilities</h3>
+            {bs.liabilities.map((r) => (
+              <Line key={r.name} label={r.name} value={money(r.amount, sym)} />
+            ))}
+            <Line label="Total liabilities" value={money(bs.totalLiabilities, sym)} bold />
+
+            <h3 className="mb-3 mt-6 text-[12px] font-bold uppercase tracking-wide text-muted">Equity</h3>
+            {bs.equity.map((r) => (
+              <Line key={r.name} label={r.name} value={money(r.amount, sym)} negative={r.amount < 0} />
+            ))}
+            <Line label="Total equity" value={money(bs.totalEquity, sym)} bold />
+
+            <div className="my-3 border-t-2 border-navy-900" />
+            <Line label="Liabilities and equity" value={money(bs.totalLiabilities + bs.totalEquity, sym)} bold />
+            <Line
+              label="Difference — must be zero"
+              value={money(bs.difference, sym)}
+              bold
+              negative={bs.difference !== 0}
+            />
+          </div>
+        </div>
+      </Panel>
+
+      {/* --------------------------------------------------------------- cash flow */}
+      <Panel title="Cash flow" sub={`${period} · direct method, cash and every bank account together. Transfers between them are excluded — banking the day's takings is not cash generated.`}>
+        <div className="grid gap-3 border-b border-hair p-5 sm:grid-cols-4">
+          <Tile label="Funds at start" value={money(cf.opening, sym)} />
+          <Tile label="From operations" value={money(cf.netOperating, sym)} tone={cf.netOperating >= 0 ? 'good' : 'warn'} />
+          <Tile label="From investing" value={money(cf.netInvesting, sym)} tone={cf.netInvesting >= 0 ? 'good' : 'warn'} />
+          <Tile label="Funds at close" value={money(cf.closing, sym)} tone={cf.closing >= 0 ? 'good' : 'warn'} />
+        </div>
+        <Table head={['Section', 'Line', 'Amount']} right={[2]}>
+          {cf.operating.map((r) => (
+            <tr key={r.name} className="hover:bg-surface">
+              <Td className="text-muted">Operating</Td>
+              <Td>{r.name}</Td>
+              <Td right mono className={r.amount < 0 ? 'text-amber-700' : 'text-teal-700'}>{money(r.amount, sym)}</Td>
+            </tr>
+          ))}
+          <tr className="bg-panel">
+            <Td className="text-muted">Operating</Td>
+            <Td className="font-semibold">Net cash from operations</Td>
+            <Td right mono className="font-bold">{money(cf.netOperating, sym)}</Td>
+          </tr>
+          {cf.investing.map((r) => (
+            <tr key={r.name} className="hover:bg-surface">
+              <Td className="text-muted">Investing</Td>
+              <Td>{r.name}</Td>
+              <Td right mono className={r.amount < 0 ? 'text-amber-700' : 'text-teal-700'}>{money(r.amount, sym)}</Td>
+            </tr>
+          ))}
+          <tr className="bg-panel">
+            <Td className="text-muted">Investing</Td>
+            <Td className="font-semibold">Net cash from investing</Td>
+            <Td right mono className="font-bold">{money(cf.netInvesting, sym)}</Td>
+          </tr>
+          <tr className="border-t-2 border-navy-900">
+            <Td />
+            <Td className="font-bold text-navy-900">Net movement</Td>
+            <Td right mono className="font-bold">{money(cf.movement, sym)}</Td>
+          </tr>
+        </Table>
+      </Panel>
+
+      {/* ---------------------------------------------------------- profit & loss */}
+      <Panel title="Profit & loss" sub={period}>
+        <div className="p-5">
+          <Line label="Gross sales" value={money(pl.grossRevenue, sym)} />
+          <Line label="Less: credit notes and cancellations" value={`− ${money(pl.creditNotes, sym)}`} muted />
+          <div className="my-2 border-t border-hair" />
+          <Line label="Net revenue" value={money(pl.revenue, sym)} bold />
+          <Line label="Less: cost of sales" value={`− ${money(pl.costOfSales, sym)}`} muted />
+          {pl.supplierRefunds > 0 && (
+            <Line label="  of which recovered from suppliers" value={money(pl.supplierRefunds, sym)} muted />
+          )}
+          <div className="my-3 border-t border-hair" />
+          <Line label="Gross profit" value={money(pl.grossProfit, sym)} bold accent />
+          <Line label="Gross margin" value={`${pl.grossMarginPct.toFixed(2)}%`} muted />
+          <div className="my-3 border-t border-hair" />
+          {pl.expenseRows.map((r) => (
+            <Line key={r.category.id} label={r.category.name} value={`− ${money(r.amount, sym)}`} muted />
+          ))}
+          <Line label="Total operating expenses" value={`− ${money(pl.totalExpenses, sym)}`} />
+          <div className="my-3 border-t-2 border-navy-900" />
+          <Line label="Net profit" value={money(pl.netProfit, sym)} bold accent />
+          <Line label="Net margin" value={`${pl.netMarginPct.toFixed(2)}%`} muted />
+        </div>
+      </Panel>
+
+      {bs.assets.length === 0 && <Empty>No postings yet.</Empty>}
+    </div>
+  );
+}
+
+function Line({
+  label, value, bold, muted, accent, negative
+}: {
+  label: string; value: string; bold?: boolean; muted?: boolean; accent?: boolean; negative?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-4 py-1.5">
+      <span className={`text-[13.5px] ${muted ? 'text-muted' : 'text-ink'} ${bold ? 'font-semibold text-navy-900' : ''}`}>
+        {label}
+      </span>
+      <span
+        className={`tnum text-[13.5px] ${bold ? 'font-bold' : ''} ${
+          negative ? 'text-red-700' : accent ? 'text-teal-700' : bold ? 'text-navy-900' : 'text-ink'
+        }`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}

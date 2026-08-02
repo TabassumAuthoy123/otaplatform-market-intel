@@ -24,7 +24,9 @@
     "expensePrefix": "SFT-EXP-",
     "creditNotePrefix": "SFT-CRN-",
     "openingCash": 900000,
-    "financialYearStart": "2026-07-01"
+    "financialYearStart": "2026-07-01",
+    "transferPrefix": "SFT-TRF-",
+    "supplierCreditPrefix": "SFT-SCN-"
   },
   "roles": [
     {
@@ -254,21 +256,21 @@
       "name": "Dutch-Bangla Bank — Current",
       "accountNo": "101-110-45231",
       "branch": "Gulshan",
-      "openingBalance": 14000000
+      "openingBalance": 16000000
     },
     {
       "id": "BNK-002",
       "name": "City Bank — USD",
       "accountNo": "220-341-99017",
       "branch": "Motijheel",
-      "openingBalance": 640000
+      "openingBalance": 1140000
     },
     {
       "id": "BNK-003",
       "name": "bKash Merchant",
       "accountNo": "01712-345678",
       "branch": "MFS",
-      "openingBalance": 125000
+      "openingBalance": 1825000
     }
   ],
   "expenseCategories": [
@@ -8341,8 +8343,8 @@
       "date": "2026-07-18",
       "supplierId": "SUP-002",
       "kind": "deposit",
-      "method": "cash",
-      "bankId": "BNK-001",
+      "method": "bank_transfer",
+      "bankId": "BNK-002",
       "amount": 350000,
       "reference": "TT-423800",
       "note": "Advance against ticket stock"
@@ -8354,7 +8356,7 @@
       "supplierId": "SUP-002",
       "kind": "deposit",
       "method": "bank_transfer",
-      "bankId": "BNK-001",
+      "bankId": "BNK-003",
       "amount": 500000,
       "reference": "TT-627159",
       "note": "Advance against ticket stock"
@@ -8378,7 +8380,7 @@
       "supplierId": "SUP-003",
       "kind": "deposit",
       "method": "bank_transfer",
-      "bankId": "BNK-001",
+      "bankId": "BNK-002",
       "amount": 1400000,
       "reference": "TT-364100",
       "note": "Advance against ticket stock"
@@ -8390,7 +8392,7 @@
       "supplierId": "SUP-004",
       "kind": "deposit",
       "method": "bank_transfer",
-      "bankId": "BNK-001",
+      "bankId": "BNK-003",
       "amount": 550000,
       "reference": "TT-685000",
       "note": "Advance against ticket stock"
@@ -8401,7 +8403,7 @@
       "date": "2026-06-23",
       "supplierId": "SUP-005",
       "kind": "deposit",
-      "method": "cash",
+      "method": "bank_transfer",
       "bankId": "BNK-001",
       "amount": 700000,
       "reference": "TT-250696",
@@ -8414,7 +8416,7 @@
       "supplierId": "SUP-005",
       "kind": "deposit",
       "method": "bank_transfer",
-      "bankId": "BNK-001",
+      "bankId": "BNK-002",
       "amount": 750000,
       "reference": "TT-740180",
       "note": "Advance against ticket stock"
@@ -8425,8 +8427,8 @@
       "date": "2026-06-13",
       "supplierId": "SUP-006",
       "kind": "deposit",
-      "method": "cash",
-      "bankId": "BNK-001",
+      "method": "bank_transfer",
+      "bankId": "BNK-003",
       "amount": 1200000,
       "reference": "TT-249620",
       "note": "Advance against ticket stock"
@@ -8437,7 +8439,7 @@
       "date": "2026-06-17",
       "supplierId": "SUP-006",
       "kind": "deposit",
-      "method": "cash",
+      "method": "bank_transfer",
       "bankId": "BNK-001",
       "amount": 1150000,
       "reference": "TT-808046",
@@ -8449,8 +8451,8 @@
       "date": "2026-07-23",
       "supplierId": "SUP-006",
       "kind": "deposit",
-      "method": "cash",
-      "bankId": "BNK-001",
+      "method": "bank_transfer",
+      "bankId": "BNK-002",
       "amount": 600000,
       "reference": "TT-711956",
       "note": "Advance against ticket stock"
@@ -8529,5 +8531,88 @@
       "expiresOn": "2026-12-31",
       "note": "Block purchased up front — unsold units are money sitting on the shelf."
     }
-  ]
+  ],
+  "transfers": [
+    {
+      "id": "TRF-0001",
+      "no": "SFT-TRF-0001",
+      "date": "2026-06-25",
+      "direction": "deposit",
+      "bankId": "BNK-001",
+      "amount": 850000,
+      "ref": "Counter takings",
+      "notes": "Cash banked"
+    },
+    {
+      "id": "TRF-0002",
+      "no": "SFT-TRF-0002",
+      "date": "2026-06-30",
+      "direction": "withdrawal",
+      "bankId": "BNK-001",
+      "amount": 300000,
+      "ref": "Office float",
+      "notes": "Cash drawn for office use"
+    },
+    {
+      "id": "TRF-0003",
+      "no": "SFT-TRF-0003",
+      "date": "2026-07-07",
+      "direction": "deposit",
+      "bankId": "BNK-003",
+      "amount": 420000,
+      "ref": "MFS settlement",
+      "notes": "Cash banked"
+    },
+    {
+      "id": "TRF-0004",
+      "no": "SFT-TRF-0004",
+      "date": "2026-07-11",
+      "direction": "deposit",
+      "bankId": "BNK-001",
+      "amount": 1100000,
+      "ref": "Counter takings",
+      "notes": "Cash banked"
+    },
+    {
+      "id": "TRF-0005",
+      "no": "SFT-TRF-0005",
+      "date": "2026-07-15",
+      "direction": "withdrawal",
+      "bankId": "BNK-002",
+      "amount": 250000,
+      "ref": "Petty cash top-up",
+      "notes": "Cash drawn for office use"
+    },
+    {
+      "id": "TRF-0006",
+      "no": "SFT-TRF-0006",
+      "date": "2026-07-20",
+      "direction": "deposit",
+      "bankId": "BNK-001",
+      "amount": 700000,
+      "ref": "Counter takings",
+      "notes": "Cash banked"
+    },
+    {
+      "id": "TRF-0007",
+      "no": "SFT-TRF-0007",
+      "date": "2026-07-24",
+      "direction": "withdrawal",
+      "bankId": "BNK-001",
+      "amount": 400000,
+      "ref": "Office float",
+      "notes": "Cash drawn for office use"
+    },
+    {
+      "id": "TRF-0008",
+      "no": "SFT-TRF-0008",
+      "date": "2026-07-27",
+      "direction": "deposit",
+      "bankId": "BNK-002",
+      "amount": 950000,
+      "ref": "Counter takings",
+      "notes": "Cash banked"
+    }
+  ],
+  "supplierCreditNotes": []
 }
