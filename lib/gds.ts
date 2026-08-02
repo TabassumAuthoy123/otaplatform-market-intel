@@ -243,3 +243,107 @@ export async function retrievePnr(locator: string): Promise<GdsAttempt> {
       : bodyTemplate.replace(/\{locator\}/g, locator.replace(/[<>&"']/g, ''));
   return call(path, method, body, config!);
 }
+
+/* ------------------------------------------------- uAPI LowFareSearch parse */
+
+export type FareOffer = {
+  key: string;
+  totalPrice: string;
+  basePrice: string;
+  taxes: string;
+  currency: string;
+  amount: number;
+  refundable: boolean;
+  platingCarrier: string;
+  latestTicketing: string;
+  cabin: string;
+  bookingCode: string;
+  segments: {
+    carrier: string; flightNumber: string; origin: string; destination: string;
+    departure: string; arrival: string; minutes: number; equipment: string;
+  }[];
+};
+
+const attr = (tag: string, name: string) => {
+  const m = tag.match(new RegExp(`${name}="([^"]*)"`));
+  return m ? m[1] : '';
+};
+
+/**
+ * Turn a LowFareSearchRsp into bookable-looking offers.
+ *
+ * Written against a real sandbox response, not a guess: AirPricePoint carries
+ * the money, the AirPricingInfo inside it carries the fare conditions, and its
+ * BookingInfo rows point at AirSegment keys by SegmentRef. Segments live in a
+ * flat AirSegmentList at the top, so they are indexed by Key first.
+ *
+ * Returns [] for anything that is not a LowFareSearchRsp, so a caller can hand
+ * it any upstream body safely.
+ */
+export function parseLowFareSearch(xml: unknown): FareOffer[] {
+  if (typeof xml !== 'string' || !xml.includes('LowFareSearchRsp')) return [];
+
+  const segments = new Map<string, FareOffer['segments'][number]>();
+  for (const m of xml.matchAll(/<air:AirSegment\b([^>]*)>/g)) {
+    const t = m[1];
+    const key = attr(t, 'Key');
+    if (!key) continue;
+    segments.set(key, {
+      carrier: attr(t, 'Carrier'),
+      flightNumber: attr(t, 'FlightNumber'),
+      origin: attr(t, 'Origin'),
+      destination: attr(t, 'Destination'),
+      departure: attr(t, 'DepartureTime'),
+      arrival: attr(t, 'ArrivalTime'),
+      minutes: Number(attr(t, 'FlightTime')) || 0,
+      equipment: attr(t, 'Equipment')
+    });
+  }
+
+  const offers: FareOffer[] = [];
+  // AirPricePoint blocks are self-contained; split on the opening tag and take
+  // everything up to the matching close.
+  for (const m of xml.matchAll(/<air:AirPricePoint\b([^>]*)>([\s\S]*?)<\/air:AirPricePoint>/g)) {
+    const head = m[1];
+    const body = m[2];
+
+    const total = attr(head, 'TotalPrice');
+    const currency = total.slice(0, 3);
+    const amount = Number(total.slice(3)) || 0;
+
+    const infoTag = body.match(/<air:AirPricingInfo\b([^>]*)>/)?.[1] ?? '';
+    const bookings = Array.from(body.matchAll(/<air:BookingInfo\b([^>]*)\/>/g)).map((b) => b[1]);
+
+    const segs = bookings
+      .map((b) => segments.get(attr(b, 'SegmentRef')))
+      .filter((s): s is FareOffer['segments'][number] => Boolean(s));
+
+    if (!segs.length) continue;
+
+    offers.push({
+      key: attr(head, 'Key'),
+      totalPrice: total,
+      basePrice: attr(head, 'BasePrice'),
+      taxes: attr(head, 'Taxes'),
+      currency,
+      amount,
+      refundable: attr(infoTag, 'Refundable') === 'true',
+      platingCarrier: attr(infoTag, 'PlatingCarrier'),
+      latestTicketing: attr(infoTag, 'LatestTicketingTime'),
+      cabin: attr(bookings[0] ?? '', 'CabinClass'),
+      bookingCode: attr(bookings[0] ?? '', 'BookingCode'),
+      segments: segs
+    });
+  }
+
+  // cheapest first, then de-duplicate identical flight+price combinations
+  const seen = new Set<string>();
+  return offers
+    .sort((a, b) => a.amount - b.amount)
+    .filter((o) => {
+      const sig = o.amount + '|' + o.segments.map((s) => s.carrier + s.flightNumber + s.departure).join(',');
+      if (seen.has(sig)) return false;
+      seen.add(sig);
+      return true;
+    });
+}

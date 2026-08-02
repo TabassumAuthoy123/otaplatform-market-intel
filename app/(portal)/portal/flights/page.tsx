@@ -3,7 +3,7 @@ import { RouteCard } from '@/components/portal/cards';
 import { SearchWidget } from '@/components/portal/SearchWidget';
 import { Chip, Section, SectionTitle } from '@/components/portal/ui';
 import { getContent } from '@/lib/content';
-import { searchConfigStatus, searchFlights } from '@/lib/gds';
+import { parseLowFareSearch, searchConfigStatus, searchFlights } from '@/lib/gds';
 
 export const dynamic = 'force-dynamic';
 
@@ -40,6 +40,8 @@ export default async function FlightsPage({
           adults: (searchParams.pax ?? '1').replace(/\D/g, '') || '1'
         })
       : null;
+
+  const offers = live && !live.fault ? parseLowFareSearch(live.data) : [];
 
   return (
     <>
@@ -142,15 +144,64 @@ export default async function FlightsPage({
                 product, or your public IP is not whitelisted with Travelport.
               </p>
             </div>
+          ) : offers.length > 0 ? (
+            <>
+              <div className="grid gap-3">
+                {offers.slice(0, 12).map((o) => (
+                  <div key={o.key} className="card flex flex-wrap items-center justify-between gap-4 p-4">
+                    <div className="min-w-0 flex-1">
+                      {o.segments.map((s, i) => (
+                        <div key={i} className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                          <span className="tnum text-[15px] font-bold text-navy-900">
+                            {s.carrier} {s.flightNumber}
+                          </span>
+                          <span className="tnum text-[14px] text-ink">
+                            {s.origin} {s.departure.slice(11, 16)} → {s.destination} {s.arrival.slice(11, 16)}
+                          </span>
+                          <span className="tnum text-[12px] text-muted">
+                            {Math.floor(s.minutes / 60)}h {s.minutes % 60}m
+                          </span>
+                          <span className="tnum text-[11.5px] text-muted">{s.departure.slice(0, 10)}</span>
+                        </div>
+                      ))}
+                      <div className="mt-1.5 flex flex-wrap gap-2">
+                        <Chip tone="navy">{o.cabin} · {o.bookingCode}</Chip>
+                        {o.refundable && <Chip tone="teal">Refundable</Chip>}
+                        {o.platingCarrier && <Chip tone="muted">Plating {o.platingCarrier}</Chip>}
+                      </div>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <div className="tnum text-[22px] font-bold text-navy-900">
+                        ৳{o.amount.toLocaleString('en-IN')}
+                      </div>
+                      <div className="tnum text-[11.5px] text-muted">
+                        base {o.basePrice} · tax {o.taxes}
+                      </div>
+                      {o.latestTicketing && (
+                        <div className="tnum mt-0.5 text-[11px] text-amber-700">
+                          ticket by {o.latestTicketing.slice(0, 10)}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-4 text-[12px] leading-relaxed text-muted">
+                {offers.length} priced itineraries returned by Travelport uAPI, cheapest first. These are live
+                sandbox fares — real availability, sandbox inventory.
+              </p>
+            </>
           ) : (
-            <pre className="max-h-[460px] overflow-auto rounded-xl2 bg-navy-950 p-5 text-[12px] leading-relaxed text-teal-300">
-              {typeof live.data === 'string' ? live.data : JSON.stringify(live.data, null, 2)}
-            </pre>
+            <>
+              <pre className="max-h-[460px] overflow-auto rounded-xl2 bg-navy-950 p-5 text-[12px] leading-relaxed text-teal-300">
+                {typeof live.data === 'string' ? live.data : JSON.stringify(live.data, null, 2)}
+              </pre>
+              <p className="mt-3 text-[12px] leading-relaxed text-muted">
+                Travelport answered but no priced itinerary could be read out of the response — raw body shown so you
+                can see exactly what came back.
+              </p>
+            </>
           )}
-          <p className="mt-3 text-[12px] leading-relaxed text-muted">
-            Raw upstream response. Mapping it into fare cards is the next step once the endpoint is confirmed — the
-            response shape differs between Travelport products, so it is not guessed here.
-          </p>
         </Section>
       )}
 
