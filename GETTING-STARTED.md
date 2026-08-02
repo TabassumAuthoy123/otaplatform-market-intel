@@ -35,7 +35,7 @@ program that edits its content.
                     └─────────────────────────────────────────┘
 ```
 
-Think of it as **three notebooks and one pen**. The web app reads the notebooks
+Think of it as **four notebooks and one pen**. The web app reads the notebooks
 and shows them nicely. The admin portal is the pen — the only thing that writes.
 
 The three notebooks:
@@ -45,6 +45,7 @@ The three notebooks:
 | `content/agencies.json` | 114 travel agencies we want to sell to | `/`, `/agencies`, `/segments` |
 | `content/site.json` | Every word on the customer-facing storefront | `/portal` and its pages |
 | `content/accounting.json` | Invoices, bills, receipts, payments, expenses | `/accounts` and its pages |
+| `content/crm-leads.json` | 400 researched B2B prospects + each one's call progress | the Sales CRM inside the admin portal |
 
 Nothing is stored twice. Every total you see — profit, balance, outstanding —
 is calculated from these files at the moment you load the page. That is why a
@@ -194,7 +195,50 @@ Two deliberate honesty decisions:
    site ("CTO, Unknown Group") as a credibility problem, so this build does not
    repeat it.
 
-### 4.3 Travel Accounts — `/accounts`
+### 4.3 Sales CRM — inside the admin portal on `4001`
+
+The 400-prospect database, turned from a spreadsheet into a working queue. It
+lives in the admin portal rather than the public app, because it holds who we
+are calling and what they said.
+
+| Screen | What it is for |
+|---|---|
+| **Manager dashboard** | Coverage %, funnel by call status, what came back, per-rep activity, progress by tier, and the leads that have a disposition but no next action — the ones that quietly die |
+| **Lead list** | All 400 with nine filters and six saved views (P1 queue, Due today, Never touched, Abandoned, Hot). Bulk-assign to a rep. Download the current filter as Excel, Word, Markdown or CSV |
+| **Call mode** | One lead at a time in queue order — priority, then overdue, then untouched — with the four qualifying questions on screen and one form to log the outcome and advance |
+
+The prospects are compiled from the TOAB directory, the BAIRA register, the ATAB
+member directory and the Ministry of Religious Affairs Hajj register. **They are
+a prospecting universe, not licence certificates** — verify a licence on
+regtravelagency.gov.bd before contracting.
+
+**Research fields cannot be edited by a rep**, and not merely because the form
+hides them: the write layer refuses them. A rep who finds a wrong number writes
+it in `notes` and an admin corrects it centrally, so corrections are traceable.
+
+**The validation rules are enforced on the server**, so a rejected save leaves
+the file untouched: a disposition without a next action and a date is rejected,
+a demo status without demo-scheduled is rejected, a won lead without interest
+level 5 is rejected. Every change to call status, disposition, owner or interest
+writes a timeline entry recording the before, the after and who did it. That is
+what makes the manager dashboard true rather than decorative.
+
+**Phone numbers, emails and addresses are never reformatted.** The government
+registers print legacy Dhaka landlines, emails with a comma instead of a dot,
+and backslashes in addresses. They are preserved deliberately — see the source
+URL on the lead before disputing any field.
+
+Re-running the importer updates research fields only. It cannot destroy call
+progress:
+
+```bash
+node scripts/import-crm-leads.mjs <path-to-leads_master.json>
+```
+
+`content/crm-activities.json` — the call notes — is gitignored. It is working
+data about named individuals and does not belong in a public repository.
+
+### 4.4 Travel Accounts — `/accounts`
 
 A travel-agency accounting system, built from the structure document. Reach it
 from **Accounts ↗** in the top navigation.
@@ -236,57 +280,69 @@ real.
 
 ---
 
-## 5. The GDS live check — `/accounts/gds`
+## 5. Travelport / GDS — flight search and PNR check
 
-Type a PNR (record locator). Two independent answers come back.
+**Both are off until you configure them, and both say so on screen.** That is
+the honest state, not a bug: no Travelport credentials have ever been set on
+this machine.
 
-**The book half** always works. It finds that PNR on an invoice line and shows
-the commercial picture: which customer, what it sold for, what it cost, the
-margin, and whether they have paid. No GDS involved.
+| Screen | What it does without credentials | What it does with them |
+|---|---|---|
+| `/portal/flights` | Filters the nine sample routes in `content/site.json`. A banner says "Live GDS not connected" and lists exactly which variables are missing | Calls the configured search endpoint and shows the raw upstream response |
+| `/accounts/gds` | Answers from our own book: which invoice a PNR is on, what it sold for, cost, margin, paid, due | Also retrieves the reservation from Travelport |
 
-**The live half** calls Travelport. It is switched off until you configure it,
-and the page says clearly which variables are missing.
+Both go through one module, `lib/gds.ts`, which supplies HTTP Basic auth,
+timeouts, transport and error handling.
 
-### Turning the live half on
+### Turning it on
 
 Copy `.env.example` to `.env` and fill in the GDS block:
 
 ```
 GDS_BASE_URL="https://api.pp.travelport.com"
-GDS_PNR_PATH="/v1/reservation/{locator}"
 GDS_USERNAME="your-travelport-login-id"
 GDS_PASSWORD="your-travelport-password"
+
+GDS_SEARCH_PATH="/v1/air/search"
+GDS_SEARCH_METHOD="POST"
+GDS_SEARCH_BODY='{"origin":"{from}","destination":"{to}","departureDate":"{date}","adults":{adults}}'
+
+GDS_PNR_PATH="/v1/reservation/{locator}"
 ```
 
-Restart the app. `.env` is gitignored and will not be committed.
+Restart the app. `.env` is gitignored.
+
+`{from}` `{to}` `{date}` `{adults}` `{cabin}` are substituted into both the path
+and the body, so a GET-style product works too — put the query string straight
+into `GDS_SEARCH_PATH`.
 
 ### Read this before wiring it
 
-The endpoint above is **an example of the shape, not a verified Travelport
-endpoint**. Travelport sells several APIs — the JSON APIs and the older uAPI
-SOAP services — and the correct reservation path depends on which products your
-agency is provisioned for. That has to be read off your own Travelport API
-documentation.
+**The paths above are examples of the shape, not verified Travelport
+endpoints.** Travelport sells several APIs — the JSON APIs and the older uAPI
+SOAP services — and the correct air-shopping and reservation paths depend on
+which products your agency is provisioned for. That has to come off your own
+Travelport API documentation.
 
-Rather than hardcode a guess, the route takes the host and path from the
-environment, adds HTTP Basic authentication, and hands back exactly what the
-upstream returns: status code, body and all. Once the path is right it works. If
-your product needs a POST with an XML envelope instead of a GET, that is a small
-change in `app/api/gds/pnr/route.ts` and that is the only file to touch.
+Nothing in this codebase guesses it. Hardcoding a guessed schema produces code
+that looks finished and fails on contact, which is worse than an honest "not
+connected" banner. Once the path is right it works, and the raw response is
+displayed so you can see exactly what came back before anyone maps it into fare
+cards.
 
-Two practical warnings:
+Three practical warnings:
 
 1. **Preprod normally requires IP whitelisting.** A correct endpoint and correct
    credentials will still fail from an office connection Travelport does not
    know about. You will see a transport error, not a 401.
-2. **A Travelport password that has been shared in a screenshot or a chat should
+2. **Search and PNR are different endpoints.** Configuring one does not enable
+   the other; each page lists its own missing variables.
+3. **A Travelport password that has been shared in a screenshot or a chat should
    be rotated.** Those emails say the password does not expire, which means it
-   stays valid until someone changes it deliberately.
+   stays valid until somebody changes it deliberately.
 
 The password is read from the environment, sent upstream, and never logged,
 never returned to the browser, and never written to disk.
-
----
 
 ## 6. Where credentials go
 
@@ -413,10 +469,13 @@ Written down deliberately. Do not discover these in front of a client.
 
 **GDS**
 
-- The live half has never been run against Travelport from here, because no
-  credentials are configured. The transport, authentication and error handling
-  are written and the code path is exercised; the endpoint contract is not
-  verified.
+- **Neither the flight search nor the PNR lookup has ever been run against
+  Travelport from here**, because no credentials are configured. The transport,
+  authentication, timeout and error handling are written and exercised; the
+  endpoint contract is not verified against a live account.
+- The live search returns the raw upstream JSON. Mapping it into fare cards is
+  deliberately not written, because the response shape differs between
+  Travelport products and guessing it would be fiction.
 
 **General**
 
