@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { FareOffer } from '@/lib/gds';
+import type { Offer, Supplier } from '@/lib/offers';
 
 /**
  * Bookings taken on the storefront.
@@ -46,7 +46,7 @@ export type Booking = {
   serviceCharge: number;
   grandTotal: number;
   invoiceNo: string | null;
-  source: 'travelport_uapi';
+  supplier: Supplier;
 };
 
 async function readJson<T>(file: string, fallback: T): Promise<T> {
@@ -116,8 +116,18 @@ async function postToAccounts(booking: Booking, customerName: string): Promise<s
   const invNo = `${company.invoicePrefix ?? 'SFT-INV-'}${String(seq).padStart(4, '0')}`;
   const date = booking.createdAt.slice(0, 10);
   const pax = booking.passengers.length || 1;
-  const baseAmount = Number(String(booking.fare.base).replace(/[^\d.]/g, '')) || booking.fare.total;
   const route = booking.itinerary.map((s) => `${s.origin}–${s.destination}`).join(' / ');
+
+  /**
+   * Supplier cost is the WHOLE fare, not the base.
+   *
+   * The agency remits base plus taxes to the airline and keeps its service
+   * charge. Booking the base as cost and the full price as revenue would report
+   * the tax as margin — on one DAC–DXB ticket that produced a 35,657 "profit"
+   * on a 35,800 sale, which is obviously fiction and would flow straight into
+   * the P&L. Margin here is exactly what the agency added.
+   */
+  const supplierCostTotal = booking.fare.total * pax;
 
   invoices.push({
     id: invId,
@@ -133,7 +143,7 @@ async function postToAccounts(booking: Booking, customerName: string): Promise<s
       pax,
       qty: pax,
       unitPrice: Math.round(booking.grandTotal / pax),
-      supplierCost: Math.round(baseAmount / pax),
+      supplierCost: Math.round(supplierCostTotal / pax),
       supplierId: String(supplier.id)
     }],
     notes: `Created from storefront booking ${booking.ref}. Held, not ticketed.`
@@ -147,7 +157,7 @@ async function postToAccounts(booking: Booking, customerName: string): Promise<s
     supplierId: String(supplier.id),
     invoiceRef: invId,
     status: 'unpaid',
-    amount: Math.round(baseAmount),
+    amount: Math.round(supplierCostTotal),
     notes: `Airline fare for booking ${booking.ref}`
   });
 
@@ -160,7 +170,7 @@ async function postToAccounts(booking: Booking, customerName: string): Promise<s
 }
 
 export async function createBooking(input: {
-  offer: FareOffer;
+  offer: Offer;
   contact: Booking['contact'];
   passengers: Passenger[];
   serviceCharge: number;
@@ -183,8 +193,8 @@ export async function createBooking(input: {
     fare: {
       currency: input.offer.currency,
       total: input.offer.amount,
-      base: input.offer.basePrice,
-      taxes: input.offer.taxes,
+      base: input.offer.baseLabel,
+      taxes: input.offer.taxLabel,
       cabin: input.offer.cabin,
       bookingCode: input.offer.bookingCode,
       platingCarrier: input.offer.platingCarrier,
@@ -193,7 +203,7 @@ export async function createBooking(input: {
     serviceCharge: input.serviceCharge,
     grandTotal: input.offer.amount * Math.max(1, input.passengers.length) + input.serviceCharge,
     invoiceNo: null,
-    source: 'travelport_uapi'
+    supplier: input.offer.supplier
   };
 
   const lead = input.passengers[0];

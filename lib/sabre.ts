@@ -296,6 +296,19 @@ export function parseSabreOffers(data: unknown): SabreOffer[] {
       const price = it.pricingInformation?.[0]?.fare?.totalFare;
       if (!price?.totalPrice) continue;
 
+      /**
+       * Do NOT use baseFareAmount as the base. Sabre quotes it in the fare
+       * CONSTRUCTION currency — a DAC–DXB itinerary came back as base 143 with
+       * tax 16,663 against a total of 34,300, because the 143 was USD and the
+       * rest was BDT. Adding those two gives a number that is simply wrong, and
+       * feeding it into an accounting system produces a fictional margin.
+       *
+       * total − tax is in one currency by definition, so it always reconciles.
+       */
+      const totalNum = Number(price.totalPrice);
+      const taxNum = Number(price.totalTaxAmount) || 0;
+      const baseNum = Math.max(0, totalNum - taxNum);
+
       const segments: SabreOffer['segments'] = [];
       for (const legRef of it.legs ?? []) {
         const leg = legs.get(legRef.ref as number);
@@ -327,8 +340,8 @@ export function parseSabreOffers(data: unknown): SabreOffer[] {
         sig,
         currency: price.currency ?? 'BDT',
         amount,
-        base: Number(price.baseFareAmount) || 0,
-        taxes: Number(price.totalTaxAmount) || 0,
+        base: baseNum,
+        taxes: taxNum,
         cabin: '',
         seatsLeft: null,
         segments

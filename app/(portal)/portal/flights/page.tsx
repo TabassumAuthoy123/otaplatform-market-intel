@@ -3,7 +3,7 @@ import { RouteCard } from '@/components/portal/cards';
 import { SearchWidget } from '@/components/portal/SearchWidget';
 import { Chip, Section, SectionTitle } from '@/components/portal/ui';
 import { getContent } from '@/lib/content';
-import { parseLowFareSearch, searchConfigStatus, searchFlights } from '@/lib/gds';
+import { SUPPLIER_LABEL, searchAllSuppliers } from '@/lib/offers';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,19 +29,18 @@ export default async function FlightsPage({
   });
   const shown = matches.length > 0 ? matches : c.routes;
 
-  const gds = searchConfigStatus();
-  // Only spend a network round trip when someone has actually searched.
-  const live =
-    searched && gds.configured
-      ? await searchFlights({
-          from: code(searchParams.from ?? ''),
-          to: code(searchParams.to ?? ''),
-          date: searchParams.depart ?? '',
-          adults: (searchParams.pax ?? '1').replace(/\D/g, '') || '1'
-        })
-      : null;
+  const result = searched
+    ? await searchAllSuppliers({
+        from: code(searchParams.from ?? ''),
+        to: code(searchParams.to ?? ''),
+        date: searchParams.depart ?? '',
+        adults: (searchParams.pax ?? '1').replace(/\D/g, '') || '1'
+      })
+    : null;
 
-  const offers = live && !live.fault ? parseLowFareSearch(live.data) : [];
+  const offers = result?.offers ?? [];
+  const suppliers = result?.suppliers ?? [];
+  const anyConfigured = result ? result.anyConfigured : true;
 
   return (
     <>
@@ -58,161 +57,123 @@ export default async function FlightsPage({
         </div>
       </section>
 
-      {/* --------------------------------------------- what this search is */}
+      {/* --------------------------------------------- supplier status */}
       <Section tone="surface" className="!py-8">
-        <div
-          className={`rounded-xl2 border-l-[3px] bg-white px-5 py-4 shadow-card ${
-            gds.configured ? 'border-teal-600' : 'border-amber-700'
-          }`}
-        >
-          <div className="flex flex-wrap items-center gap-3">
-            <span
-              className={`chip ${
-                gds.configured
-                  ? 'border-teal-600/30 bg-teal-600/10 text-teal-700'
-                  : 'border-amber-700/30 bg-amber-700/10 text-amber-700'
+        <div className="grid gap-3 sm:grid-cols-2">
+          {(suppliers.length ? suppliers : []).map((sp) => (
+            <div
+              key={sp.supplier}
+              className={`rounded-xl2 border-l-[3px] bg-white px-5 py-4 shadow-card ${
+                sp.offerCount > 0 ? 'border-teal-600' : 'border-amber-700'
               }`}
             >
-              {gds.configured ? 'Live GDS connected' : 'Live GDS not connected'}
-            </span>
-            <p className="text-[13.5px] font-semibold text-navy-900">
-              {gds.configured
-                ? 'Searches call the configured Travelport endpoint.'
-                : 'This search filters demo data. It does not call Travelport.'}
-            </p>
-          </div>
-
-          {!gds.configured && (
-            <div className="mt-3 space-y-2 text-[12.5px] leading-relaxed text-muted">
-              <p>
-                Nothing is broken — the connection has never been switched on. The fares below are the sample
-                routes in <code className="rounded bg-panel px-1.5 py-0.5">content/site.json</code>, which is why
-                the same nine routes always come back whatever you type.
+              <div className="flex flex-wrap items-center gap-3">
+                <span
+                  className={`chip ${
+                    sp.offerCount > 0
+                      ? 'border-teal-600/30 bg-teal-600/10 text-teal-700'
+                      : 'border-amber-700/30 bg-amber-700/10 text-amber-700'
+                  }`}
+                >
+                  {SUPPLIER_LABEL[sp.supplier]}
+                </span>
+                <span className="tnum text-[13.5px] font-semibold text-navy-900">
+                  {sp.offerCount > 0 ? `${sp.offerCount} fares` : 'no fares'}
+                </span>
+                {sp.elapsedMs !== undefined && (
+                  <span className="tnum text-[12px] text-muted">{sp.elapsedMs}ms</span>
+                )}
+                {sp.host && <span className="tnum text-[11.5px] text-muted">{sp.host}</span>}
+              </div>
+              {sp.problem && (
+                <p className="mt-2 text-[12.5px] leading-relaxed text-muted">{sp.problem}</p>
+              )}
+              {!sp.problem && sp.offerCount === 0 && (
+                <p className="mt-2 text-[12.5px] leading-relaxed text-muted">
+                  Answered normally with nothing for this route — the sandbox has no inventory on that pair, which
+                  is not the same as a failure.
+                </p>
+              )}
+            </div>
+          ))}
+          {!searched && (
+            <div className="rounded-xl2 border-l-[3px] border-teal-600 bg-white px-5 py-4 shadow-card sm:col-span-2">
+              <p className="text-[13.5px] font-semibold text-navy-900">
+                Search a route to query Travelport and Sabre together.
               </p>
-              <p>
-                Missing from <code className="rounded bg-panel px-1.5 py-0.5">.env</code>:{' '}
-                {gds.missing.map((m) => (
-                  <span key={m} className="tnum mr-2 font-semibold text-amber-700">
-                    {m}
-                  </span>
-                ))}
-              </p>
-              <p>
-                Copy <code className="rounded bg-panel px-1.5 py-0.5">.env.example</code> to{' '}
-                <code className="rounded bg-panel px-1.5 py-0.5">.env</code>, fill in the GDS block from your own
-                Travelport API documentation, and restart the app. Full instructions in{' '}
-                <span className="font-semibold text-navy-900">GETTING-STARTED.md §5</span>.
+              <p className="mt-1 text-[12.5px] leading-relaxed text-muted">
+                Both are asked at the same time and the fares below are merged, cheapest first, each labelled with
+                the supplier that quoted it.
               </p>
             </div>
           )}
         </div>
       </Section>
 
-      {/* ------------------------------------------------------ live result */}
-      {live && (
+      {/* --------------------------------------------------- merged live fares */}
+      {searched && anyConfigured && (
         <Section tone="white" className="!pt-0">
           <SectionTitle
-            kicker="Live GDS"
-            title={live.upstreamOk ? `Travelport responded in ${live.elapsedMs}ms` : 'Travelport did not return fares'}
-            sub={live.endpointHost ? `Endpoint ${live.endpointHost}` : undefined}
+            kicker="Live fares"
+            title={offers.length ? `${offers.length} fares from ${suppliers.filter((s) => s.offerCount > 0).map((s) => SUPPLIER_LABEL[s.supplier]).join(' and ')}` : 'No live fares for this route'}
+            sub={offers.length ? 'Cheapest first, across both suppliers.' : undefined}
           />
-          {live.fault ? (
-            <div className="rounded-xl2 border-l-[3px] border-amber-700 bg-amber-700/5 px-5 py-4">
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="chip border-amber-700/30 bg-amber-700/10 text-amber-700">
-                  Travelport fault {live.fault.code ?? ''}
-                </span>
-                <span className="tnum text-[12px] text-muted">HTTP {live.upstreamStatus}</span>
-              </div>
-              {live.fault.faultString && (
-                <p className="mt-3 text-[13.5px] font-semibold text-navy-900">{live.fault.faultString}</p>
-              )}
-              {live.fault.diagnosis && (
-                <p className="mt-2 text-[12.5px] leading-relaxed text-ink">{live.fault.diagnosis}</p>
-              )}
-              <p className="mt-3 text-[12.5px] leading-relaxed text-muted">
-                The request itself is correct — it reached Travelport, was accepted as well-formed SOAP, and came
-                back with a fault rather than a transport error. Nothing on this side needs changing.
-              </p>
-            </div>
-          ) : live.error ? (
-            <div className="rounded-xl2 border-l-[3px] border-amber-700 bg-amber-700/5 px-5 py-4">
-              <p className="text-[13.5px] font-semibold text-amber-700">{live.error}</p>
-              <p className="mt-2 text-[12.5px] leading-relaxed text-muted">
-                The call left this machine and failed. Usual causes: the path in{' '}
-                <code className="rounded bg-panel px-1.5 py-0.5">GDS_SEARCH_PATH</code> is wrong for your Travelport
-                product, or your public IP is not whitelisted with Travelport.
-              </p>
-            </div>
-          ) : offers.length > 0 ? (
-            <>
-              <div className="grid gap-3">
-                {offers.slice(0, 12).map((o) => (
-                  <div key={o.key} className="card flex flex-wrap items-center justify-between gap-4 p-4">
-                    <div className="min-w-0 flex-1">
-                      {o.segments.map((s, i) => (
-                        <div key={i} className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-                          <span className="tnum text-[15px] font-bold text-navy-900">
-                            {s.carrier} {s.flightNumber}
-                          </span>
-                          <span className="tnum text-[14px] text-ink">
-                            {s.origin} {s.departure.slice(11, 16)} → {s.destination} {s.arrival.slice(11, 16)}
-                          </span>
-                          <span className="tnum text-[12px] text-muted">
-                            {Math.floor(s.minutes / 60)}h {s.minutes % 60}m
-                          </span>
-                          <span className="tnum text-[11.5px] text-muted">{s.departure.slice(0, 10)}</span>
-                        </div>
-                      ))}
-                      <div className="mt-1.5 flex flex-wrap gap-2">
-                        <Chip tone="navy">{o.cabin} · {o.bookingCode}</Chip>
-                        {o.refundable && <Chip tone="teal">Refundable</Chip>}
-                        {o.platingCarrier && <Chip tone="muted">Plating {o.platingCarrier}</Chip>}
-                      </div>
+          {offers.length > 0 ? (
+            <div className="grid gap-3">
+              {offers.slice(0, 20).map((o) => (
+                <div key={o.sig} className="card flex flex-wrap items-center justify-between gap-4 p-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="mb-1.5 flex flex-wrap gap-2">
+                      <Chip tone={o.supplier === 'travelport' ? 'navy' : 'teal'}>{SUPPLIER_LABEL[o.supplier]}</Chip>
+                      {o.stops === 0 ? <Chip tone="muted">Direct</Chip> : <Chip tone="muted">{o.stops} stop{o.stops > 1 ? 's' : ''}</Chip>}
+                      {o.cabin && <Chip tone="muted">{o.cabin}{o.bookingCode ? ` · ${o.bookingCode}` : ''}</Chip>}
+                      {o.refundable && <Chip tone="teal">Refundable</Chip>}
                     </div>
-                    <div className="shrink-0 text-right">
-                      <div className="tnum text-[22px] font-bold text-navy-900">
-                        ৳{o.amount.toLocaleString('en-IN')}
+                    {o.segments.map((sg, i) => (
+                      <div key={i} className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+                        <span className="tnum text-[15px] font-bold text-navy-900">
+                          {sg.carrier} {sg.flightNumber}
+                        </span>
+                        <span className="tnum text-[14px] text-ink">
+                          {sg.origin} {sg.departure.slice(11, 16)} → {sg.destination} {sg.arrival.slice(11, 16)}
+                        </span>
+                        <span className="tnum text-[12px] text-muted">
+                          {Math.floor(sg.minutes / 60)}h {sg.minutes % 60}m
+                        </span>
                       </div>
-                      <div className="tnum text-[11.5px] text-muted">
-                        base {o.basePrice} · tax {o.taxes}
-                      </div>
-                      {o.latestTicketing && (
-                        <div className="tnum mt-0.5 text-[11px] text-amber-700">
-                          ticket by {o.latestTicketing.slice(0, 10)}
-                        </div>
-                      )}
-                      <Link
-                        href={`/portal/book?from=${encodeURIComponent(code(searchParams.from ?? ''))}&to=${encodeURIComponent(code(searchParams.to ?? ''))}&date=${encodeURIComponent(searchParams.depart ?? '')}&sig=${encodeURIComponent(o.sig)}`}
-                        className="mt-2.5 inline-block rounded-lg bg-teal-600 px-5 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-teal-700"
-                      >
-                        Select
-                      </Link>
-                    </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-              <p className="mt-4 text-[12px] leading-relaxed text-muted">
-                {offers.length} priced itineraries returned by Travelport uAPI, cheapest first. These are live
-                sandbox fares — real availability, sandbox inventory.
-              </p>
-            </>
+                  <div className="shrink-0 text-right">
+                    <div className="tnum text-[22px] font-bold text-navy-900">
+                      ৳{o.amount.toLocaleString('en-IN')}
+                    </div>
+                    <div className="tnum text-[11.5px] text-muted">base {o.baseLabel} · tax {o.taxLabel}</div>
+                    {o.latestTicketing && (
+                      <div className="tnum mt-0.5 text-[11px] text-amber-700">
+                        ticket by {o.latestTicketing.slice(0, 10)}
+                      </div>
+                    )}
+                    <Link
+                      href={`/portal/book?from=${encodeURIComponent(code(searchParams.from ?? ''))}&to=${encodeURIComponent(code(searchParams.to ?? ''))}&date=${encodeURIComponent(searchParams.depart ?? '')}&sig=${encodeURIComponent(o.sig)}`}
+                      className="mt-2.5 inline-block rounded-lg bg-teal-600 px-5 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-teal-700"
+                    >
+                      Select
+                    </Link>
+                  </div>
+                </div>
+              ))}
+            </div>
           ) : (
-            <>
-              <pre className="max-h-[460px] overflow-auto rounded-xl2 bg-navy-950 p-5 text-[12px] leading-relaxed text-teal-300">
-                {typeof live.data === 'string' ? live.data : JSON.stringify(live.data, null, 2)}
-              </pre>
-              <p className="mt-3 text-[12px] leading-relaxed text-muted">
-                Travelport answered but no priced itinerary could be read out of the response — raw body shown so you
-                can see exactly what came back.
-              </p>
-            </>
+            <p className="text-[13px] leading-relaxed text-muted">
+              Neither supplier returned a priced itinerary for this route and date. The status panels above say what
+              each of them answered.
+            </p>
           )}
         </Section>
       )}
 
       {/* ----------------------------------------------------- sample fares */}
-      <Section tone="surface" className={live ? '' : '!pt-0'}>
+      <Section tone="surface" className={searched ? '' : '!pt-0'}>
         <div className="mb-7">
           <SectionTitle
             title={searched ? `Sample fares to “${searchParams.to}”` : 'All sample routes'}

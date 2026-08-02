@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { BookingForm } from '@/components/portal/BookingForm';
 import { Chip, Section, SectionTitle } from '@/components/portal/ui';
-import { parseLowFareSearch, searchConfigStatus, searchFlights } from '@/lib/gds';
+import { SUPPLIER_LABEL, repriceOffer } from '@/lib/offers';
 
 export const dynamic = 'force-dynamic';
 
@@ -15,9 +15,9 @@ export default async function BookPage({
   const date = searchParams.date ?? '';
   const sig = searchParams.sig ?? '';
 
-  const gds = searchConfigStatus();
-  const live = gds.configured && from && to ? await searchFlights({ from, to, date, adults: '1' }) : null;
-  const offer = live && !live.fault ? parseLowFareSearch(live.data).find((o) => o.sig === sig) : undefined;
+  const priced = from && to && sig ? await repriceOffer(sig, { from, to, date, adults: '1' }) : null;
+  const offer = priced && priced.ok ? priced.offer : undefined;
+  const problem = priced && !priced.ok ? priced.reason : null;
 
   const notice = (title: string, body: string) => (
     <Section tone="surface">
@@ -45,14 +45,12 @@ export default async function BookPage({
         </div>
       </section>
 
-      {!gds.configured
-        ? notice('The GDS is not connected', 'Bookings need a live fare, and no Travelport credentials are configured on this machine. Set the GDS block in .env and restart.')
-        : !offer
-          ? notice(
-              'That fare is no longer available',
-              'GDS fares expire, and this one has gone or the link was incomplete. Run the search again and pick a current fare — nothing has been charged or held.'
-            )
-          : (
+      {!offer
+        ? notice(
+            'That fare could not be confirmed',
+            problem ?? 'The link was incomplete. Run the search again and pick a current fare — nothing has been charged or held.'
+          )
+        : (
             <Section tone="surface">
               <div className="grid gap-8 lg:grid-cols-[1fr_360px]">
                 <div>
@@ -81,16 +79,17 @@ export default async function BookPage({
                     </div>
 
                     <div className="mt-5 flex flex-wrap gap-2">
-                      <Chip tone="navy">{offer.cabin} · {offer.bookingCode}</Chip>
+                      <Chip tone={offer.supplier === 'travelport' ? 'navy' : 'teal'}>{SUPPLIER_LABEL[offer.supplier]}</Chip>
+                      {offer.cabin && <Chip tone="muted">{offer.cabin}{offer.bookingCode ? ` · ${offer.bookingCode}` : ''}</Chip>}
                       {offer.refundable && <Chip tone="teal">Refundable</Chip>}
                     </div>
 
                     <div className="mt-5 space-y-1.5 border-t border-hair pt-4 text-[13px]">
-                      <div className="flex justify-between"><span className="text-muted">Base fare</span><span className="tnum font-semibold">{offer.basePrice}</span></div>
-                      <div className="flex justify-between"><span className="text-muted">Taxes</span><span className="tnum font-semibold">{offer.taxes}</span></div>
+                      <div className="flex justify-between"><span className="text-muted">Base fare</span><span className="tnum font-semibold">{offer.baseLabel}</span></div>
+                      <div className="flex justify-between"><span className="text-muted">Taxes</span><span className="tnum font-semibold">{offer.taxLabel}</span></div>
                       <div className="flex justify-between border-t border-hair pt-2 text-[15px]">
                         <span className="font-bold text-navy-900">Per passenger</span>
-                        <span className="tnum font-bold text-navy-900">{offer.totalPrice}</span>
+                        <span className="tnum font-bold text-navy-900">{offer.currency} {offer.amount.toLocaleString('en-IN')}</span>
                       </div>
                     </div>
 
@@ -100,7 +99,8 @@ export default async function BookPage({
                       </p>
                     )}
                     <p className="mt-3 text-[11.5px] leading-relaxed text-muted">
-                      Live Travelport fare, re-priced when you confirm.
+                      Live {SUPPLIER_LABEL[offer.supplier]} fare, re-priced against {SUPPLIER_LABEL[offer.supplier]}
+                      when you confirm.
                     </p>
                   </div>
                 </aside>

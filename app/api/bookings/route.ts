@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createBooking, type Passenger } from '@/lib/bookings';
-import { parseLowFareSearch, searchFlights } from '@/lib/gds';
+import { repriceOffer } from '@/lib/offers';
 
 /**
  * Takes a booking against a live Travelport fare.
@@ -56,25 +56,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ ok: false, error: 'At least one passenger with a first and last name is required.' }, { status: 422 });
   }
 
-  // re-price against the GDS — never trust a price from the browser
-  const live = await searchFlights({ from, to, date, adults: String(passengers.length) });
-  if (!live.configured) {
-    return NextResponse.json({ ok: false, error: 'The GDS is not configured, so no booking can be taken.' }, { status: 503 });
+  // Re-price against the supplier that quoted it — never trust a browser price.
+  const priced = await repriceOffer(sig, { from, to, date, adults: String(passengers.length) });
+  if (!priced.ok) {
+    return NextResponse.json({ ok: false, error: priced.reason }, { status: priced.status });
   }
-  if (live.fault || !live.upstreamOk) {
-    return NextResponse.json(
-      { ok: false, error: `Travelport did not return fares: ${live.fault?.faultString ?? live.error ?? 'unknown'}` },
-      { status: 502 }
-    );
-  }
-
-  const offer = parseLowFareSearch(live.data).find((o) => o.sig === sig);
-  if (!offer) {
-    return NextResponse.json(
-      { ok: false, error: 'That fare is no longer available. Search again and pick a current one.' },
-      { status: 409 }
-    );
-  }
+  const offer = priced.offer;
 
   const serviceCharge = Math.max(0, Math.min(50000, Number(body.serviceCharge) || 0));
   const booking = await createBooking({ offer, contact, passengers, serviceCharge });
