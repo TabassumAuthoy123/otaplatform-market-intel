@@ -11,6 +11,23 @@ import path from 'node:path';
 
 export type Link = { label: string; href: string };
 
+/**
+ * A header menu entry.
+ *
+ * `enabled` is optional and defaults to true, so every menu written before this
+ * existed keeps showing. Switching one off has to remove it from the desktop
+ * bar, the mobile strip AND the mega panel — a link that survives in one of the
+ * three is still a link a customer can click, and "disabled" would be a lie.
+ *
+ * `groups` turns the entry into a mega menu: columns of related links that open
+ * underneath the bar. An entry with no groups stays an ordinary link, which is
+ * what most of them should be — a mega panel on a five-item menu is decoration.
+ */
+export type NavItem = Link & {
+  enabled?: boolean;
+  groups?: { title: string; links: (Link & { note?: string; enabled?: boolean })[] }[];
+};
+
 export type Route = {
   from: string; fromCode: string; to: string; toCode: string;
   airline: string; priceFrom: number; tag: string; duration: string; stops: string;
@@ -40,7 +57,7 @@ export type SiteContent = {
     hotline: string; email: string; address: string; productSite: string;
   };
   announcement: { enabled: boolean; text: string; linkLab?: string; linkHref?: string };
-  nav: Link[];
+  nav: NavItem[];
   hero: {
     kicker: string; title: string; subtitle: string;
     primaryCta: Link; secondaryCta: Link;
@@ -84,6 +101,25 @@ export async function getContent(): Promise<SiteContent> {
 /** 62,500 -> "৳62,500" */
 export function bdt(n: number): string {
   return '৳' + n.toLocaleString('en-IN');
+}
+
+/**
+ * The menu as a customer should see it.
+ *
+ * Filtering happens here rather than in the header so the desktop bar, the
+ * mobile strip and the mega panels cannot disagree about what is switched off.
+ * An entry whose every child is disabled loses its panel and falls back to
+ * being a plain link, because an empty dropdown looks broken.
+ */
+export function visibleNav(c: SiteContent): NavItem[] {
+  return (c.nav ?? [])
+    .filter((n) => n.enabled !== false)
+    .map((n) => {
+      const groups = (n.groups ?? [])
+        .map((g) => ({ ...g, links: g.links.filter((l) => l.enabled !== false) }))
+        .filter((g) => g.links.length > 0);
+      return groups.length ? { ...n, groups } : { ...n, groups: undefined };
+    });
 }
 
 /** Is a storefront section switched on? Unknown keys default to visible. */

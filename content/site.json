@@ -24,27 +24,171 @@
   "nav": [
     {
       "label": "Flights",
-      "href": "/portal/flights"
+      "href": "/portal/flights",
+      "enabled": true,
+      "groups": [
+        {
+          "title": "Search & book",
+          "links": [
+            {
+              "label": "All routes",
+              "href": "/portal/flights",
+              "note": "Live Sabre and Travelport fares",
+              "enabled": true
+            },
+            {
+              "label": "Dhaka departures",
+              "href": "/portal/flights?from=DAC",
+              "note": "Everything leaving DAC",
+              "enabled": true
+            },
+            {
+              "label": "Group bookings",
+              "href": "/portal/contact",
+              "note": "Ten passengers or more",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "title": "Popular destinations",
+          "links": [
+            {
+              "label": "Dubai",
+              "href": "/portal/flights?from=DAC&to=DXB",
+              "note": "",
+              "enabled": true
+            },
+            {
+              "label": "Jeddah",
+              "href": "/portal/flights?from=DAC&to=JED",
+              "note": "",
+              "enabled": true
+            },
+            {
+              "label": "Kuala Lumpur",
+              "href": "/portal/flights?from=DAC&to=KUL",
+              "note": "",
+              "enabled": true
+            },
+            {
+              "label": "Singapore",
+              "href": "/portal/flights?from=DAC&to=SIN",
+              "note": "",
+              "enabled": true
+            }
+          ]
+        }
+      ]
     },
     {
       "label": "Hajj & Umrah",
-      "href": "/portal/packages"
+      "href": "/portal/packages",
+      "enabled": true,
+      "groups": [
+        {
+          "title": "Packages",
+          "links": [
+            {
+              "label": "All packages",
+              "href": "/portal/packages",
+              "note": "Hajj, Umrah and tours",
+              "enabled": true
+            },
+            {
+              "label": "Umrah",
+              "href": "/portal/packages",
+              "note": "Year-round departures",
+              "enabled": true
+            },
+            {
+              "label": "Hajj",
+              "href": "/portal/packages",
+              "note": "Government-licensed operators only",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "title": "Before you go",
+          "links": [
+            {
+              "label": "Visa processing",
+              "href": "/portal/visa",
+              "note": "",
+              "enabled": true
+            },
+            {
+              "label": "Makkah & Madinah hotels",
+              "href": "/portal/hotels",
+              "note": "",
+              "enabled": true
+            },
+            {
+              "label": "Talk to us",
+              "href": "/portal/contact",
+              "note": "",
+              "enabled": true
+            }
+          ]
+        }
+      ]
     },
     {
       "label": "Hotels",
-      "href": "/portal/hotels"
+      "href": "/portal/hotels",
+      "enabled": true
     },
     {
       "label": "Visa",
-      "href": "/portal/visa"
+      "href": "/portal/visa",
+      "enabled": true
     },
     {
       "label": "For Agents",
-      "href": "/portal/agents"
+      "href": "/portal/agents",
+      "enabled": true,
+      "groups": [
+        {
+          "title": "Partner with us",
+          "links": [
+            {
+              "label": "Agent tiers and pricing",
+              "href": "/portal/agents",
+              "note": "Starter to Hajj operator",
+              "enabled": true
+            },
+            {
+              "label": "Request a demo",
+              "href": "/portal/contact",
+              "note": "We call back the same day",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "title": "What you get",
+          "links": [
+            {
+              "label": "Two live GDS",
+              "href": "/portal/flights",
+              "note": "Sabre and Travelport, one search",
+              "enabled": true
+            },
+            {
+              "label": "Your own storefront",
+              "href": "/portal",
+              "note": "Branded, on your domain",
+              "enabled": true
+            }
+          ]
+        }
+      ]
     },
     {
       "label": "About",
-      "href": "/portal/about"
+      "href": "/portal/about",
+      "enabled": true
     }
   ],
   "hero": {

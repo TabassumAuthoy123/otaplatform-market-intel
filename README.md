@@ -120,20 +120,44 @@ agency added: the same booking reports 1,500, which is the service charge and
 nothing else. A fictional margin does not stay on one screen; it flows into the
 P&L, the margin-by-service report and every commission figure built on them.
 
-**Bookings are held, not ticketed** — and this is an account entitlement
-problem, not a code problem. Both suppliers refuse to create a PNR on the
-credentials we hold:
+### Ticketing — built, and refused
+
+`lib/ticketing.ts` creates the PNR, issues the ticket, voids it and refunds it,
+on either supplier. It is real code that runs against the real endpoints, and
+`/accounts/gds` executes it on every page load so the status below can never go
+stale.
+
+Both suppliers refuse, and the refusals are the point:
 
 | | Call | Answer |
 |---|---|---|
-| Travelport | `AirCreateReservationReq` | uAPI **1201** — element not routable |
-| Sabre | `POST /v2.5.0/passenger/records` | **ERR.2SG.SEC.NOT_AUTHORIZED** |
+| Travelport | `AirCreateReservationReq` on `/uAPI/AirService` | uAPI **8236** — *"No provider/supplier is configured for this user for the requested transaction"* |
+| Sabre | `POST /v2.5.0/passenger/records` | HTTP 403 **ERR.2SG.SEC.NOT_AUTHORIZED** — *"Authorization failed due to no access privileges"* |
 
-Search and revalidate work on both. No payload will issue a ticket until Sabre
-switches on booking for PCC `S00L` and Travelport makes `AirCreateReservationReq`
-routable for PCC `3BX8` / branch `P7251392`. Production credentials are empty in
-both database tables. Every confirmation screen says the booking is held. Never
-tell a passenger they are ticketed until that step exists.
+8236 is the useful one: it can only be reached by a request that has already
+parsed, routed and validated. The payload is right; the account has no booking
+provider. Sabre's 403 comes back on the same credentials search uses all day,
+which is what makes it entitlement rather than authentication.
+
+To unblock: **Travelport** must enable a booking provider for PCC `3BX8` on
+branch `P7251392`; **Sabre** must enable booking and ticketing on PCC `S00L`.
+Both are still certification credentials — production credentials are empty in
+both database tables.
+
+Three things this cost, worth knowing before touching that file:
+
+- `AirCreateReservationReq` goes to **AirService**, not UniversalRecordService.
+  The latter answers a Tomcat 404 page for it; the former validates it properly.
+- uAPI rejects `AuthorizedBy="OTA Platform"` outright — *"may only contain
+  letters and numbers"* — and reports it as **1005 Unable to parse XML stream**.
+  Read as a refusal that looks like the booking block. The raw fault is kept on
+  every result for exactly this reason.
+- The first version grew its own copy of Sabre's auth and invented two
+  environment variables that do not exist, so it 401'd on working credentials.
+  `lib/sabre.ts` owns the handshake; ticketing calls into it.
+
+Every confirmation screen says the booking is held. Never tell a passenger they
+are ticketed until entitlement is granted.
 
 ---
 
@@ -181,6 +205,7 @@ is missing, **config only** means the settings exist but nothing sends.
 | 11 | Email, SMS and WhatsApp settings | config only | see below |
 | 12 | Six user roles | built and **enforced at the route** | `admin/roles.js` |
 | + | Booking management, PNR tracking, supplier cost vs selling price, gross profit per booking | built | `/accounts/reports`, `/portal/book` |
+| + | Ticketing, void and refund calls | built; **refused on GDS entitlement**, proved live | `lib/ticketing.ts`, `/accounts/gds` |
 | + | Partial payments, VAT support, automatic numbering | built | throughout |
 | + | **Multi-currency** | built | any invoice or bill can name a currency and a rate |
 | + | **Audit log** | built | admin → Audit log |
@@ -246,6 +271,25 @@ one stops, the page says so rather than hiding it.
 it walks every account day by day, finds its worst moment and raises the opening
 balance so that moment clears a floor. Opening balances sit on the equity side,
 so the trial balance does not move.
+
+---
+
+## Verifying it rather than believing it
+
+```bash
+node scripts/verify-srs.mjs
+```
+
+Seventy checks against the running app: each one loads the page and looks for
+the feature the specification asks for, or reads the book and tests that an
+identity holds. It is there because "it is all done" is not a claim anybody
+should accept on trust, including from me. It currently reports **70 passed, 0
+failed**, and it fails loudly if a page stops carrying what it claims.
+
+Four of those checks are integrity rather than presence: both trial balances
+must be zero, the control accounts must agree with the journal, the balance
+sheet must balance, and no cash or bank account may ever go negative on any date
+in the book.
 
 ---
 

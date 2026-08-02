@@ -82,7 +82,7 @@ function basicHeader(user: string, pass: string): string {
  */
 let cached: { token: string; expiresAt: number } | null = null;
 
-async function getToken(baseUrl: string, user: string, pass: string, timeoutMs: number): Promise<
+export async function getToken(baseUrl: string, user: string, pass: string, timeoutMs: number): Promise<
   { ok: true; token: string } | { ok: false; status?: number; body?: unknown; error?: string }
 > {
   if (cached && cached.expiresAt > Date.now()) return { ok: true, token: cached.token };

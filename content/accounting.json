@@ -23,7 +23,7 @@
     "paymentPrefix": "SFT-PAY-",
     "expensePrefix": "SFT-EXP-",
     "creditNotePrefix": "SFT-CRN-",
-    "openingCash": 900000,
+    "openingCash": 1200000,
     "financialYearStart": "2026-07-01",
     "transferPrefix": "SFT-TRF-",
     "supplierCreditPrefix": "SFT-SCN-",
@@ -290,7 +290,7 @@
       "name": "Dutch-Bangla Bank — Current",
       "accountNo": "101-110-45231",
       "branch": "Gulshan",
-      "openingBalance": 16000000
+      "openingBalance": 16300000
     },
     {
       "id": "BNK-002",
@@ -3359,7 +3359,7 @@
       "invoiceId": "INV-0001",
       "method": "cash",
       "bankId": null,
-      "amount": 101200,
+      "amount": 60720,
       "ref": ""
     },
     {
@@ -3370,7 +3370,7 @@
       "invoiceId": "INV-0002",
       "method": "bank_transfer",
       "bankId": "BNK-001",
-      "amount": 123300,
+      "amount": 73980,
       "ref": ""
     },
     {
@@ -3381,7 +3381,7 @@
       "invoiceId": "INV-0003",
       "method": "bank_transfer",
       "bankId": "BNK-001",
-      "amount": 916000,
+      "amount": 549600,
       "ref": ""
     },
     {
@@ -3403,7 +3403,7 @@
       "invoiceId": "INV-0005",
       "method": "cash",
       "bankId": null,
-      "amount": 148800,
+      "amount": 89280,
       "ref": ""
     },
     {
@@ -3414,7 +3414,7 @@
       "invoiceId": "INV-0006",
       "method": "mfs",
       "bankId": "BNK-003",
-      "amount": 132400,
+      "amount": 72820,
       "ref": ""
     },
     {
@@ -3425,7 +3425,7 @@
       "invoiceId": "INV-0007",
       "method": "cash",
       "bankId": null,
-      "amount": 714000,
+      "amount": 392700,
       "ref": ""
     },
     {
@@ -4527,6 +4527,50 @@
       "bankId": "BNK-003",
       "amount": 125700,
       "ref": ""
+    },
+    {
+      "id": "RCP-0108",
+      "no": "SFT-RCP-0108",
+      "date": "2026-06-18",
+      "customerId": "CUS-004",
+      "invoiceId": "INV-0001",
+      "method": "cash",
+      "bankId": null,
+      "amount": 40480,
+      "ref": "Second instalment against SFT-INV-0001"
+    },
+    {
+      "id": "RCP-0109",
+      "no": "SFT-RCP-0109",
+      "date": "2026-06-18",
+      "customerId": "CUS-005",
+      "invoiceId": "INV-0002",
+      "method": "bank_transfer",
+      "bankId": "BNK-001",
+      "amount": 49320,
+      "ref": "Second instalment against SFT-INV-0002"
+    },
+    {
+      "id": "RCP-0110",
+      "no": "SFT-RCP-0110",
+      "date": "2026-06-19",
+      "customerId": "CUS-003",
+      "invoiceId": "INV-0003",
+      "method": "mfs",
+      "bankId": "BNK-003",
+      "amount": 366400,
+      "ref": "Second instalment against SFT-INV-0003"
+    },
+    {
+      "id": "RCP-0111",
+      "no": "SFT-RCP-0111",
+      "date": "2026-06-20",
+      "customerId": "CUS-005",
+      "invoiceId": "INV-0005",
+      "method": "card",
+      "bankId": "BNK-002",
+      "amount": 59520,
+      "ref": "Second instalment against SFT-INV-0005"
     }
   ],
   "bills": [
@@ -8613,7 +8657,7 @@
     {
       "id": "TRF-0001",
       "no": "SFT-TRF-0001",
-      "date": "2026-06-25",
+      "date": "2026-06-23",
       "direction": "deposit",
       "bankId": "BNK-001",
       "amount": 850000,
@@ -8633,7 +8677,7 @@
     {
       "id": "TRF-0003",
       "no": "SFT-TRF-0003",
-      "date": "2026-07-07",
+      "date": "2026-07-06",
       "direction": "deposit",
       "bankId": "BNK-003",
       "amount": 420000,
@@ -8643,7 +8687,7 @@
     {
       "id": "TRF-0004",
       "no": "SFT-TRF-0004",
-      "date": "2026-07-11",
+      "date": "2026-07-10",
       "direction": "deposit",
       "bankId": "BNK-001",
       "amount": 1100000,
@@ -8663,7 +8707,7 @@
     {
       "id": "TRF-0006",
       "no": "SFT-TRF-0006",
-      "date": "2026-07-20",
+      "date": "2026-07-19",
       "direction": "deposit",
       "bankId": "BNK-001",
       "amount": 700000,
@@ -9070,7 +9114,7 @@
       "name": "Euro",
       "code": "EUR",
       "symbol": "€",
-      "rateToBase": 132.0,
+      "rateToBase": 132,
       "isBase": 0
     },
     {
@@ -9078,7 +9122,7 @@
       "name": "Pound Sterling",
       "code": "GBP",
       "symbol": "£",
-      "rateToBase": 155.0,
+      "rateToBase": 155,
       "isBase": 0
     },
     {

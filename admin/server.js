@@ -1615,6 +1615,83 @@ function previewPane(session, device) {
     </div>`;
 }
 
+/**
+ * Show and hide header menu entries, including the columns inside a mega menu.
+ *
+ * A toggle here removes the entry from the desktop bar, the mega panel and the
+ * mobile strip at once, because the storefront filters the menu in one place
+ * before rendering any of the three. Half-disabling a link is worse than not
+ * offering the switch.
+ *
+ * A mega entry whose children are all switched off stops being a dropdown and
+ * goes back to being an ordinary link — an empty panel reads as broken.
+ */
+function menuManager(session, content) {
+  const nav = content.nav || [];
+  const toggle = (name, on) => `
+    <label style="position:relative;display:inline-block;width:46px;height:26px;flex:none;cursor:pointer">
+      <input type="checkbox" name="${esc(name)}" ${on ? 'checked' : ''}
+        style="opacity:0;width:0;height:0;position:absolute" onchange="this.form.requestSubmit()">
+      <span style="position:absolute;inset:0;border-radius:26px;transition:.2s;background:${on ? 'var(--teal)' : '#CBD5DD'}"></span>
+      <span style="position:absolute;top:3px;left:${on ? '23px' : '3px'};width:20px;height:20px;border-radius:50%;background:#fff;transition:.2s"></span>
+    </label>`;
+
+  const rows = nav.map((item, i) => {
+    const on = item.enabled !== false;
+    const groups = item.groups || [];
+    const liveChildren = groups.reduce((t, g) => t + g.links.filter((l) => l.enabled !== false).length, 0);
+    const kind = groups.length
+      ? `<span style="display:inline-block;padding:1px 7px;border-radius:999px;font-size:10.5px;font-weight:600;background:var(--panel);color:var(--navy)">MEGA · ${liveChildren} of ${groups.reduce((t, g) => t + g.links.length, 0)} links</span>`
+      : `<span style="font-size:11px;color:var(--muted)">plain link</span>`;
+
+    const children = groups.map((g, gi) => `
+      <div style="margin-top:10px">
+        <div style="font-size:10.5px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--muted)">${esc(g.title)}</div>
+        ${g.links.map((l, li) => `
+          <div style="display:flex;align-items:center;gap:12px;padding:6px 0 6px 2px">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:12.5px;color:var(--navy)">${esc(l.label)}</div>
+              <div style="font-size:11px;color:var(--muted)">${esc(l.href)}${l.note ? ' · ' + esc(l.note) : ''}</div>
+            </div>
+            ${toggle(`navlink_${i}_${gi}_${li}`, l.enabled !== false)}
+          </div>`).join('')}
+      </div>`).join('');
+
+    return `
+      <div style="padding:14px 18px;${i ? 'border-top:1px solid var(--hair)' : ''};${on ? '' : 'opacity:.55'}">
+        <div style="display:flex;align-items:center;gap:16px">
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13.5px;font-weight:600;color:var(--navy)">${esc(item.label)} ${kind}</div>
+            <div style="font-size:12px;color:var(--muted);margin-top:1px">${esc(item.href)}</div>
+          </div>
+          ${toggle(`nav_${i}`, on)}
+        </div>
+        ${groups.length ? `<div style="margin-left:2px;padding-left:14px;border-left:2px solid var(--hair)">${children}</div>` : ''}
+      </div>`;
+  }).join('');
+
+  return `
+    <form method="post" action="/design/menu" style="margin-top:18px">
+      <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:14px 18px;border-bottom:1px solid var(--hair)">
+          <h2 style="margin:0;font-size:14px;color:var(--navy)">Header menu &amp; mega menu — show / hide</h2>
+          <p style="margin:3px 0 0;font-size:12px;color:var(--muted)">
+            Switching an entry off removes it from the desktop bar, the mega panel and the mobile strip together.
+            Labels, links and mega-menu columns are edited under <a href="/edit/nav">Navigation</a>.
+          </p>
+        </div>
+        ${rows || '<p class="empty" style="padding:18px">No menu entries yet.</p>'}
+        <div class="bar" style="padding:14px 18px">
+          <button class="primary" type="submit">Save menu</button>
+          <span style="margin-left:auto;font-size:12px;color:var(--muted)">
+            ${nav.filter((x) => x.enabled !== false).length} of ${nav.length} entries visible
+          </span>
+        </div>
+      </div>
+    </form>`;
+}
+
 function designView(session, content, tab, device, flash) {
   const theme = content.theme || {};
   const sections = (content.sections && content.sections.items) || [];
@@ -1665,7 +1742,9 @@ function designView(session, content, tab, device, flash) {
           </span>
         </div>
       </div>
-    </form>`;
+    </form>
+
+    ${menuManager(session, content)}`;
 
   const themeBody = `
     <form method="post" action="/design/theme">
@@ -3100,6 +3179,29 @@ const server = http.createServer(async (req, res) => {
       for (const item of items) item.enabled = `on_${item.key}` in form;
       stampMeta(content, session);
       await writeJsonAtomic(SITE_FILE, content);
+      return redirect(res, '/design?tab=sections&saved=1');
+    }
+
+    if (pathname === '/design/menu' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const content = readJson(SITE_FILE, {});
+      const nav = content.nav || [];
+      // an unchecked box is simply absent from the body, same as the sections form
+      nav.forEach((item, i) => {
+        item.enabled = `nav_${i}` in form;
+        (item.groups || []).forEach((g, gi) => {
+          g.links.forEach((l, li) => {
+            l.enabled = `navlink_${i}_${gi}_${li}` in form;
+          });
+        });
+      });
+      stampMeta(content, session);
+      await writeJsonAtomic(SITE_FILE, content);
+      await audit(session, 'update', {
+        collection: 'nav', id: 'header-menu',
+        summary: `${nav.filter((x) => x.enabled !== false).length} of ${nav.length} menu entries visible`
+      });
       return redirect(res, '/design?tab=sections&saved=1');
     }
 

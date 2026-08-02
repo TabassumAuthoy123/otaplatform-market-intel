@@ -1,4 +1,5 @@
 import { PnrCheck } from '@/components/accounts/PnrCheck';
+import { TicketingPanel } from '@/components/accounts/TicketingPanel';
 import { PageHead, Panel } from '@/components/accounts/ui';
 import { getBook } from '@/lib/accounting';
 
@@ -31,6 +32,8 @@ export default async function GdsPage() {
         title="PNR live check"
         sub="Type a record locator. The book half always answers. The GDS half only answers once credentials are in the environment."
       />
+
+      <TicketingPanel />
 
       <div
         className={`rounded-lg border-l-[3px] px-5 py-4 ${
