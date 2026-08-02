@@ -1,7 +1,8 @@
 // ============================================================================
 //  OTA Platform — Market Intelligence  ·  PRISMA SCHEMA
 //  Provider: MySQL 8 (same engine as the OTAPlatform production stack)
-//  Mirrors data/schema.ts exactly. Run:  npx prisma migrate dev --name init
+//  Mirrors data/schema.ts exactly. Needs Prisma 7+ and prisma.config.ts.
+//  Run:  npx prisma migrate dev --name init
 // ============================================================================
 
 generator client {
@@ -10,7 +11,7 @@ generator client {
 
 datasource db {
   provider = "mysql"
-  url      = env("DATABASE_URL")
+  // The connection URL lives in prisma.config.ts — Prisma 7 rejects `url` here.
 }
 
 // ---------------------------------------------------------------- enums ------

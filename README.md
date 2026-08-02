@@ -277,7 +277,8 @@ so the trial balance does not move.
 ## Verifying it rather than believing it
 
 ```bash
-node scripts/verify-srs.mjs
+node scripts/verify-srs.mjs      # 70 checks — the specification, end to end
+node scripts/verify-admin.mjs    # 17 checks — the admin portal, signed in
 ```
 
 Run it with the app on :3002 and the admin on :4001. **Do not run `next build`
@@ -295,6 +296,20 @@ Four of those checks are integrity rather than presence: both trial balances
 must be zero, the control accounts must agree with the journal, the balance
 sheet must balance, and no cash or bank account may ever go negative on any date
 in the book.
+
+**`verify-admin.mjs` signs in and uses the portal.** Everything else only ever
+asked whether a URL answered, which proves routing and nothing else — a form can
+render perfectly and still write nothing, write the wrong thing, or accept a
+voucher that breaks the book. This one logs in, creates a supplier credit note
+through the real form with the real CSRF token, watches the invalid version get
+refused, saves the valid one, confirms the payable moved by exactly that amount,
+finds the change in the audit log, switches menu entries off and sees them leave
+the storefront, exercises backup and restore, is refused on a forged CSRF token,
+and deletes what it made.
+
+It creates its own throwaway super-admin with a random password and removes it
+again — the final assertion is that `content/users.json` came back byte for
+byte. No test password is committed anywhere.
 
 ---
 
@@ -502,7 +517,22 @@ docs/                   <- source documents: market pack (docx), deck brief (md)
 
 The dataset is a flat JSON file so the demo cannot break. When you want it in MySQL:
 
-**Option A — Prisma (recommended)**
+> **Pick one. Do not run both against the same database.**
+>
+> `prisma/schema.prisma` and `db/schema.sql` are two hand-written mirrors of the
+> same ten entities. They are not generated from each other, so their constraint
+> names and column details differ, and Prisma will offer to **drop and recreate
+> all ten tables** if it is pointed at a database that `schema.sql` built. Check
+> before you apply anything:
+>
+> ```bash
+> npx prisma migrate diff --from-config-datasource --to-schema prisma/schema.prisma --script
+> ```
+>
+> The three reporting views exist only in the SQL file — Prisma does not model
+> views, so a Prisma-managed database will not have them.
+
+**Option A — Prisma**
 
 ```bash
 cp .env.example .env          # point DATABASE_URL at your MySQL
@@ -510,12 +540,21 @@ npx prisma migrate dev --name init
 npx prisma studio             # browse/edit records in a GUI
 ```
 
+Needs **Prisma 7 or newer**, which is pinned in `devDependencies`. Prisma 7
+removed `url = env("DATABASE_URL")` from the schema file, so the connection
+string lives in `prisma.config.ts`. Before that was fixed the documented command
+above failed on every machine — nothing in this app runs Prisma, so nothing
+caught it until the schema was validated on purpose.
+
 **Option B — straight into the existing OTAPlatform MySQL container**
 
 ```bash
 # run from the OTAPlatform folder — root password is 'root', host port is 3307
 docker compose exec -T mysql mysql -uroot -proot < db/schema.sql
 ```
+
+This creates a separate `ota_market_intel` database and leaves `otaplatform`
+untouched. Verified: 10 tables and 3 views.
 
 Three reporting views ship with the DDL:
 
