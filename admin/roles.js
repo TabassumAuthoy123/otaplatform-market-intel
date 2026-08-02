@@ -32,6 +32,7 @@ const CAPS = {
   books_sales: 'Create and edit invoices and customer receipts',
   books_purchase: 'Create and edit supplier bills, payments, deposits and inventory',
   books_masters: 'Edit customers, suppliers, services, banks, categories, employees',
+  books_credit: 'Raise credit notes and cancel sales',
   books_delete: 'Delete accounting records',
   leads_read: 'View demo requests from the storefront',
   users: 'Add, edit and remove admin users',
@@ -51,7 +52,7 @@ const ROLES = {
   accountant: {
     label: 'Accountant',
     summary: 'All vouchers, reports and statements. No settings, no user management',
-    caps: ['books_read', 'books_sales', 'books_purchase', 'books_masters', 'books_delete', 'leads_read', 'agencies_read']
+    caps: ['books_read', 'books_sales', 'books_purchase', 'books_masters', 'books_credit', 'books_delete', 'leads_read', 'agencies_read']
   },
   sales_exec: {
     label: 'Sales Executive',
@@ -66,7 +67,7 @@ const ROLES = {
   manager: {
     label: 'Manager',
     summary: 'Read everything, reassign leads, approve cancellations',
-    caps: ['crm_read', 'crm_assign', 'books_read', 'leads_read', 'agencies_read', 'integrations']
+    caps: ['crm_read', 'crm_assign', 'books_read', 'books_credit', 'leads_read', 'agencies_read', 'integrations']
   },
   read_only: {
     label: 'Read Only',
@@ -96,6 +97,15 @@ function can(role, cap) {
  * string.
  */
 const SALES_COLLECTIONS = ['invoices', 'receipts', 'customers'];
+/**
+ * Credit notes are deliberately not a sales capability.
+ *
+ * Reversing a sale destroys revenue and can hand money back, so the person who
+ * raised the invoice should not be the person who cancels it. Accountants and
+ * managers can; a sales executive cannot, which is the separation the Manager
+ * role already promised with "approve cancellations".
+ */
+const CREDIT_COLLECTIONS = ['creditNotes'];
 const PURCHASE_COLLECTIONS = ['bills', 'payments', 'supplierDeposits', 'inventory', 'suppliers'];
 const MASTER_COLLECTIONS = ['services', 'banks', 'expenseCategories', 'employees', 'customers', 'suppliers'];
 
@@ -137,6 +147,7 @@ function requiredCap(pathname, method, col) {
   if (pathname === '/books/delete') return 'books_delete';
   if (pathname === '/books/edit' || pathname === '/books/new') {
     // pick the narrowest capability that covers this collection
+    if (CREDIT_COLLECTIONS.includes(col)) return 'books_credit';
     if (SALES_COLLECTIONS.includes(col)) return 'books_sales';
     if (PURCHASE_COLLECTIONS.includes(col)) return 'books_purchase';
     if (MASTER_COLLECTIONS.includes(col)) return 'books_masters';

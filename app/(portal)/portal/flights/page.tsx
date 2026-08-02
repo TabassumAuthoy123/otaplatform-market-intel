@@ -48,8 +48,8 @@ export default async function FlightsPage({
         <div className="mx-auto max-w-6xl px-5 pb-8 pt-12 sm:px-8">
           <h1 className="text-[28px] font-bold sm:text-[36px]">Flights</h1>
           <p className="mt-3 max-w-2xl text-[14.5px] text-white/70">
-            Sample fares across the routes Bangladeshi travellers fly most. Live availability comes from Sabre,
-            Travelport and Flyhub on the production platform.
+            Sample fares across the routes Bangladeshi travellers fly most. Live availability below comes from Sabre and
+            Travelport.
           </p>
           <div className="mt-8">
             <SearchWidget tabs={c.hero.searchTabs} origins={c.hero.popularFrom} />
@@ -198,8 +198,8 @@ export default async function FlightsPage({
         </div>
 
         <p className="mt-8 max-w-3xl text-[12.5px] leading-relaxed text-muted">
-          These prices are invented for the demo. On the production platform this grid is filled from Sabre,
-          Travelport and Flyhub. Never quote a figure from this page to a customer.{' '}
+          These prices are invented for the demo. On the production platform this grid is filled from the live
+          Sabre and Travelport search above. Never quote a figure from this page to a customer.{' '}
           <Link href="/accounts/gds" className="font-semibold text-teal-700 hover:underline">
             The PNR side of the same connection is on the accounts screen →
           </Link>

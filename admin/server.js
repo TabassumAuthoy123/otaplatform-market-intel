@@ -238,9 +238,32 @@ const LONG_TEXT_KEYS = new Set([
 
 /* --------------------------------------------------------------- form render */
 
-function renderField(pathKey, key, value, boolPaths, numPaths, arrayLinePaths) {
+function renderField(pathKey, key, value, boolPaths, numPaths, arrayLinePaths, enums) {
   const label = key.replace(/^_/, '').replace(/([a-z])([A-Z])/g, '$1 $2');
   const id = pathKey.replace(/[^a-zA-Z0-9]/g, '_');
+
+  /**
+   * Anything with a known set of values gets a dropdown rather than a text box.
+   *
+   * Typing `CUS-004` by hand into a customer field is how a receipt ends up
+   * attached to nobody: the id looks plausible, the form accepts it, and the
+   * error only shows up later as a customer whose ledger does not add up. The
+   * list is built from the book itself, so it cannot offer an id that is not
+   * there.
+   */
+  const choices = enums && enums[key];
+  if (choices && (typeof value === 'string' || value === null)) {
+    const cur = value == null ? '' : String(value);
+    const known = choices.some((o) => o.value === cur);
+    return `
+      <label class="row">
+        <span class="lab">${esc(label)}</span>
+        <select name="${esc(pathKey)}" id="${id}">
+          ${choices.map((o) => `<option value="${esc(o.value)}"${o.value === cur ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}
+          ${known ? '' : `<option value="${esc(cur)}" selected>${esc(cur || '—')} (not in the book)</option>`}
+        </select>
+      </label>`;
+  }
 
   if (typeof value === 'boolean') {
     boolPaths.push(pathKey);
@@ -290,7 +313,7 @@ function renderField(pathKey, key, value, boolPaths, numPaths, arrayLinePaths) {
     // array of objects / nested arrays -> repeated cards
     const items = value
       .map((item, i) => {
-        const inner = renderValue(`${pathKey}.${i}`, item, boolPaths, numPaths, arrayLinePaths);
+        const inner = renderValue(`${pathKey}.${i}`, item, boolPaths, numPaths, arrayLinePaths, enums);
         const title = itemTitle(item, i);
         return `
         <div class="item">
@@ -316,20 +339,20 @@ function renderField(pathKey, key, value, boolPaths, numPaths, arrayLinePaths) {
     return `
       <fieldset class="obj">
         <legend>${esc(label)}</legend>
-        ${renderValue(pathKey, value, boolPaths, numPaths, arrayLinePaths)}
+        ${renderValue(pathKey, value, boolPaths, numPaths, arrayLinePaths, enums)}
       </fieldset>`;
   }
 
   return '';
 }
 
-function renderValue(pathKey, value, boolPaths, numPaths, arrayLinePaths) {
+function renderValue(pathKey, value, boolPaths, numPaths, arrayLinePaths, enums) {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return Object.entries(value)
-      .map(([k, v]) => renderField(`${pathKey}.${k}`, k, v, boolPaths, numPaths, arrayLinePaths))
+      .map(([k, v]) => renderField(`${pathKey}.${k}`, k, v, boolPaths, numPaths, arrayLinePaths, enums))
       .join('');
   }
-  return renderField(pathKey, pathKey.split('.').pop(), value, boolPaths, numPaths, arrayLinePaths);
+  return renderField(pathKey, pathKey.split('.').pop(), value, boolPaths, numPaths, arrayLinePaths, enums);
 }
 
 function itemTitle(item, i) {
@@ -737,6 +760,18 @@ const BOOK_COLLECTIONS = [
   { key: 'bills', label: 'Supplier bills', hint: 'What a supplier charged us for a booking.', idPrefix: 'BIL-', noPrefix: 'billPrefix', title: ['no'], search: ['no', 'notes'], amount: 'amount', party: 'supplierId' },
   { key: 'payments', label: 'Supplier payments', hint: 'Money out against a bill.', idPrefix: 'PAY-', noPrefix: 'paymentPrefix', title: ['no'], search: ['no', 'ref'], amount: 'amount', party: 'supplierId' },
   { key: 'expenses', label: 'Expenses', hint: 'Operating spend by category.', idPrefix: 'EXP-', noPrefix: 'expensePrefix', title: ['no'], search: ['no', 'description'], amount: 'amount', party: 'categoryId' },
+  {
+    key: 'creditNotes',
+    label: 'Credit notes & cancellations',
+    hint: 'Reverse part or all of a sale. Settlement decides whether money goes back or the balance just drops.',
+    idPrefix: 'CRN-', noPrefix: 'creditNotePrefix', title: ['no'], search: ['no', 'notes'],
+    amount: 'amount', party: 'customerId',
+    template: {
+      id: '', no: '', date: '', customerId: '', invoiceId: '', billId: '',
+      reason: 'cancellation', amount: 0, settlement: 'credit_balance', bankId: '',
+      supplierRefund: 0, notes: ''
+    }
+  },
   { key: 'supplierDeposits', label: 'Supplier deposits', hint: 'Advances placed with consolidators and airlines.', idPrefix: 'DEP-', noPrefix: null, title: ['no'], search: ['no', 'reference', 'note'], amount: 'amount', party: 'supplierId' },
   { key: 'inventory', label: 'Inventory blocks', hint: 'Seats, room nights and quota bought up front.', idPrefix: 'INV-BLK-', noPrefix: null, title: ['name'], search: ['name', 'note'], amount: null, party: 'supplierId' },
   { key: 'customers', label: 'Customers', hint: 'Who we invoice.', idPrefix: 'CUS-', noPrefix: null, title: ['name'], search: ['name', 'phone', 'email'], amount: null, party: null },
@@ -746,6 +781,118 @@ const BOOK_COLLECTIONS = [
   { key: 'expenseCategories', label: 'Expense categories', hint: '', idPrefix: 'EXC-', noPrefix: null, title: ['name'], search: ['name'], amount: null, party: null },
   { key: 'employees', label: 'Employees', hint: '', idPrefix: 'EMP-', noPrefix: null, title: ['name'], search: ['name', 'role'], amount: null, party: null }
 ];
+
+/**
+ * Fixed vocabularies. These have to agree with lib/accounting.ts — the app
+ * derives every total from these strings, so a typo here is a voucher that
+ * silently stops counting.
+ */
+const PAY_METHODS = [
+  { value: 'cash', label: 'Cash' },
+  { value: 'bank_transfer', label: 'Bank transfer' },
+  { value: 'card', label: 'Card' },
+  { value: 'mfs', label: 'bKash / Nagad' },
+  { value: 'online', label: 'Online' }
+];
+
+const BOOK_ENUMS = {
+  invoices: {
+    status: [
+      { value: 'draft', label: 'Draft — not trading yet' },
+      { value: 'confirmed', label: 'Confirmed' },
+      { value: 'partially_paid', label: 'Partially paid' },
+      { value: 'paid', label: 'Paid' },
+      { value: 'cancelled', label: 'Cancelled' }
+    ]
+  },
+  receipts: { method: PAY_METHODS },
+  payments: { method: PAY_METHODS },
+  expenses: { method: PAY_METHODS },
+  supplierDeposits: { method: PAY_METHODS, kind: [{ value: 'deposit', label: 'Deposit' }] },
+  bills: {
+    status: [
+      { value: 'unpaid', label: 'Unpaid' },
+      { value: 'partially_paid', label: 'Partially paid' },
+      { value: 'paid', label: 'Paid' }
+    ]
+  },
+  creditNotes: {
+    reason: [
+      { value: 'cancellation', label: 'Cancellation — whole ticket returned' },
+      { value: 'partial_refund', label: 'Partial refund' },
+      { value: 'date_change', label: 'Date change adjustment' },
+      { value: 'overcharge', label: 'Overcharge corrected' },
+      { value: 'goodwill', label: 'Goodwill' },
+      { value: 'write_off', label: 'Write-off — will not be collected' }
+    ],
+    settlement: [
+      { value: 'credit_balance', label: 'Credit balance — no money moves, the customer simply owes less' },
+      ...PAY_METHODS.map((m) => ({ value: m.value, label: `Refunded by ${m.label.toLowerCase()}` }))
+    ]
+  },
+  customers: {
+    type: [
+      { value: 'walk_in', label: 'Walk-in' },
+      { value: 'agency', label: 'Agency' },
+      { value: 'corporate', label: 'Corporate' }
+    ]
+  },
+  suppliers: {
+    type: [
+      { value: 'airline', label: 'Airline' },
+      { value: 'consolidator', label: 'Consolidator' },
+      { value: 'hotel', label: 'Hotel' },
+      { value: 'visa', label: 'Visa handler' },
+      { value: 'other', label: 'Other' }
+    ]
+  },
+  services: {
+    category: [
+      { value: 'air', label: 'Air ticket' },
+      { value: 'hajj_umrah', label: 'Hajj / Umrah' },
+      { value: 'tour', label: 'Tour' },
+      { value: 'visa', label: 'Visa' },
+      { value: 'hotel', label: 'Hotel' },
+      { value: 'other', label: 'Other' }
+    ]
+  },
+  inventory: {
+    kind: [
+      { value: 'seat_block', label: 'Seat block' },
+      { value: 'hotel_allotment', label: 'Hotel allotment' },
+      { value: 'hajj_quota', label: 'Hajj quota' },
+      { value: 'umrah_package', label: 'Umrah package' },
+      { value: 'visa_slot', label: 'Visa slot' },
+      { value: 'other', label: 'Other' }
+    ]
+  }
+};
+
+/**
+ * Every dropdown for one collection: the fixed vocabularies above plus the
+ * live lists of customers, suppliers, banks and documents read out of the book.
+ */
+function bookEnums(book, spec) {
+  const opt = (rows, label) => (rows || []).map((r) => ({ value: r.id, label: label(r) }));
+  const blank = (rows) => [{ value: '', label: '— none —' }, ...rows];
+
+  const custName = (id) => (book.customers || []).find((c) => c.id === id)?.name || id;
+  const supName = (id) => (book.suppliers || []).find((x) => x.id === id)?.name || id;
+
+  const shared = {
+    customerId: opt(book.customers, (c) => `${c.name} · ${c.id}`),
+    supplierId: opt(book.suppliers, (x) => `${x.name} · ${x.id}`),
+    serviceId: opt(book.services, (x) => `${x.name} · ${x.id}`),
+    categoryId: opt(book.expenseCategories, (x) => `${x.name} · ${x.id}`),
+    bankId: blank(opt(book.banks, (b) => `${b.name} · ${b.accountNo || b.id}`)),
+    employeeId: blank(opt(book.employees, (e) => `${e.name} — ${e.role}`)),
+    invoiceId: blank(opt(book.invoices, (i) => `${i.no} · ${custName(i.customerId)} · ${i.date}`)),
+    invoiceRef: blank(opt(book.invoices, (i) => `${i.no} · ${custName(i.customerId)} · ${i.date}`)),
+    billId: blank(opt(book.bills, (b) => `${b.no} · ${supName(b.supplierId)} · ${b.amount}`))
+  };
+
+  return { ...shared, ...(BOOK_ENUMS[spec.key] || {}) };
+}
 
 const bookFile = () => readJson(path.join(CONTENT_DIR, 'accounting.json'), {});
 const collSpec = (k) => BOOK_COLLECTIONS.find((c) => c.key === k);
@@ -872,7 +1019,7 @@ function bookEditView(session, book, spec, rec, flash, errors) {
   const boolPaths = [];
   const numPaths = [];
   const linePaths = [];
-  const fields = renderValue('rec', rec, boolPaths, numPaths, linePaths);
+  const fields = renderValue('rec', rec, boolPaths, numPaths, linePaths, bookEnums(book, spec));
 
   // dropdown help — the raw form shows ids, so list what they mean
   const legend = [];
@@ -917,6 +1064,7 @@ function validateBookRecord(spec, rec) {
     errors.push('Amount must be greater than zero.');
   }
   if (['bills'].includes(spec.key) && num(rec.amount) < 0) errors.push('A bill cannot be negative.');
+  if (spec.key === 'creditNotes') errors.push(...validateCreditNote(rec));
   if (spec.key === 'invoices') {
     if (!Array.isArray(rec.lines) || rec.lines.length === 0) errors.push('An invoice needs at least one line.');
     else for (const [i, l] of rec.lines.entries()) {
@@ -931,6 +1079,98 @@ function validateBookRecord(spec, rec) {
     if (num(rec.unitCost) < 0 || num(rec.unitSell) < 0) errors.push('Unit cost and unit sell cannot be negative.');
   }
   if (rec.date && !/^\d{4}-\d{2}-\d{2}$/.test(String(rec.date))) errors.push('Date must be YYYY-MM-DD.');
+  return errors;
+}
+
+/**
+ * A credit note can only take away money that is actually there.
+ *
+ * Both limits below exist to keep the control accounts non-negative, which is
+ * what keeps the trial balance true:
+ *
+ *   an unsettled credit reduces the receivable, so it cannot exceed what the
+ *   customer still owes on that invoice;
+ *
+ *   a refunded credit takes cash back out, so it cannot exceed what they
+ *   actually paid — you cannot refund money you never received;
+ *
+ *   a supplier refund reduces the payable, so it cannot exceed what is still
+ *   outstanding on the bill. If the bill is already settled and the airline
+ *   sends money back, that is a supplier deposit, not a credit note.
+ *
+ * Credits already raised against the same invoice count towards the limit, so
+ * three small notes cannot do what one large one is refused.
+ */
+function validateCreditNote(rec, bookArg) {
+  const errors = [];
+  const book = bookArg || bookFile();
+  const num = (v) => Number(v || 0);
+  const amount = num(rec.amount);
+  const refund = num(rec.supplierRefund);
+
+  if (amount <= 0 && refund <= 0) {
+    errors.push('A credit note needs either an amount to credit the customer or a supplier refund.');
+  }
+  if (amount < 0) errors.push('Credit amount cannot be negative.');
+  if (refund < 0) errors.push('Supplier refund cannot be negative.');
+  if (!rec.customerId) errors.push('Choose the customer being credited.');
+  if (!rec.invoiceId) errors.push('Choose the invoice this reverses — a credit note must point at a sale.');
+
+  const invoice = (book.invoices || []).find((i) => i.id === rec.invoiceId);
+  if (rec.invoiceId && !invoice) {
+    errors.push(`Invoice ${rec.invoiceId} is not in the book.`);
+  } else if (invoice) {
+    if (rec.customerId && invoice.customerId !== rec.customerId) {
+      errors.push('That invoice belongs to a different customer.');
+    }
+    const gross = (invoice.lines || []).reduce((t, l) => t + num(l.qty) * num(l.unitPrice), 0);
+    const total = gross + Math.round(gross * num(invoice.vatRate) / 100);
+    const paid = (book.receipts || [])
+      .filter((r) => r.invoiceId === invoice.id)
+      .reduce((t, r) => t + num(r.amount), 0);
+
+    const others = (book.creditNotes || []).filter((c) => c.id !== rec.id && c.invoiceId === invoice.id);
+    const otherAll = others.reduce((t, c) => t + num(c.amount), 0);
+    const otherOpen = others.filter((c) => c.settlement === 'credit_balance').reduce((t, c) => t + num(c.amount), 0);
+    const otherRefunded = otherAll - otherOpen;
+
+    if (otherAll + amount > total) {
+      errors.push(`That would credit ${otherAll + amount} against an invoice of ${total}. At most ${total - otherAll} is left to credit.`);
+    }
+    if (rec.settlement === 'credit_balance') {
+      const owed = total - paid - otherOpen;
+      if (amount > owed) {
+        errors.push(`The customer only still owes ${Math.max(0, owed)} on that invoice. To give back money they have already paid, set Settlement to the method you are refunding by.`);
+      }
+    } else {
+      const refundable = paid - otherRefunded;
+      if (amount > refundable) {
+        errors.push(`Only ${Math.max(0, refundable)} has been received on that invoice, so no more than that can be refunded. Use "Credit balance" for the unpaid part.`);
+      }
+      if (!rec.bankId && rec.settlement !== 'cash') {
+        errors.push('Choose the bank or wallet the refund goes out of.');
+      }
+    }
+  }
+
+  if (rec.billId) {
+    const bill = (book.bills || []).find((b) => b.id === rec.billId);
+    if (!bill) {
+      errors.push(`Bill ${rec.billId} is not in the book.`);
+    } else if (refund > 0) {
+      const paid = (book.payments || []).filter((x) => x.billId === bill.id).reduce((t, x) => t + num(x.amount), 0);
+      const otherRefunds = (book.creditNotes || [])
+        .filter((c) => c.id !== rec.id && c.billId === bill.id)
+        .reduce((t, c) => t + num(c.supplierRefund), 0);
+      const outstanding = num(bill.amount) - paid - otherRefunds;
+      if (refund > outstanding) {
+        errors.push(`Only ${Math.max(0, outstanding)} is still outstanding on ${bill.no}. A refund on an already-settled bill is money coming back in — record it as a supplier deposit.`);
+      }
+    }
+  } else if (refund > 0) {
+    errors.push('Choose the supplier bill the refund comes off.');
+  }
+
   return errors;
 }
 
@@ -1200,7 +1440,7 @@ function integrationsView(session, flash, testResult) {
           <thead><tr><th>Supplier</th><th>Kind</th><th>Status</th></tr></thead>
           <tbody>
             <tr><td><strong>Sabre</strong></td><td>GDS</td><td style="color:var(--muted)">no credentials issued</td></tr>
-            <tr><td><strong>Flyhub</strong></td><td>Consolidator</td><td style="color:var(--muted)">no credentials issued</td></tr>
+            <tr><td><strong>Flyhub</strong></td><td>Consolidator</td><td style="color:var(--muted)">out of scope — not being integrated</td></tr>
             <tr><td><strong>TRACCS</strong></td><td>Travel back-office / accounting</td><td style="color:var(--muted)">evaluation only</td></tr>
             <tr><td><strong>NuFlights</strong></td><td>Travel back-office / accounting</td><td style="color:var(--muted)">evaluation only</td></tr>
           </tbody>
@@ -2207,7 +2447,11 @@ const server = http.createServer(async (req, res) => {
 
       const book = bookFile();
       const rows = book[spec.key] || (book[spec.key] = []);
-      const rec = rows.length ? blankLike(rows[rows.length - 1]) : { id: '', date: '' };
+      // A collection that is still empty has no row to copy the shape from, so
+      // the spec carries a template. Without it the first credit note anyone
+      // creates is a form with two boxes on it.
+      const rec = rows.length ? blankLike(rows[rows.length - 1]) : blankLike(spec.template || { id: '', date: '' });
+      if (spec.template) for (const [k, v] of Object.entries(spec.template)) if (v !== '' && v !== 0) rec[k] = v;
       rec.id = nextBookId(rows, spec.idPrefix);
       if ('no' in rec && spec.noPrefix && book.company) {
         rec.no = `${book.company[spec.noPrefix] || ''}${String(rows.length + 1).padStart(4, '0')}`;

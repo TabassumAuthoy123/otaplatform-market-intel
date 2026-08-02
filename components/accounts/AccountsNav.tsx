@@ -7,6 +7,7 @@ import { useState } from 'react';
 const ITEMS = [
   { href: '/accounts', label: 'Dashboard' },
   { href: '/accounts/invoices', label: 'Sales' },
+  { href: '/accounts/credit-notes', label: 'Credit notes' },
   { href: '/accounts/bills', label: 'Purchases' },
   { href: '/accounts/cash', label: 'Cash' },
   { href: '/accounts/bank', label: 'Bank' },

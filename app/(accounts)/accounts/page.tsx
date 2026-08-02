@@ -9,6 +9,7 @@ export const dynamic = 'force-dynamic';
 
 const QUICK = [
   { href: '/accounts/invoices', label: 'Sales & invoices' },
+  { href: '/accounts/credit-notes', label: 'Credit notes' },
   { href: '/accounts/bills', label: 'Supplier bills' },
   { href: '/accounts/cash', label: 'Cash book' },
   { href: '/accounts/expenses', label: 'Record expenses' },

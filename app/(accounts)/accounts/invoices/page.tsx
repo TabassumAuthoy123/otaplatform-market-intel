@@ -1,3 +1,4 @@
+import { ExportBar } from '@/components/accounts/ExportBar';
 import { Empty, PageHead, Panel, StatusChip, Table, Td, Tile } from '@/components/accounts/ui';
 import { getBook, invoiceTotals, isLive, LABEL, money, receivables, summarise } from '@/lib/accounting';
 
@@ -17,7 +18,11 @@ export default async function InvoicesPage({
 
   const name = (id: string) => book.customers.find((c) => c.id === id)?.name ?? id;
 
-  let rows = book.invoices.map((i) => ({ inv: i, t: invoiceTotals(i, book.receipts), customer: name(i.customerId) }));
+  let rows = book.invoices.map((i) => ({
+    inv: i,
+    t: invoiceTotals(i, book.receipts, book.creditNotes),
+    customer: name(i.customerId)
+  }));
 
   if (searchParams.status) rows = rows.filter((r) => r.t.effectiveStatus === searchParams.status);
   if (searchParams.customer) rows = rows.filter((r) => r.inv.customerId === searchParams.customer);
@@ -76,6 +81,9 @@ export default async function InvoicesPage({
         </label>
         <button className="rounded-lg bg-teal-600 px-5 py-2.5 text-[13px] font-semibold text-white hover:bg-teal-700">Filter</button>
         <a href="/accounts/invoices" className="rounded-lg border border-hair px-4 py-2.5 text-[13px] font-semibold text-navy-900">Reset</a>
+        <div className="ml-auto">
+          <ExportBar section="invoices" />
+        </div>
       </form>
 
       <Panel title={`${rows.length} invoices`} sub="Supplier cost and margin shown per invoice — the number that actually matters on a booking">
@@ -97,7 +105,12 @@ export default async function InvoicesPage({
                   ))}
                 </Td>
                 <Td right mono className="font-semibold">{money(t.total, sym)}</Td>
-                <Td right mono className="text-muted">{money(t.cost, sym)}</Td>
+                <Td right mono className="text-muted">
+                  {money(t.cost, sym)}
+                  {t.creditedAll > 0 && (
+                    <div className="text-[11px] text-amber-700">credited {money(t.creditedAll, sym)}</div>
+                  )}
+                </Td>
                 <Td right mono className="font-semibold text-teal-700">
                   {money(t.profit, sym)}
                   <div className="text-[11px] font-normal text-muted">{t.marginPct.toFixed(1)}%</div>

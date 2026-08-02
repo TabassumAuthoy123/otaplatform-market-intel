@@ -49,6 +49,41 @@ export type Payment = {
   method: PayMethod; bankId: string | null; amount: number; ref: string;
 };
 
+/**
+ * Reasons a sale gets reversed. `cancellation` is the whole ticket going back,
+ * the rest are partial adjustments.
+ */
+export type CreditReason = 'cancellation' | 'partial_refund' | 'date_change' | 'overcharge' | 'goodwill' | 'write_off';
+
+/**
+ * A credit note reverses part or all of a sale.
+ *
+ * `settlement` is the difference between the two things people call a refund:
+ *
+ *   credit_balance  the customer had not paid yet, so we simply reduce what
+ *                   they owe. No money moves.
+ *   a pay method    the customer had already paid, so cash or bank goes back
+ *                   out on this date.
+ *
+ * Getting that distinction wrong is how a book ends up double-counting a
+ * refund: reducing the receivable AND paying the money out for the same
+ * credit. Exactly one of the two happens, decided by this field.
+ *
+ * `supplierRefund` is the other half of a cancellation — what the airline or
+ * consolidator gives back on the bill behind the sale. It reduces the payable,
+ * so a cancelled ticket does not leave a phantom debt to the carrier.
+ */
+export type CreditNote = {
+  id: string; no: string; date: string;
+  customerId: string; invoiceId: string; billId: string | null;
+  reason: CreditReason;
+  amount: number;
+  settlement: 'credit_balance' | PayMethod;
+  bankId: string | null;
+  supplierRefund: number;
+  notes: string;
+};
+
 export type Expense = {
   id: string; no: string; date: string; categoryId: string; method: PayMethod;
   bankId: string | null; amount: number; description: string; employeeId: string | null;
@@ -75,7 +110,7 @@ export type Book = {
   bills: Bill[];
   payments: Payment[];
   expenses: Expense[];
-  creditNotes: unknown[];
+  creditNotes: CreditNote[];
 };
 
 const BOOK_FILE = path.join(process.cwd(), 'content', 'accounting.json');
@@ -107,8 +142,36 @@ export const LABEL: Record<string, string> = {
   unpaid: 'Unpaid',
   agency: 'Agency', walk_in: 'Walk-in', corporate: 'Corporate',
   airline: 'Airline', consolidator: 'Consolidator', hotel: 'Hotel', visa: 'Visa',
-  air: 'Air ticket', hajj_umrah: 'Hajj / Umrah', tour: 'Tour', other: 'Other'
+  air: 'Air ticket', hajj_umrah: 'Hajj / Umrah', tour: 'Tour', other: 'Other',
+  cancellation: 'Cancellation', partial_refund: 'Partial refund', date_change: 'Date change',
+  overcharge: 'Overcharge', goodwill: 'Goodwill', write_off: 'Write-off',
+  credit_balance: 'Credit balance (no money moved)'
 };
+
+/* --------------------------------------------------------------- credit notes */
+
+/** A credit that was refunded in money, rather than left against the balance. */
+export const isRefunded = (n: CreditNote) => n.settlement !== 'credit_balance';
+
+/**
+ * Credit still sitting against an invoice — the part that reduces what the
+ * customer owes. Refunded credits are excluded: that money already went back
+ * out through cash or bank, so counting it here as well would relieve the debt
+ * twice.
+ */
+export function creditOnInvoice(invoiceId: string, notes: CreditNote[]): number {
+  return notes.filter((n) => n.invoiceId === invoiceId && !isRefunded(n)).reduce((t, n) => t + n.amount, 0);
+}
+
+/** Everything credited against an invoice, refunded or not. */
+export function creditedTotal(invoiceId: string, notes: CreditNote[]): number {
+  return notes.filter((n) => n.invoiceId === invoiceId).reduce((t, n) => t + n.amount, 0);
+}
+
+/** What a supplier gave back against one bill. */
+export function refundOnBill(billId: string, notes: CreditNote[]): number {
+  return notes.filter((n) => n.billId === billId).reduce((t, n) => t + n.supplierRefund, 0);
+}
 
 /* -------------------------------------------------------------- invoice math */
 
@@ -116,19 +179,37 @@ export type InvoiceTotals = {
   gross: number; vat: number; total: number;
   cost: number; profit: number; marginPct: number;
   paid: number; due: number;
+  /** Credited and left against the balance — reduces what is owed. */
+  credited: number;
+  /** Credited in total, including amounts already refunded in money. */
+  creditedAll: number;
+  /** Sale value after credit notes. This is what the invoice is now worth. */
+  net: number;
+  cancelled: boolean;
   effectiveStatus: InvoiceStatus;
 };
 
-export function invoiceTotals(inv: Invoice, receipts: Receipt[]): InvoiceTotals {
+export function invoiceTotals(inv: Invoice, receipts: Receipt[], creditNotes: CreditNote[] = []): InvoiceTotals {
   const gross = inv.lines.reduce((t, l) => t + l.qty * l.unitPrice, 0);
   const cost = inv.lines.reduce((t, l) => t + l.qty * l.supplierCost, 0);
   const vat = Math.round(gross * (inv.vatRate || 0) / 100);
   const total = gross + vat;
   const paid = receipts.filter((r) => r.invoiceId === inv.id).reduce((t, r) => t + r.amount, 0);
-  const due = Math.max(0, total - paid);
+  const credited = creditOnInvoice(inv.id, creditNotes);
+  const creditedAll = creditedTotal(inv.id, creditNotes);
+  const due = Math.max(0, total - credited - paid);
+  const net = total - creditedAll;
+
+  /**
+   * A fully credited invoice reads as cancelled whatever the stored status
+   * says. The credit note is the evidence; the status field is a label, and
+   * where they disagree the money wins.
+   */
+  const cancelled = inv.status === 'cancelled' || (total > 0 && creditedAll >= total);
 
   let effectiveStatus: InvoiceStatus = inv.status;
-  if (inv.status !== 'cancelled' && inv.status !== 'draft') {
+  if (cancelled) effectiveStatus = 'cancelled';
+  else if (inv.status !== 'draft') {
     effectiveStatus = paid <= 0 ? 'confirmed' : due <= 0 ? 'paid' : 'partially_paid';
   }
 
@@ -136,7 +217,7 @@ export function invoiceTotals(inv: Invoice, receipts: Receipt[]): InvoiceTotals 
     gross, vat, total, cost,
     profit: gross - cost,
     marginPct: gross > 0 ? ((gross - cost) / gross) * 100 : 0,
-    paid, due, effectiveStatus
+    paid, due, credited, creditedAll, net, cancelled, effectiveStatus
   };
 }
 
@@ -144,10 +225,25 @@ export function billPaid(bill: Bill, payments: Payment[]): number {
   return payments.filter((p) => p.billId === bill.id).reduce((t, p) => t + p.amount, 0);
 }
 
+/** What is still owed on a bill after payments and any supplier refund. */
+export function billDue(bill: Bill, payments: Payment[], creditNotes: CreditNote[] = []): number {
+  return Math.max(0, bill.amount - billPaid(bill, payments) - refundOnBill(bill.id, creditNotes));
+}
+
 /* -------------------------------------------------------------- aggregations */
 
 /** Invoices that count as trading — drafts and cancellations do not. */
 export const isLive = (i: Invoice) => i.status !== 'draft' && i.status !== 'cancelled';
+
+/**
+ * Trading, and not reversed by a credit note.
+ *
+ * `isLive` only reads the stored status, which a full credit note does not
+ * touch. Reports that list individual sales have to use this instead, or a
+ * cancelled ticket keeps showing up as a sale with a margin on it.
+ */
+export const isTrading = (i: Invoice, notes: CreditNote[]) =>
+  isLive(i) && !invoiceTotals(i, [], notes).cancelled;
 
 export function summarise(book: Book, from?: string, to?: string) {
   const inRange = (d: string) => (!from || d >= from) && (!to || d <= to);
@@ -157,20 +253,39 @@ export function summarise(book: Book, from?: string, to?: string) {
   const bills = book.bills.filter((b) => inRange(b.date));
   const payments = book.payments.filter((p) => inRange(p.date));
   const expenses = book.expenses.filter((e) => inRange(e.date));
+  const notes = (book.creditNotes ?? []).filter((n) => inRange(n.date));
 
-  const sales = invoices.reduce((t, i) => t + invoiceTotals(i, book.receipts).total, 0);
-  const cost = invoices.reduce((t, i) => t + invoiceTotals(i, book.receipts).cost, 0);
+  /**
+   * Credit notes land in the period they were issued, not the period of the
+   * invoice they reverse. A December cancellation of a November sale belongs in
+   * December — restating a closed month is how reported figures stop matching
+   * what was filed.
+   */
+  const grossSales = invoices.reduce((t, i) => t + invoiceTotals(i, book.receipts).total, 0);
+  const credited = notes.reduce((t, n) => t + n.amount, 0);
+  const supplierRefunds = notes.reduce((t, n) => t + n.supplierRefund, 0);
+  const grossCost = invoices.reduce((t, i) => t + invoiceTotals(i, book.receipts).cost, 0);
+
+  const sales = grossSales - credited;
+  const cost = grossCost - supplierRefunds;
   const collected = receipts.reduce((t, r) => t + r.amount, 0);
   const paidOut = payments.reduce((t, p) => t + p.amount, 0);
   const spent = expenses.reduce((t, e) => t + e.amount, 0);
 
   return {
     invoiceCount: invoices.length,
+    grossSales,
+    credited,
+    creditNoteCount: notes.length,
+    supplierRefunds,
+    /** Net of credit notes. Every margin below is built on this, not on gross. */
     sales,
     cost,
     grossProfit: sales - cost,
     marginPct: sales > 0 ? ((sales - cost) / sales) * 100 : 0,
     collected,
+    /** Money handed back to customers, which is a cash outflow like any other. */
+    refunded: notes.filter(isRefunded).reduce((t, n) => t + n.amount, 0),
     paidOut,
     expenses: spent,
     netProfit: sales - cost - spent,
@@ -181,17 +296,18 @@ export function summarise(book: Book, from?: string, to?: string) {
 /** Money customers still owe us, across the whole book. */
 export function receivables(book: Book) {
   const rows = book.invoices
-    .filter(isLive)
-    .map((i) => ({ inv: i, t: invoiceTotals(i, book.receipts) }))
-    .filter((r) => r.t.due > 0);
+    .filter((i) => i.status !== 'draft')
+    .map((i) => ({ inv: i, t: invoiceTotals(i, book.receipts, book.creditNotes ?? []) }))
+    .filter((r) => !r.t.cancelled && r.t.due > 0);
   return { rows, total: rows.reduce((t, r) => t + r.t.due, 0) };
 }
 
 /** Money we still owe suppliers. */
 export function payables(book: Book) {
+  const notes = book.creditNotes ?? [];
   const rows = book.bills
-    .map((b) => ({ bill: b, paid: billPaid(b, book.payments) }))
-    .map((r) => ({ ...r, due: Math.max(0, r.bill.amount - r.paid) }))
+    .map((b) => ({ bill: b, paid: billPaid(b, book.payments), refunded: refundOnBill(b.id, notes) }))
+    .map((r) => ({ ...r, due: Math.max(0, r.bill.amount - r.paid - r.refunded) }))
     .filter((r) => r.due > 0);
   return { rows, total: rows.reduce((t, r) => t + r.due, 0) };
 }
@@ -203,21 +319,29 @@ export function cashBook(book: Book, from?: string, to?: string) {
 
   const cashIn = (r: Receipt) => r.method === 'cash';
   const cashOut = (p: Payment | Expense) => p.method === 'cash';
+  /** A credit note only touches cash when it was settled by handing notes back. */
+  const cashRefund = (c: CreditNote) => c.settlement === 'cash';
+  const notes = book.creditNotes ?? [];
 
   const opening =
     book.company.openingCash +
     book.receipts.filter((r) => cashIn(r) && before(r.date)).reduce((t, r) => t + r.amount, 0) -
     book.payments.filter((p) => cashOut(p) && before(p.date)).reduce((t, p) => t + p.amount, 0) -
-    book.expenses.filter((e) => cashOut(e) && before(e.date)).reduce((t, e) => t + e.amount, 0);
+    book.expenses.filter((e) => cashOut(e) && before(e.date)).reduce((t, e) => t + e.amount, 0) -
+    notes.filter((c) => cashRefund(c) && before(c.date)).reduce((t, c) => t + c.amount, 0);
 
   const receiptsIn = book.receipts.filter((r) => cashIn(r) && inRange(r.date));
   const paymentsOut = book.payments.filter((p) => cashOut(p) && inRange(p.date));
   const expensesOut = book.expenses.filter((e) => cashOut(e) && inRange(e.date));
+  const refundsOut = notes.filter((c) => cashRefund(c) && inRange(c.date));
 
   const totalIn = receiptsIn.reduce((t, r) => t + r.amount, 0);
-  const totalOut = paymentsOut.reduce((t, p) => t + p.amount, 0) + expensesOut.reduce((t, e) => t + e.amount, 0);
+  const totalOut =
+    paymentsOut.reduce((t, p) => t + p.amount, 0) +
+    expensesOut.reduce((t, e) => t + e.amount, 0) +
+    refundsOut.reduce((t, c) => t + c.amount, 0);
 
-  return { opening, receiptsIn, paymentsOut, expensesOut, totalIn, totalOut, closing: opening + totalIn - totalOut };
+  return { opening, receiptsIn, paymentsOut, expensesOut, refundsOut, totalIn, totalOut, closing: opening + totalIn - totalOut };
 }
 
 /** Same shape as the cash book, for one bank account. */
@@ -226,21 +350,28 @@ export function bankBook(book: Book, bankId: string, from?: string, to?: string)
   const before = (d: string) => (from ? d < from : false);
   const inRange = (d: string) => (!from || d >= from) && (!to || d <= to);
   const mine = (x: { bankId: string | null }) => x.bankId === bankId;
+  const notes = book.creditNotes ?? [];
+  const bankRefund = (c: CreditNote) => isRefunded(c) && mine(c);
 
   const opening =
     (bank?.openingBalance ?? 0) +
     book.receipts.filter((r) => mine(r) && before(r.date)).reduce((t, r) => t + r.amount, 0) -
     book.payments.filter((p) => mine(p) && before(p.date)).reduce((t, p) => t + p.amount, 0) -
-    book.expenses.filter((e) => mine(e) && before(e.date)).reduce((t, e) => t + e.amount, 0);
+    book.expenses.filter((e) => mine(e) && before(e.date)).reduce((t, e) => t + e.amount, 0) -
+    notes.filter((c) => bankRefund(c) && before(c.date)).reduce((t, c) => t + c.amount, 0);
 
   const receiptsIn = book.receipts.filter((r) => mine(r) && inRange(r.date));
   const paymentsOut = book.payments.filter((p) => mine(p) && inRange(p.date));
   const expensesOut = book.expenses.filter((e) => mine(e) && inRange(e.date));
+  const refundsOut = notes.filter((c) => bankRefund(c) && inRange(c.date));
 
   const totalIn = receiptsIn.reduce((t, r) => t + r.amount, 0);
-  const totalOut = paymentsOut.reduce((t, p) => t + p.amount, 0) + expensesOut.reduce((t, e) => t + e.amount, 0);
+  const totalOut =
+    paymentsOut.reduce((t, p) => t + p.amount, 0) +
+    expensesOut.reduce((t, e) => t + e.amount, 0) +
+    refundsOut.reduce((t, c) => t + c.amount, 0);
 
-  return { bank, opening, receiptsIn, paymentsOut, expensesOut, totalIn, totalOut, closing: opening + totalIn - totalOut };
+  return { bank, opening, receiptsIn, paymentsOut, expensesOut, refundsOut, totalIn, totalOut, closing: opening + totalIn - totalOut };
 }
 
 /** Every bank's closing balance, plus the combined figure. */
@@ -264,7 +395,8 @@ export function expensesByCategory(book: Book, from?: string, to?: string) {
 export function salesByService(book: Book, from?: string, to?: string) {
   const inRange = (d: string) => (!from || d >= from) && (!to || d <= to);
   const m = new Map<string, { sales: number; cost: number; count: number }>();
-  for (const inv of book.invoices.filter((i) => isLive(i) && inRange(i.date))) {
+  const notes = book.creditNotes ?? [];
+  for (const inv of book.invoices.filter((i) => isTrading(i, notes) && inRange(i.date))) {
     for (const l of inv.lines) {
       const cur = m.get(l.serviceId) ?? { sales: 0, cost: 0, count: 0 };
       cur.sales += l.qty * l.unitPrice;
@@ -288,6 +420,16 @@ export function customerLedger(book: Book, customerId: string) {
   for (const r of book.receipts.filter((x) => x.customerId === customerId)) {
     rows.push({ date: r.date, ref: r.no, detail: `Receipt — ${LABEL[r.method] ?? r.method}`, debit: 0, credit: r.amount });
   }
+  for (const c of (book.creditNotes ?? []).filter((x) => x.customerId === customerId)) {
+    // A refunded credit leaves the balance where it was: the sale comes off and
+    // the money goes back out, so both sides of the ledger move together.
+    if (isRefunded(c)) {
+      rows.push({ date: c.date, ref: c.no, detail: `Credit note — ${LABEL[c.reason] ?? c.reason}`, debit: 0, credit: c.amount });
+      rows.push({ date: c.date, ref: c.no, detail: `Refund paid — ${LABEL[c.settlement] ?? c.settlement}`, debit: c.amount, credit: 0 });
+    } else {
+      rows.push({ date: c.date, ref: c.no, detail: `Credit note — ${LABEL[c.reason] ?? c.reason}`, debit: 0, credit: c.amount });
+    }
+  }
   rows.sort((a, b) => a.date.localeCompare(b.date) || a.ref.localeCompare(b.ref));
   let bal = book.customers.find((c) => c.id === customerId)?.openingBalance ?? 0;
   return rows.map((r) => ({ ...r, balance: (bal += r.debit - r.credit) }));
@@ -301,6 +443,11 @@ export function supplierLedger(book: Book, supplierId: string) {
   for (const p of book.payments.filter((x) => x.supplierId === supplierId)) {
     rows.push({ date: p.date, ref: p.no, detail: `Payment — ${LABEL[p.method] ?? p.method}`, debit: p.amount, credit: 0 });
   }
+  for (const c of (book.creditNotes ?? []).filter((x) => x.supplierRefund > 0 && x.billId)) {
+    const bill = book.bills.find((b) => b.id === c.billId);
+    if (bill?.supplierId !== supplierId) continue;
+    rows.push({ date: c.date, ref: c.no, detail: `Supplier refund on ${bill.no}`, debit: c.supplierRefund, credit: 0 });
+  }
   rows.sort((a, b) => a.date.localeCompare(b.date) || a.ref.localeCompare(b.ref));
   let bal = book.suppliers.find((s) => s.id === supplierId)?.openingBalance ?? 0;
   return rows.map((r) => ({ ...r, balance: (bal += r.credit - r.debit) }));
@@ -311,7 +458,10 @@ export function profitAndLoss(book: Book, from?: string, to?: string) {
   const s = summarise(book, from, to);
   const byCat = expensesByCategory(book, from, to);
   return {
+    grossRevenue: s.grossSales,
+    creditNotes: s.credited,
     revenue: s.sales,
+    supplierRefunds: s.supplierRefunds,
     costOfSales: s.cost,
     grossProfit: s.grossProfit,
     grossMarginPct: s.marginPct,
@@ -349,19 +499,25 @@ export function trialBalance(book: Book) {
   const ar = receivables(book).total;
   const ap = payables(book).total;
   const s = summarise(book);
-  const purchases = book.bills.reduce((t, b) => t + b.amount, 0);
+  /**
+   * Purchases net of what suppliers gave back. The payable is reduced by the
+   * same refunds inside payables(), so both columns move together — reducing
+   * one without the other is what would put the balance out.
+   */
+  const supplierRefunds = (book.creditNotes ?? []).reduce((t, c) => t + c.supplierRefund, 0);
+  const purchases = book.bills.reduce((t, b) => t + b.amount, 0) - supplierRefunds;
   const opening = book.company.openingCash + book.banks.reduce((t, b) => t + b.openingBalance, 0);
 
   const debits = [
     { account: 'Cash in hand', amount: cash },
     { account: 'Bank accounts', amount: bank },
     { account: 'Accounts receivable', amount: ar },
-    { account: 'Purchases (supplier bills)', amount: purchases },
+    { account: 'Purchases (supplier bills, net of refunds)', amount: purchases },
     { account: 'Operating expenses', amount: s.expenses }
   ];
   const credits = [
     { account: 'Accounts payable', amount: ap },
-    { account: 'Sales revenue', amount: s.sales },
+    { account: 'Sales revenue (net of credit notes)', amount: s.sales },
     { account: 'Opening balances', amount: opening }
   ];
 
@@ -377,7 +533,8 @@ export function dailyRollup(book: Book, days = 14) {
     ...book.invoices.map((i) => i.date),
     ...book.receipts.map((r) => r.date),
     ...book.payments.map((p) => p.date),
-    ...book.expenses.map((e) => e.date)
+    ...book.expenses.map((e) => e.date),
+    ...(book.creditNotes ?? []).map((c) => c.date)
   ])).sort().reverse().slice(0, days);
 
   return dates.map((d) => {
@@ -386,6 +543,7 @@ export function dailyRollup(book: Book, days = 14) {
     return {
       date: d,
       invoices: s.invoiceCount,
+      credited: s.credited,
       sales: s.sales,
       cost: s.cost,
       grossProfit: s.grossProfit,
@@ -413,14 +571,18 @@ export function recentTransactions(book: Book, limit = 12) {
   for (const e of book.expenses) {
     rows.push({ date: e.date, type: 'Expense', ref: e.no, party: book.expenseCategories.find((c) => c.id === e.categoryId)?.name ?? '', amount: e.amount, direction: 'out' });
   }
+  for (const c of book.creditNotes ?? []) {
+    rows.push({ date: c.date, type: 'Credit note', ref: c.no, party: cust(c.customerId), amount: c.amount, direction: 'out' });
+  }
 
   return rows.sort((a, b) => b.date.localeCompare(a.date) || b.ref.localeCompare(a.ref)).slice(0, limit);
 }
 
 /** The single most useful travel-specific view: margin per booking. */
 export function bookingProfit(book: Book, limit?: number) {
-  const rows = book.invoices.filter(isLive).map((i) => {
-    const t = invoiceTotals(i, book.receipts);
+  const notes = book.creditNotes ?? [];
+  const rows = book.invoices.filter((i) => isTrading(i, notes)).map((i) => {
+    const t = invoiceTotals(i, book.receipts, notes);
     return {
       invoice: i,
       customer: book.customers.find((c) => c.id === i.customerId)?.name ?? i.customerId,
@@ -430,6 +592,47 @@ export function bookingProfit(book: Book, limit?: number) {
   });
   rows.sort((a, b) => b.profit - a.profit);
   return limit ? rows.slice(0, limit) : rows;
+}
+
+/**
+ * Credit notes with the invoice, customer and bill they reverse resolved, so
+ * the screen and the export both read from one place.
+ */
+export function creditNoteReport(book: Book) {
+  const notes = book.creditNotes ?? [];
+  const rows = [...notes]
+    .sort((a, b) => b.date.localeCompare(a.date) || b.no.localeCompare(a.no))
+    .map((note) => {
+      const invoice = book.invoices.find((i) => i.id === note.invoiceId) ?? null;
+      const t = invoice ? invoiceTotals(invoice, book.receipts, notes) : null;
+      return {
+        note,
+        invoice,
+        customer: book.customers.find((c) => c.id === note.customerId)?.name ?? note.customerId,
+        bill: book.bills.find((b) => b.id === note.billId) ?? null,
+        bank: book.banks.find((b) => b.id === note.bankId) ?? null,
+        /** True when this credit, with any others, reverses the whole invoice. */
+        fullCancellation: Boolean(t && t.cancelled),
+        invoiceTotal: t?.total ?? 0
+      };
+    });
+
+  const credited = rows.reduce((t, r) => t + r.note.amount, 0);
+  const refunded = rows.filter((r) => isRefunded(r.note)).reduce((t, r) => t + r.note.amount, 0);
+  return {
+    rows,
+    credited,
+    /** Money actually handed back, as opposed to credit left on account. */
+    refunded,
+    onAccount: credited - refunded,
+    supplierRecovered: rows.reduce((t, r) => t + r.note.supplierRefund, 0),
+    cancellations: rows.filter((r) => r.fullCancellation).length,
+    /**
+     * What the cancellations cost us: credited to the customer, less what the
+     * airline gave back. This is the number an agency owner asks for.
+     */
+    netLoss: credited - rows.reduce((t, r) => t + r.note.supplierRefund, 0)
+  };
 }
 
 export const todayISO = (book: Book) => {

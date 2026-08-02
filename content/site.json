@@ -81,7 +81,7 @@
     {
       "value": "3",
       "label": "Live GDS connections",
-      "sub": "Sabre · Travelport · Flyhub"
+      "sub": "Sabre · Travelport"
     },
     {
       "value": "10+",
@@ -374,7 +374,7 @@
     },
     {
       "title": "Supplier-neutral by design",
-      "desc": "Three GDS connections live — Sabre, Travelport and Flyhub. Add or drop a supplier without rebuilding anything."
+      "desc": "Two GDS connections live — Sabre and Travelport, searched together and merged into one fare list. Add or drop a supplier without rebuilding anything."
     },
     {
       "title": "Margin control that is not manual",
@@ -438,7 +438,7 @@
     "bullets": [
       "Booking website on your own domain and logo",
       "Sub-agents register themselves — you approve",
-      "Sabre, Travelport and Flyhub live",
+      "Sabre and Travelport live",
       "Automatic commission and markup rules",
       "Ledger, deposits, bank and MFS reconciliation",
       "Audit log on every staff action"
@@ -532,7 +532,7 @@
     "capabilities": [
       {
         "area": "GDS & supplier connectivity",
-        "detail": "Sabre, Travelport and Flyhub — three live integrations."
+        "detail": "Sabre and Travelport — two live integrations, queried in parallel."
       },
       {
         "area": "Multi-portal separation",

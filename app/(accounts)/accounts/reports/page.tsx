@@ -1,3 +1,4 @@
+import { ExportBar } from '@/components/accounts/ExportBar';
 import { PageHead, Panel, Table, Td, Tile } from '@/components/accounts/ui';
 import {
   bookingProfit, dailyRollup, getBook, money, payables, profitAndLoss,
@@ -6,16 +7,18 @@ import {
 
 export const dynamic = 'force-dynamic';
 
-export default async function ReportsPage() {
+export default async function ReportsPage({ searchParams }: { searchParams: { from?: string; to?: string } }) {
+  const from = searchParams.from || undefined;
+  const to = searchParams.to || undefined;
   const book = await getBook();
   const sym = book.company.currencySymbol;
 
-  const pl = profitAndLoss(book);
+  const pl = profitAndLoss(book, from, to);
   const tb = trialBalance(book);
   const ar = receivables(book);
   const ap = payables(book);
   const daily = dailyRollup(book, 21);
-  const byService = salesByService(book);
+  const byService = salesByService(book, from, to);
   const top = bookingProfit(book, 12);
 
   const cust = (id: string) => book.customers.find((c) => c.id === id)?.name ?? id;
@@ -29,12 +32,34 @@ export default async function ReportsPage() {
         sub="Everything here is derived from the vouchers at request time. There are no stored totals to go stale."
       />
 
+      <form className="no-print flex flex-wrap items-end gap-3 rounded-xl2 border border-hair bg-white p-4">
+        <label className="block">
+          <span className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-muted">From</span>
+          <input type="date" name="from" defaultValue={from ?? ''} className="rounded-lg border border-hair bg-surface px-3 py-2 text-[13.5px] outline-none focus:border-teal-500" />
+        </label>
+        <label className="block">
+          <span className="mb-1 block text-[11px] font-bold uppercase tracking-wide text-muted">To</span>
+          <input type="date" name="to" defaultValue={to ?? ''} className="rounded-lg border border-hair bg-surface px-3 py-2 text-[13.5px] outline-none focus:border-teal-500" />
+        </label>
+        <button className="rounded-lg bg-teal-600 px-5 py-2.5 text-[13px] font-semibold text-white hover:bg-teal-700">Apply period</button>
+        <a href="/accounts/reports" className="rounded-lg border border-hair px-4 py-2.5 text-[13px] font-semibold text-navy-900">Whole book</a>
+        <div className="ml-auto">
+          <ExportBar from={from} to={to} label="Download the book" />
+        </div>
+      </form>
+
       {/* ------------------------------------------------------ profit & loss */}
-      <Panel title="Profit & loss" sub="Whole book">
+      <Panel title="Profit & loss" sub={from || to ? `${from || 'start'} to ${to || 'today'}` : 'Whole book'}>
         <div className="grid gap-0 sm:grid-cols-2">
           <div className="border-b border-hair p-5 sm:border-r sm:border-b-0">
-            <Row label="Revenue" value={money(pl.revenue, sym)} bold />
+            <Row label="Gross sales" value={money(pl.grossRevenue, sym)} />
+            <Row label="Less: credit notes and cancellations" value={`− ${money(pl.creditNotes, sym)}`} muted />
+            <div className="my-2 border-t border-hair" />
+            <Row label="Net revenue" value={money(pl.revenue, sym)} bold />
             <Row label="Less: cost of sales (supplier)" value={`− ${money(pl.costOfSales, sym)}`} muted />
+            {pl.supplierRefunds > 0 && (
+              <Row label="  of which recovered from suppliers" value={money(pl.supplierRefunds, sym)} muted />
+            )}
             <div className="my-3 border-t border-hair" />
             <Row label="Gross profit" value={money(pl.grossProfit, sym)} bold accent />
             <Row label="Gross margin" value={`${pl.grossMarginPct.toFixed(2)}%`} muted />

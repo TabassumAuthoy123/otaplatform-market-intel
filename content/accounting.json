@@ -22,6 +22,7 @@
     "billPrefix": "SFT-BIL-",
     "paymentPrefix": "SFT-PAY-",
     "expensePrefix": "SFT-EXP-",
+    "creditNotePrefix": "SFT-CRN-",
     "openingCash": 900000,
     "financialYearStart": "2026-07-01"
   },
@@ -8277,7 +8278,50 @@
       "employeeId": null
     }
   ],
-  "creditNotes": [],
+  "creditNotes": [
+    {
+      "id": "CRN-0001",
+      "no": "SFT-CRN-0001",
+      "date": "2026-07-24",
+      "customerId": "CUS-005",
+      "invoiceId": "INV-0107",
+      "billId": "BIL-0148",
+      "reason": "cancellation",
+      "amount": 91900,
+      "settlement": "credit_balance",
+      "bankId": null,
+      "supplierRefund": 43000,
+      "notes": "Passenger cancelled before ticketing. Nothing had been received, so the balance simply comes off."
+    },
+    {
+      "id": "CRN-0002",
+      "no": "SFT-CRN-0002",
+      "date": "2026-07-26",
+      "customerId": "CUS-003",
+      "invoiceId": "INV-0090",
+      "billId": "BIL-0125",
+      "reason": "cancellation",
+      "amount": 454000,
+      "settlement": "bank_transfer",
+      "bankId": "BNK-001",
+      "supplierRefund": 410000,
+      "notes": "Group booking cancelled. Paid in full, so the money went back by bank; carrier refunded the unsettled part of the bill."
+    },
+    {
+      "id": "CRN-0003",
+      "no": "SFT-CRN-0003",
+      "date": "2026-07-28",
+      "customerId": "CUS-005",
+      "invoiceId": "INV-0091",
+      "billId": "BIL-0126",
+      "reason": "date_change",
+      "amount": 3000,
+      "settlement": "cash",
+      "bankId": null,
+      "supplierRefund": 2500,
+      "notes": "Date change; fare difference returned in cash."
+    }
+  ],
   "supplierDeposits": [
     {
       "id": "DEP-0001",
