@@ -2,19 +2,21 @@ import Link from 'next/link';
 import { PackageCard, RouteCard } from '@/components/portal/cards';
 import { SearchWidget } from '@/components/portal/SearchWidget';
 import { Button, Chip, Icon, Section, SectionTitle, Stat } from '@/components/portal/ui';
-import { getContent } from '@/lib/content';
+import { getContent, sectionOn } from '@/lib/content';
 
 export const dynamic = 'force-dynamic';
 
 export default async function HomePage() {
   const c = await getContent();
+  const on = (k: string) => sectionOn(c, k);
   const topRoutes = c.routes.slice(0, 6);
   const topPackages = c.packages.slice(0, 3);
 
   return (
     <>
       {/* ---------------------------------------------------------------- hero */}
-      <section className="hero-navy text-white">
+      {on('hero') && (
+        <section className="hero-navy text-white">
         <div className="mx-auto max-w-6xl px-5 pb-8 pt-16 sm:px-8 sm:pt-20">
           <div className="max-w-3xl">
             <div className="text-[12px] font-bold uppercase tracking-[0.16em] text-teal-300">{c.hero.kicker}</div>
@@ -45,18 +47,22 @@ export default async function HomePage() {
           </div>
         </div>
       </section>
+      )}
 
       {/* ------------------------------------------------------- trust numbers */}
-      <Section tone="white" className="!py-11">
+      {on('trustStats') && (
+        <Section tone="white" className="!py-11">
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
           {c.trustStats.map((s) => (
             <Stat key={s.label} value={s.value} label={s.label} sub={s.sub} />
           ))}
         </div>
       </Section>
+      )}
 
       {/* ----------------------------------------------------------- services */}
-      <Section tone="surface">
+      {on('services') && (
+        <Section tone="surface">
         <SectionTitle kicker="What you can book" title="Everything a Bangladeshi traveller actually needs" />
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {c.services.map((s) => (
@@ -70,9 +76,11 @@ export default async function HomePage() {
           ))}
         </div>
       </Section>
+      )}
 
       {/* ------------------------------------------------------------- routes */}
-      <Section tone="white">
+      {on('routes') && (
+        <Section tone="white">
         <div className="mb-9 flex flex-wrap items-end justify-between gap-4">
           <SectionTitle kicker="Popular right now" title="Fares from Dhaka" />
           <Link href="/portal/flights" className="mb-2 text-[13.5px] font-semibold text-teal-700 hover:underline">
@@ -85,9 +93,11 @@ export default async function HomePage() {
           ))}
         </div>
       </Section>
+      )}
 
       {/* ----------------------------------------------------------- packages */}
-      <Section tone="surface">
+      {on('packages') && (
+        <Section tone="surface">
         <div className="mb-9 flex flex-wrap items-end justify-between gap-4">
           <SectionTitle
             kicker="Hajj · Umrah · Tours"
@@ -104,9 +114,11 @@ export default async function HomePage() {
           ))}
         </div>
       </Section>
+      )}
 
       {/* ---------------------------------------------------------------- why */}
-      <Section tone="white">
+      {on('why') && (
+        <Section tone="white">
         <SectionTitle kicker="Why this platform" title="Built for agencies that want to own their own customers" />
         <div className="grid gap-x-10 gap-y-8 sm:grid-cols-2 lg:grid-cols-3">
           {c.why.map((w, i) => (
@@ -118,9 +130,11 @@ export default async function HomePage() {
           ))}
         </div>
       </Section>
+      )}
 
       {/* -------------------------------------------------------- credentials */}
-      <Section tone="panel" className="!py-12">
+      {on('credentials') && (
+        <Section tone="panel" className="!py-12">
         <div className="mb-7 flex items-center gap-3">
           <Icon name="shield" className="h-5 w-5 text-teal-700" />
           <h2 className="text-[15px] font-bold uppercase tracking-[0.1em] text-navy-900">Verifiable credentials</h2>
@@ -134,9 +148,10 @@ export default async function HomePage() {
           ))}
         </div>
       </Section>
+      )}
 
       {/* -------------------------------------------------------- testimonials */}
-      {c.testimonials.items.length > 0 && (
+      {on('testimonials') && c.testimonials.items.length > 0 && (
         <Section tone="white">
           <SectionTitle kicker="Clients" title="What agencies say" />
           <div className="grid gap-4 lg:grid-cols-3">
@@ -154,7 +169,8 @@ export default async function HomePage() {
       )}
 
       {/* ----------------------------------------------------------- agent CTA */}
-      <Section tone="navy">
+      {on('agentCta') && (
+        <Section tone="navy">
         <div className="grid gap-10 lg:grid-cols-[1.1fr_1fr]">
           <div>
             <div className="text-[12px] font-bold uppercase tracking-[0.16em] text-teal-300">{c.agentCta.kicker}</div>
@@ -174,6 +190,7 @@ export default async function HomePage() {
           </ul>
         </div>
       </Section>
+      )}
     </>
   );
 }

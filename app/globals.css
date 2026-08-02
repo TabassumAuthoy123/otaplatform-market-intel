@@ -2,7 +2,21 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; }
+:root {
+  --font-sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-heading: var(--font-sans);
+
+  /* Brand palette as R G B triplets. The storefront layout overrides these
+     from content/site.json, so the admin theme editor repaints everything
+     without a rebuild. These are the fallbacks. */
+  --c-primary: 15 111 115;
+  --c-primary-hover: 11 90 94;
+  --c-navy: 19 41 75;
+  --c-navy-deep: 11 26 51;
+  --c-accent-light: 79 196 201;
+}
+
+h1, h2, h3 { font-family: var(--font-heading); }
 
 html, body { -webkit-font-smoothing: antialiased; }
 body { background: #F5F8FA; color: #1F2933; }
@@ -45,9 +59,9 @@ html { scroll-behavior: smooth; }
 /* storefront hero — navy, no rainbow */
 .hero-navy {
   background:
-    radial-gradient(1100px 480px at 12% -10%, rgba(31, 168, 174, 0.22), transparent 60%),
-    radial-gradient(800px 400px at 88% 0%, rgba(49, 100, 159, 0.35), transparent 62%),
-    #0B1A33;
+    radial-gradient(1100px 480px at 12% -10%, rgb(var(--c-accent-light) / 0.22), transparent 60%),
+    radial-gradient(800px 400px at 88% 0%, rgb(var(--c-primary) / 0.30), transparent 62%),
+    rgb(var(--c-navy-deep));
 }
 
 .chip {

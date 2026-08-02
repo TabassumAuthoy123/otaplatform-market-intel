@@ -350,6 +350,9 @@ function page({ title, session, body, active = '' }) {
       <nav>
         <a href="/dashboard" class="${active === 'dashboard' ? 'on' : ''}">Overview</a>
         <a href="/leads" class="${active === 'leads' ? 'on' : ''}">Demo requests</a>
+        <div class="sep">Storefront</div>
+        <a href="/design" class="${active === 'design' ? 'on' : ''}">Design &amp; layout</a>
+        <a href="/integrations" class="${active === 'integrations' ? 'on' : ''}">API integrations</a>
         <div class="sep">Sales CRM · 400 prospects</div>
         <a href="/crm/dashboard" class="${active === 'crm-dash' ? 'on' : ''}">Manager dashboard</a>
         <a href="/crm" class="${active === 'crm' ? 'on' : ''}">Lead list</a>
@@ -587,6 +590,285 @@ function leadsView(session, leads, flash) {
              <div class="bar" style="padding:14px 18px"><button class="primary" type="submit">Delete selected</button></div>
            </form>`
       }
+      </div>`
+  });
+}
+
+/* ------------------------------------------------------ design / theme views */
+
+/** Curated palettes. Values are R G B triplets to match the CSS variables. */
+const PALETTES = [
+  { name: 'Softifybd Navy & Teal', primary: '15 111 115', primaryHover: '11 90 94', navy: '19 41 75', navyDeep: '11 26 51', accentLight: '79 196 201' },
+  { name: 'Emerald & Forest', primary: '13 155 122', primaryHover: '10 165 104', navy: '17 45 38', navyDeep: '9 28 24', accentLight: '110 231 183' },
+  { name: 'Ocean Breeze', primary: '14 116 178', primaryHover: '11 94 145', navy: '16 42 66', navyDeep: '8 24 40', accentLight: '103 190 235' },
+  { name: 'Royal Violet', primary: '109 74 191', primaryHover: '88 58 158', navy: '35 27 66', navyDeep: '20 15 40', accentLight: '176 148 246' },
+  { name: 'Sunset Amber', primary: '193 106 22', primaryHover: '160 86 16', navy: '58 38 20', navyDeep: '33 21 11', accentLight: '250 190 106' },
+  { name: 'Crimson & Slate', primary: '190 45 62', primaryHover: '158 34 50', navy: '32 38 48', navyDeep: '18 22 30', accentLight: '248 137 148' }
+];
+
+const FONTS = ['Inter', 'Plus Jakarta Sans', 'Manrope', 'Poppins', 'DM Sans', 'Source Sans 3', 'Roboto', 'Lato', 'Work Sans', 'Playfair Display'];
+
+const rgbToHex = (t) => {
+  const p = String(t || '').trim().split(/\s+/).map(Number);
+  if (p.length !== 3 || p.some((n) => Number.isNaN(n))) return '#000000';
+  return '#' + p.map((n) => Math.max(0, Math.min(255, n)).toString(16).padStart(2, '0')).join('');
+};
+const hexToRgb = (h) => {
+  const m = String(h || '').trim().match(/^#?([0-9a-f]{6})$/i);
+  if (!m) return null;
+  const n = parseInt(m[1], 16);
+  return `${(n >> 16) & 255} ${(n >> 8) & 255} ${n & 255}`;
+};
+
+function previewPane(session, device) {
+  const w = device === 'mobile' ? 390 : device === 'tablet' ? 820 : 1280;
+  const label = device === 'mobile' ? 'Mobile 390px' : device === 'tablet' ? 'Tablet 820px' : 'Desktop 1280px';
+  const btn = (d, text) =>
+    `<a href="?device=${d}" style="padding:6px 13px;border-radius:7px;font-size:12.5px;text-decoration:none;${
+      device === d ? 'background:var(--teal);color:#fff' : 'background:var(--panel);color:var(--navy)'
+    }">${text}</a>`;
+
+  return `
+    <div class="card" style="padding:0;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:9px;padding:12px 16px;border-bottom:1px solid var(--hair);flex-wrap:wrap">
+        <strong style="font-size:13px;color:var(--navy)">Live preview</strong>
+        <span style="font-size:11.5px;color:var(--muted)">${esc(label)} · reloads on save</span>
+        <span style="margin-left:auto;display:flex;gap:6px">
+          ${btn('desktop', 'Desktop')}${btn('tablet', 'Tablet')}${btn('mobile', 'Mobile')}
+        </span>
+        <a class="secondary" href="${esc(PORTAL_URL)}" target="_blank" rel="noreferrer">Open ↗</a>
+      </div>
+      <div style="background:var(--panel);padding:18px;display:flex;justify-content:center">
+        <div style="width:100%;max-width:${w}px;border:1px solid var(--hair);border-radius:10px;overflow:hidden;background:#fff;box-shadow:0 10px 30px -18px rgba(19,41,75,.5)">
+          <iframe src="${esc(PORTAL_URL)}?preview=${Date.now()}" title="storefront preview"
+            style="width:100%;height:640px;border:0;display:block"></iframe>
+        </div>
+      </div>
+    </div>`;
+}
+
+function designView(session, content, tab, device, flash) {
+  const theme = content.theme || {};
+  const sections = (content.sections && content.sections.items) || [];
+
+  const tabLink = (k, label) =>
+    `<a href="/design?tab=${k}&device=${esc(device)}" style="padding:9px 16px;border-radius:8px;font-size:13px;text-decoration:none;${
+      tab === k ? 'background:#fff;color:var(--navy);font-weight:600;box-shadow:0 1px 3px rgba(19,41,75,.12)' : 'color:var(--muted)'
+    }">${label}</a>`;
+
+  const swatch = (name, key) => `
+    <label class="row" style="margin:0">
+      <span class="lab">${esc(name)}</span>
+      <span style="display:flex;gap:8px;align-items:center">
+        <input type="color" name="hex_${esc(key)}" value="${esc(rgbToHex(theme[key]))}"
+          style="width:44px;height:38px;padding:2px;border:1px solid var(--hair);border-radius:8px;background:#fff;cursor:pointer">
+        <input type="text" name="rgb_${esc(key)}" value="${esc(theme[key] || '')}" placeholder="R G B"
+          style="flex:1;font-family:ui-monospace,Consolas,monospace;font-size:12.5px">
+      </span>
+    </label>`;
+
+  const sectionsBody = `
+    <form method="post" action="/design/sections">
+      <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:14px 18px;border-bottom:1px solid var(--hair)">
+          <h2 style="margin:0;font-size:14px;color:var(--navy)">Storefront sections — show / hide</h2>
+          <p style="margin:3px 0 0;font-size:12px;color:var(--muted)">
+            Toggle what appears on the storefront home page. Takes effect on the next page load.
+          </p>
+        </div>
+        ${sections.map((s, i) => `
+          <div style="display:flex;align-items:center;gap:16px;padding:14px 18px;${i ? 'border-top:1px solid var(--hair)' : ''}">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:13.5px;font-weight:600;color:var(--navy)">${esc(s.label)}</div>
+              <div style="font-size:12px;color:var(--muted);margin-top:1px">${esc(s.note || '')}</div>
+            </div>
+            <label style="position:relative;display:inline-block;width:46px;height:26px;flex:none;cursor:pointer">
+              <input type="checkbox" name="on_${esc(s.key)}" ${s.enabled ? 'checked' : ''}
+                style="opacity:0;width:0;height:0;position:absolute" onchange="this.form.requestSubmit()">
+              <span style="position:absolute;inset:0;border-radius:26px;transition:.2s;background:${s.enabled ? 'var(--teal)' : '#CBD5DD'}"></span>
+              <span style="position:absolute;top:3px;left:${s.enabled ? '23px' : '3px'};width:20px;height:20px;border-radius:50%;background:#fff;transition:.2s"></span>
+            </label>
+          </div>`).join('')}
+        <div class="bar" style="padding:14px 18px">
+          <button class="primary" type="submit">Save sections</button>
+          <span style="margin-left:auto;font-size:12px;color:var(--muted)">
+            ${sections.filter((s) => s.enabled).length} of ${sections.length} visible
+          </span>
+        </div>
+      </div>
+    </form>`;
+
+  const themeBody = `
+    <form method="post" action="/design/theme">
+      <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+
+      <div class="card">
+        <h2 style="margin:0 0 4px;font-size:14px;color:var(--navy)">Curated palettes</h2>
+        <p style="margin:0 0 14px;font-size:12px;color:var(--muted)">Pick one, or set exact colours below.</p>
+        <div class="grid">
+          ${PALETTES.map((p) => `
+            <button type="submit" name="palette" value="${esc(p.name)}" class="tile" style="text-align:left;cursor:pointer;border:${
+              theme.preset === p.name ? '2px solid var(--teal)' : '1px solid var(--hair)'
+            }">
+              <strong style="font-size:13px">${esc(p.name)}</strong>
+              <span style="display:flex;gap:6px;margin-top:9px">
+                ${[p.navyDeep, p.navy, p.primary, p.accentLight].map((c) =>
+                  `<i style="width:24px;height:24px;border-radius:6px;background:rgb(${esc(c)});display:inline-block"></i>`).join('')}
+              </span>
+            </button>`).join('')}
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 style="margin:0 0 14px;font-size:14px;color:var(--navy)">Exact colours</h2>
+        <div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))">
+          ${swatch('Primary (buttons, links)', 'primary')}
+          ${swatch('Primary hover', 'primaryHover')}
+          ${swatch('Navy (headings)', 'navy')}
+          ${swatch('Navy deep (hero, footer)', 'navyDeep')}
+          ${swatch('Accent light', 'accentLight')}
+        </div>
+        <p style="margin:12px 0 0;font-size:12px;color:var(--muted)">
+          Use the picker or type an <code>R G B</code> triplet. The picker wins if you change both.
+        </p>
+      </div>
+
+      <div class="card">
+        <h2 style="margin:0 0 14px;font-size:14px;color:var(--navy)">Typography</h2>
+        <div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
+          <label class="row" style="margin:0"><span class="lab">Heading font</span>
+            <select name="headingFont">${FONTS.map((f) =>
+              `<option value="${esc(f)}"${theme.headingFont === f ? ' selected' : ''}>${esc(f)}</option>`).join('')}</select></label>
+          <label class="row" style="margin:0"><span class="lab">Body font</span>
+            <select name="bodyFont">${FONTS.map((f) =>
+              `<option value="${esc(f)}"${theme.bodyFont === f ? ' selected' : ''}>${esc(f)}</option>`).join('')}</select></label>
+        </div>
+        <p style="margin:12px 0 0;font-size:12px;color:var(--muted)">
+          Loaded from Google Fonts at render time, so the storefront needs an internet connection for anything
+          other than the system default.
+        </p>
+      </div>
+
+      <div class="bar">
+        <button class="primary" type="submit">Save theme</button>
+        <button class="secondary" type="submit" name="palette" value="Softifybd Navy &amp; Teal">Reset to default</button>
+      </div>
+    </form>`;
+
+  return page({
+    title: 'Design',
+    session,
+    active: 'design',
+    body: `
+      <h1>Design &amp; layout</h1>
+      <p class="sub">Sections, colours and fonts for the B2C storefront — with the storefront itself beside you.</p>
+      ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
+
+      <div style="display:flex;gap:6px;background:var(--panel);padding:6px;border-radius:11px;margin-bottom:16px;flex-wrap:wrap">
+        ${tabLink('sections', 'Sections')}${tabLink('theme', 'Theme &amp; colours')}
+      </div>
+
+      <div style="display:grid;gap:16px;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);align-items:start">
+        <div>${tab === 'theme' ? themeBody : sectionsBody}</div>
+        <div style="position:sticky;top:20px">${previewPane(session, device)}</div>
+      </div>
+
+      <style>
+        @media (max-width: 1100px) {
+          h1 + .sub + div + div { grid-template-columns: 1fr !important; }
+        }
+      </style>`
+  });
+}
+
+/* --------------------------------------------------------- integrations view */
+
+function integrationsView(session, flash, testResult) {
+  const rows = [
+    ['GDS_BASE_URL', process.env.GDS_BASE_URL, 'Regional endpoint host'],
+    ['GDS_USERNAME', process.env.GDS_USERNAME, 'Must carry the "Universal API/" prefix'],
+    ['GDS_PASSWORD', process.env.GDS_PASSWORD, 'Never displayed'],
+    ['GDS_SEARCH_PATH', process.env.GDS_SEARCH_PATH, 'LowFareSearch service path'],
+    ['GDS_PNR_PATH', process.env.GDS_PNR_PATH, 'UniversalRecord service path'],
+    ['GDS_SOAP_ACTION', process.env.GDS_SOAP_ACTION, 'Empty string is correct for uAPI'],
+    ['GDS_TIMEOUT_MS', process.env.GDS_TIMEOUT_MS, 'Request timeout']
+  ];
+
+  const dot = (ok) =>
+    `<span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${ok ? 'var(--teal)' : '#CBD5DD'}"></span>`;
+
+  return page({
+    title: 'Integrations',
+    session,
+    active: 'integrations',
+    body: `
+      <h1>API integrations</h1>
+      <p class="sub">Suppliers wired into the platform. Credentials live in <code>.env</code>, which is gitignored — this screen reads their status, never their values.</p>
+      ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
+
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+          <h2 style="margin:0;font-size:15px;color:var(--navy)">Travelport uAPI</h2>
+          <span style="padding:3px 10px;border-radius:20px;font-size:11.5px;background:${
+            process.env.GDS_USERNAME ? 'rgba(15,111,115,.12);color:var(--teal)' : 'var(--panel);color:var(--muted)'
+          }">${process.env.GDS_USERNAME ? 'configured' : 'not configured'}</span>
+          <span style="font-size:12px;color:var(--muted)">SOAP 1.1 · air_v52_0 / universal_v52_0</span>
+          <form method="post" action="/integrations/test" style="margin-left:auto">
+            <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+            <button class="primary" type="submit">Test connection</button>
+          </form>
+        </div>
+
+        <table style="margin-top:16px">
+          <thead><tr><th style="width:20px"></th><th>Variable</th><th>Value</th><th>Meaning</th></tr></thead>
+          <tbody>
+            ${rows.map(([k, v, note]) => `<tr>
+              <td>${dot(Boolean(v))}</td>
+              <td class="tnum" style="font-weight:600;color:var(--navy)">${esc(k)}</td>
+              <td class="tnum" style="color:var(--muted)">${
+                k === 'GDS_PASSWORD' ? (v ? '•••••••• set' : 'not set')
+                : v ? esc(String(v).length > 54 ? String(v).slice(0, 54) + '…' : v) : '—'
+              }</td>
+              <td style="font-size:12.5px">${esc(note)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      ${testResult ? `
+      <div class="card" style="border-left:4px solid ${testResult.ok ? 'var(--teal)' : 'var(--amber)'}">
+        <h2 style="margin:0 0 10px;font-size:14px;color:var(--navy)">
+          ${testResult.ok ? 'Travelport answered' : 'Travelport did not return fares'}
+        </h2>
+        <table>
+          <tbody>
+            <tr><td style="width:170px;font-weight:600">HTTP status</td><td class="tnum">${esc(testResult.status)}</td></tr>
+            <tr><td style="font-weight:600">Round trip</td><td class="tnum">${esc(testResult.ms)} ms</td></tr>
+            <tr><td style="font-weight:600">Endpoint</td><td class="tnum">${esc(testResult.host || '—')}</td></tr>
+            <tr><td style="font-weight:600">Priced itineraries</td><td class="tnum">${esc(testResult.offers)}</td></tr>
+            ${testResult.cheapest ? `<tr><td style="font-weight:600">Cheapest</td><td class="tnum">${esc(testResult.cheapest)}</td></tr>` : ''}
+            ${testResult.fault ? `<tr><td style="font-weight:600;color:var(--amber)">Fault</td><td>${esc(testResult.fault)}</td></tr>` : ''}
+          </tbody>
+        </table>
+        <p style="margin:12px 0 0;font-size:12px;color:var(--muted)">Test route: DAC → CGP, ${esc(testResult.date)}, 1 adult.</p>
+      </div>` : ''}
+
+      <div class="card">
+        <h2 style="margin:0 0 10px;font-size:14px;color:var(--navy)">Not yet wired</h2>
+        <table>
+          <thead><tr><th>Supplier</th><th>Kind</th><th>Status</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Sabre</strong></td><td>GDS</td><td style="color:var(--muted)">no credentials issued</td></tr>
+            <tr><td><strong>Flyhub</strong></td><td>Consolidator</td><td style="color:var(--muted)">no credentials issued</td></tr>
+            <tr><td><strong>TRACCS</strong></td><td>Travel back-office / accounting</td><td style="color:var(--muted)">evaluation only</td></tr>
+            <tr><td><strong>NuFlights</strong></td><td>Travel back-office / accounting</td><td style="color:var(--muted)">evaluation only</td></tr>
+          </tbody>
+        </table>
+        <p style="margin:12px 0 0;font-size:12.5px;color:var(--muted)">
+          The transport in <code>lib/gds.ts</code> is supplier-agnostic — host, path, method and body all come from
+          the environment. Adding a supplier is a second block of variables and a response parser, not a rewrite.
+        </p>
       </div>`
   });
 }
@@ -1461,6 +1743,88 @@ const server = http.createServer(async (req, res) => {
       const leads = readJson(LEADS_FILE, []).filter((l) => !remove.has(l.id));
       await writeJsonAtomic(LEADS_FILE, leads);
       return redirect(res, '/leads?saved=1');
+    }
+
+    /* ---- design & integrations ---- */
+
+    if (pathname === '/design' && req.method === 'GET') {
+      const tab = url.searchParams.get('tab') === 'theme' ? 'theme' : 'sections';
+      const device = ['mobile', 'tablet', 'desktop'].includes(url.searchParams.get('device'))
+        ? url.searchParams.get('device') : 'desktop';
+      return send(res, 200, designView(session, readJson(SITE_FILE, {}), tab, device,
+        url.searchParams.get('saved') ? 'Saved — the preview has reloaded.' : null));
+    }
+
+    if (pathname === '/design/sections' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const content = readJson(SITE_FILE, {});
+      const items = (content.sections && content.sections.items) || [];
+      // an unchecked box is simply absent from the body
+      for (const item of items) item.enabled = `on_${item.key}` in form;
+      stampMeta(content, session);
+      await writeJsonAtomic(SITE_FILE, content);
+      return redirect(res, '/design?tab=sections&saved=1');
+    }
+
+    if (pathname === '/design/theme' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const content = readJson(SITE_FILE, {});
+      content.theme = content.theme || {};
+
+      const chosen = form.palette && PALETTES.find((p) => p.name === form.palette);
+      if (chosen) {
+        Object.assign(content.theme, chosen, { preset: chosen.name });
+      } else {
+        for (const key of ['primary', 'primaryHover', 'navy', 'navyDeep', 'accentLight']) {
+          // the picker is authoritative when it disagrees with the typed triplet
+          const fromHex = hexToRgb(form[`hex_${key}`]);
+          const typed = String(form[`rgb_${key}`] || '').trim();
+          const wasHex = rgbToHex(content.theme[key]) !== String(form[`hex_${key}`] || '');
+          if (wasHex && fromHex) content.theme[key] = fromHex;
+          else if (/^\d+\s+\d+\s+\d+$/.test(typed)) content.theme[key] = typed;
+          else if (fromHex) content.theme[key] = fromHex;
+        }
+        content.theme.preset = 'Custom';
+        if (form.headingFont) content.theme.headingFont = String(form.headingFont);
+        if (form.bodyFont) content.theme.bodyFont = String(form.bodyFont);
+      }
+      stampMeta(content, session);
+      await writeJsonAtomic(SITE_FILE, content);
+      return redirect(res, '/design?tab=theme&saved=1');
+    }
+
+    if (pathname === '/integrations' && req.method === 'GET') {
+      return send(res, 200, integrationsView(session, null, null));
+    }
+
+    if (pathname === '/integrations/test' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+
+      const date = new Date(Date.now() + 120 * 86400000).toISOString().slice(0, 10);
+      let result;
+      try {
+        const r = await fetch(`${APP_URL}/api/gds/search?from=DAC&to=CGP&date=${date}`, { cache: 'no-store' });
+        const j = await r.json();
+        const lv = j.live || {};
+        const raw = typeof lv.data === 'string' ? lv.data : '';
+        const prices = Array.from(raw.matchAll(/TotalPrice="([A-Z]{3})(\d+(?:\.\d+)?)"/g)).map((m) => Number(m[2]));
+        result = {
+          ok: Boolean(lv.upstreamOk),
+          status: lv.upstreamStatus ?? '—',
+          ms: lv.elapsedMs ?? 0,
+          host: lv.endpointHost,
+          offers: (raw.match(/<air:AirPricePoint /g) || []).length,
+          cheapest: prices.length ? `${(raw.match(/TotalPrice="([A-Z]{3})/) || [])[1] || ''}${Math.min(...prices)}` : '',
+          fault: lv.fault ? `${lv.fault.code || ''} ${lv.fault.faultString || ''}`.trim() : '',
+          date
+        };
+      } catch (e) {
+        result = { ok: false, status: 'no response', ms: 0, offers: 0, fault: e.message, date };
+      }
+      return send(res, 200, integrationsView(session, null, result));
     }
 
     /* ---- sales CRM ---- */

@@ -23,7 +23,18 @@ export type Package = {
 
 export type Hotel = { name: string; city: string; priceFrom: number; rating: number; note: string };
 
+export type Theme = {
+  preset: string;
+  /** R G B triplets, e.g. "15 111 115" — they feed CSS variables. */
+  primary: string; primaryHover: string; navy: string; navyDeep: string; accentLight: string;
+  headingFont: string; bodyFont: string; radius: string;
+};
+
+export type SectionToggle = { key: string; label: string; note: string; enabled: boolean };
+
 export type SiteContent = {
+  theme?: Theme;
+  sections?: { items: SectionToggle[] };
   brand: {
     name: string; company: string; logoMark: string; tagline: string;
     hotline: string; email: string; address: string; productSite: string;
@@ -73,4 +84,33 @@ export async function getContent(): Promise<SiteContent> {
 /** 62,500 -> "৳62,500" */
 export function bdt(n: number): string {
   return '৳' + n.toLocaleString('en-IN');
+}
+
+/** Is a storefront section switched on? Unknown keys default to visible. */
+export function sectionOn(c: SiteContent, key: string): boolean {
+  const item = c.sections?.items?.find((s) => s.key === key);
+  return item ? item.enabled : true;
+}
+
+/** The <style> body that repaints the storefront from the saved theme. */
+export function themeCss(c: SiteContent): string {
+  const t = c.theme;
+  if (!t) return '';
+  const v: string[] = [];
+  if (t.primary) v.push(`--c-primary:${t.primary}`);
+  if (t.primaryHover) v.push(`--c-primary-hover:${t.primaryHover}`);
+  if (t.navy) v.push(`--c-navy:${t.navy}`);
+  if (t.navyDeep) v.push(`--c-navy-deep:${t.navyDeep}`);
+  if (t.accentLight) v.push(`--c-accent-light:${t.accentLight}`);
+  if (t.bodyFont) v.push(`--font-sans:'${t.bodyFont}',system-ui,sans-serif`);
+  if (t.headingFont) v.push(`--font-heading:'${t.headingFont}',system-ui,sans-serif`);
+  return v.length ? `:root{${v.join(';')}}` : '';
+}
+
+/** Google Fonts href for the chosen faces, or null when they are already local. */
+export function fontHref(c: SiteContent): string | null {
+  const fams = Array.from(new Set([c.theme?.headingFont, c.theme?.bodyFont].filter(Boolean) as string[]));
+  if (!fams.length) return null;
+  const q = fams.map((f) => `family=${encodeURIComponent(f)}:wght@400;500;600;700;800`).join('&');
+  return `https://fonts.googleapis.com/css2?${q}&display=swap`;
 }

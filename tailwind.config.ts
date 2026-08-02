@@ -15,8 +15,20 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        navy: { 950: '#0B1A33', 900: '#13294B', 800: '#1B3A66', 700: '#254F87', 600: '#31649F' },
-        teal: { 700: '#0B5A5E', 600: '#0F6F73', 500: '#12898E', 400: '#1FA8AE', 300: '#4FC4C9' },
+        // Brand colours read CSS variables so the admin theme editor can repaint
+        // the storefront without a rebuild. Everything else stays static.
+        navy: {
+          950: 'rgb(var(--c-navy-deep) / <alpha-value>)',
+          900: 'rgb(var(--c-navy) / <alpha-value>)',
+          800: '#1B3A66', 700: '#254F87', 600: '#31649F'
+        },
+        teal: {
+          700: 'rgb(var(--c-primary-hover) / <alpha-value>)',
+          600: 'rgb(var(--c-primary) / <alpha-value>)',
+          500: '#12898E',
+          400: 'rgb(var(--c-accent-light) / <alpha-value>)',
+          300: 'rgb(var(--c-accent-light) / <alpha-value>)'
+        },
         amber: { 700: '#9A5B00', 500: '#C77B10' },
         ink: '#1F2933',
         muted: '#5A6472',

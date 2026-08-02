@@ -1,9 +1,9 @@
 {
   "_meta": {
     "note": "Every string on the B2C portal comes from this file. Edit it through the admin portal (http://localhost:4001) — do not hand-edit unless the admin server is stopped.",
-    "revision": 1,
-    "lastEditedBy": "seed",
-    "lastEditedAt": "2026-07-30"
+    "revision": 5,
+    "lastEditedBy": "admin@softifybd.com",
+    "lastEditedAt": "2026-08-02 08:49:18"
   },
   "brand": {
     "name": "OTA Platform",
@@ -688,5 +688,77 @@
     ],
     "legal": "© 2026 Softifybd Limited. Internal demo build — not a live booking service.",
     "disclaimer": "Fares, package prices and availability on this demo are indicative sample data and do not reflect live GDS results."
+  },
+  "theme": {
+    "_hint": "Brand colours as R G B triplets — they feed CSS variables, so a change here repaints the whole storefront. Use the admin colour pickers rather than editing by hand.",
+    "preset": "Softifybd Navy & Teal",
+    "primary": "15 111 115",
+    "primaryHover": "11 90 94",
+    "navy": "19 41 75",
+    "navyDeep": "11 26 51",
+    "accentLight": "79 196 201",
+    "headingFont": "Inter",
+    "bodyFont": "Inter",
+    "radius": "14",
+    "name": "Softifybd Navy & Teal"
+  },
+  "sections": {
+    "_hint": "Toggle what appears on the storefront home page. Order is the order shown. Changes take effect on the next page load.",
+    "items": [
+      {
+        "key": "hero",
+        "label": "Hero + search",
+        "note": "Headline, buttons and the search panel",
+        "enabled": true
+      },
+      {
+        "key": "trustStats",
+        "label": "Trust numbers",
+        "note": "The four tiles under the hero",
+        "enabled": true
+      },
+      {
+        "key": "services",
+        "label": "Services",
+        "note": "What you can book — six cards",
+        "enabled": true
+      },
+      {
+        "key": "routes",
+        "label": "Popular routes",
+        "note": "Fares from Dhaka",
+        "enabled": true
+      },
+      {
+        "key": "packages",
+        "label": "Packages",
+        "note": "Hajj, Umrah and tours",
+        "enabled": true
+      },
+      {
+        "key": "why",
+        "label": "Why this platform",
+        "note": "The six numbered reasons",
+        "enabled": true
+      },
+      {
+        "key": "credentials",
+        "label": "Credentials",
+        "note": "ISO / BASIS / DUNS strip",
+        "enabled": true
+      },
+      {
+        "key": "testimonials",
+        "label": "Testimonials",
+        "note": "Hidden automatically while empty",
+        "enabled": true
+      },
+      {
+        "key": "agentCta",
+        "label": "Agent CTA",
+        "note": "The B2B block at the bottom",
+        "enabled": true
+      }
+    ]
   }
 }
