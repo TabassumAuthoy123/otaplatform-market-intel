@@ -17,7 +17,7 @@
   },
   "announcement": {
     "enabled": true,
-    "text": "Demo environment — fares and availability shown here are indicative sample data, not live GDS results.",
+    "text": "Flight search is live on Travelport and Sabre. Package, hotel and visa prices on this site are still indicative sample data. Bookings are held, not ticketed.",
     "linkLab": "",
     "linkHref": ""
   },
