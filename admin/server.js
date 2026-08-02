@@ -350,6 +350,8 @@ function page({ title, session, body, active = '' }) {
       <nav>
         <a href="/dashboard" class="${active === 'dashboard' ? 'on' : ''}">Overview</a>
         <a href="/leads" class="${active === 'leads' ? 'on' : ''}">Demo requests</a>
+        <div class="sep">Accounting</div>
+        <a href="/books" class="${active === 'books' ? 'on' : ''}">Records — add / edit / delete</a>
         <div class="sep">Storefront</div>
         <a href="/design" class="${active === 'design' ? 'on' : ''}">Design &amp; layout</a>
         <a href="/integrations" class="${active === 'integrations' ? 'on' : ''}">API integrations</a>
@@ -592,6 +594,224 @@ function leadsView(session, leads, flash) {
       }
       </div>`
   });
+}
+
+/* ------------------------------------------------------------- book CRUD */
+
+/**
+ * Every editable collection in content/accounting.json.
+ *
+ *   idPrefix / noPrefix  used to mint the next id when a record is created
+ *   title                fields tried, in order, for the row heading
+ *   search               fields the list search looks in
+ *   amount               field shown in the amount column, if any
+ *
+ * The forms themselves are generated from the shape of each record by the same
+ * renderValue()/applyForm() pair the storefront content editor uses, so nested
+ * invoice lines get add/remove rows for free and a new field on a record shows
+ * up in the form without any wiring.
+ */
+const BOOK_COLLECTIONS = [
+  { key: 'invoices', label: 'Customer invoices', hint: 'Sales. Lines carry supplier cost, which is where margin comes from.', idPrefix: 'INV-', noPrefix: 'invoicePrefix', title: ['no'], search: ['no', 'notes'], amount: null, party: 'customerId' },
+  { key: 'receipts', label: 'Customer receipts', hint: 'Money in against an invoice.', idPrefix: 'RCP-', noPrefix: 'receiptPrefix', title: ['no'], search: ['no', 'ref'], amount: 'amount', party: 'customerId' },
+  { key: 'bills', label: 'Supplier bills', hint: 'What a supplier charged us for a booking.', idPrefix: 'BIL-', noPrefix: 'billPrefix', title: ['no'], search: ['no', 'notes'], amount: 'amount', party: 'supplierId' },
+  { key: 'payments', label: 'Supplier payments', hint: 'Money out against a bill.', idPrefix: 'PAY-', noPrefix: 'paymentPrefix', title: ['no'], search: ['no', 'ref'], amount: 'amount', party: 'supplierId' },
+  { key: 'expenses', label: 'Expenses', hint: 'Operating spend by category.', idPrefix: 'EXP-', noPrefix: 'expensePrefix', title: ['no'], search: ['no', 'description'], amount: 'amount', party: 'categoryId' },
+  { key: 'supplierDeposits', label: 'Supplier deposits', hint: 'Advances placed with consolidators and airlines.', idPrefix: 'DEP-', noPrefix: null, title: ['no'], search: ['no', 'reference', 'note'], amount: 'amount', party: 'supplierId' },
+  { key: 'inventory', label: 'Inventory blocks', hint: 'Seats, room nights and quota bought up front.', idPrefix: 'INV-BLK-', noPrefix: null, title: ['name'], search: ['name', 'note'], amount: null, party: 'supplierId' },
+  { key: 'customers', label: 'Customers', hint: 'Who we invoice.', idPrefix: 'CUS-', noPrefix: null, title: ['name'], search: ['name', 'phone', 'email'], amount: null, party: null },
+  { key: 'suppliers', label: 'Suppliers & vendors', hint: 'Airlines, consolidators, hotels, visa handlers.', idPrefix: 'SUP-', noPrefix: null, title: ['name'], search: ['name', 'phone'], amount: null, party: null },
+  { key: 'services', label: 'Services', hint: 'What can appear on an invoice line.', idPrefix: 'SRV-', noPrefix: null, title: ['name'], search: ['name'], amount: null, party: null },
+  { key: 'banks', label: 'Bank accounts', hint: 'MFS wallets count as banks.', idPrefix: 'BNK-', noPrefix: null, title: ['name'], search: ['name', 'accountNo'], amount: null, party: null },
+  { key: 'expenseCategories', label: 'Expense categories', hint: '', idPrefix: 'EXC-', noPrefix: null, title: ['name'], search: ['name'], amount: null, party: null },
+  { key: 'employees', label: 'Employees', hint: '', idPrefix: 'EMP-', noPrefix: null, title: ['name'], search: ['name', 'role'], amount: null, party: null }
+];
+
+const bookFile = () => readJson(path.join(CONTENT_DIR, 'accounting.json'), {});
+const collSpec = (k) => BOOK_COLLECTIONS.find((c) => c.key === k);
+
+/** Next free id in a collection, continuing whatever numbering it already uses. */
+function nextBookId(rows, prefix) {
+  let max = 0;
+  for (const r of rows) {
+    const m = new RegExp(`^${prefix.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}(\\d+)$`).exec(String(r.id || ''));
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return `${prefix}${String(max + 1).padStart(4, '0')}`;
+}
+
+function bookIndexView(session, book, flash) {
+  return page({
+    title: 'Accounting records',
+    session,
+    active: 'books',
+    body: `
+      <h1>Accounting records</h1>
+      <p class="sub">Create, edit and delete every voucher and master in the book. The app on ${esc(APP_URL)}/accounts reads these on the next page load.</p>
+      ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
+      <div class="card"><div class="grid">
+        ${BOOK_COLLECTIONS.map((c) => `
+          <a class="tile" href="/books/list?col=${esc(c.key)}">
+            <strong class="tnum">${(book[c.key] || []).length}</strong>
+            <span>${esc(c.label)} →</span>
+            ${c.hint ? `<span style="display:block;margin-top:3px;font-size:11.5px">${esc(c.hint)}</span>` : ''}
+          </a>`).join('')}
+      </div></div>
+      <div class="card">
+        <p style="margin:0;font-size:12.5px;color:var(--muted)">
+          Totals on the dashboard, the cash book and every report are derived from these rows at request time —
+          there are no stored balances to fall out of step. Delete a receipt and the invoice goes back to unpaid
+          on the next load.
+        </p>
+      </div>`
+  });
+}
+
+function bookListView(session, book, spec, q, flash) {
+  const all = book[spec.key] || [];
+  const term = String(q.q || '').trim().toLowerCase();
+  let rows = term
+    ? all.filter((r) => spec.search.concat(['id']).some((f) => String(r[f] ?? '').toLowerCase().includes(term)))
+    : all;
+  rows = [...rows].reverse();
+
+  const pageNo = Math.max(1, Number(q.page) || 1);
+  const pages = Math.max(1, Math.ceil(rows.length / 40));
+  const slice = rows.slice((pageNo - 1) * 40, pageNo * 40);
+
+  const nameOf = (coll, id) => {
+    const r = (book[coll] || []).find((x) => x.id === id);
+    return r ? r.name : id || '—';
+  };
+  const partyName = (r) => {
+    if (!spec.party) return '';
+    const v = r[spec.party];
+    if (spec.party === 'customerId') return nameOf('customers', v);
+    if (spec.party === 'supplierId') return nameOf('suppliers', v);
+    if (spec.party === 'categoryId') return nameOf('expenseCategories', v);
+    return v || '—';
+  };
+  const sym = (book.company && book.company.currencySymbol) || '৳';
+
+  return page({
+    title: spec.label,
+    session,
+    active: 'books',
+    body: `
+      <h1>${esc(spec.label)}</h1>
+      <p class="sub">${all.length} records${term ? ` · ${rows.length} match “${esc(term)}”` : ''} · <a href="/books">all collections</a></p>
+      ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
+
+      <div class="card" style="display:flex;gap:11px;flex-wrap:wrap;align-items:flex-end">
+        <form method="get" action="/books/list" style="display:flex;gap:9px;align-items:flex-end;flex:1;min-width:260px">
+          <input type="hidden" name="col" value="${esc(spec.key)}">
+          <label class="row" style="margin:0;flex:1"><span class="lab">Search</span>
+            <input type="text" name="q" value="${esc(q.q || '')}" placeholder="${esc(spec.search.join(', '))}"></label>
+          <button class="primary" type="submit">Search</button>
+          <a class="secondary" href="/books/list?col=${esc(spec.key)}">Reset</a>
+        </form>
+        <form method="post" action="/books/new?col=${esc(spec.key)}">
+          <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+          <button class="primary" type="submit">+ New ${esc(spec.label.replace(/s$/, '').toLowerCase())}</button>
+        </form>
+      </div>
+
+      <form method="post" action="/books/delete?col=${esc(spec.key)}" class="card" style="padding:0;overflow:hidden">
+        <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+        <table>
+          <thead><tr>
+            <th style="width:24px"></th><th>ID</th><th>Reference</th>
+            ${spec.party ? '<th>Party</th>' : ''}<th>Date</th>
+            ${spec.amount ? '<th style="text-align:right">Amount</th>' : ''}<th></th>
+          </tr></thead>
+          <tbody>
+          ${slice.length === 0
+            ? `<tr><td colspan="7" style="padding:24px;color:var(--muted)">Nothing here yet — press <strong>New</strong> above.</td></tr>`
+            : slice.map((r) => `<tr>
+                <td><input type="checkbox" name="remove" value="${esc(r.id)}"></td>
+                <td class="tnum" style="white-space:nowrap"><a href="/books/edit?col=${esc(spec.key)}&id=${encodeURIComponent(r.id)}">${esc(r.id)}</a></td>
+                <td><strong>${esc(spec.title.map((f) => r[f]).find(Boolean) || r.id)}</strong></td>
+                ${spec.party ? `<td>${esc(partyName(r))}</td>` : ''}
+                <td class="tnum">${esc(r.date || '—')}</td>
+                ${spec.amount ? `<td class="tnum" style="text-align:right;font-weight:600">${esc(sym)}${Number(r[spec.amount] || 0).toLocaleString('en-IN')}</td>` : ''}
+                <td><a href="/books/edit?col=${esc(spec.key)}&id=${encodeURIComponent(r.id)}">Edit</a></td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+        <div class="bar" style="padding:14px 18px">
+          <button class="primary" type="submit">Delete selected</button>
+          <span style="margin-left:auto;font-size:12.5px;color:var(--muted)">Showing ${slice.length} of ${rows.length} · page ${pageNo} of ${pages}</span>
+          ${pageNo > 1 ? `<a class="secondary" href="/books/list?col=${esc(spec.key)}&q=${esc(q.q || '')}&page=${pageNo - 1}">← Prev</a>` : ''}
+          ${pageNo < pages ? `<a class="secondary" href="/books/list?col=${esc(spec.key)}&q=${esc(q.q || '')}&page=${pageNo + 1}">Next →</a>` : ''}
+        </div>
+      </form>`
+  });
+}
+
+function bookEditView(session, book, spec, rec, flash, errors) {
+  const boolPaths = [];
+  const numPaths = [];
+  const linePaths = [];
+  const fields = renderValue('rec', rec, boolPaths, numPaths, linePaths);
+
+  // dropdown help — the raw form shows ids, so list what they mean
+  const legend = [];
+  for (const [label, coll] of [['Customers', 'customers'], ['Suppliers', 'suppliers'], ['Services', 'services'], ['Banks', 'banks'], ['Expense categories', 'expenseCategories']]) {
+    const rows = book[coll] || [];
+    if (!rows.length) continue;
+    legend.push(`<div style="margin-bottom:10px"><strong style="font-size:11.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)">${esc(label)}</strong>
+      <div style="font-size:12px;margin-top:3px;line-height:1.7">${rows.map((r) => `<code style="background:var(--panel);padding:1px 5px;border-radius:4px">${esc(r.id)}</code> ${esc(r.name)}`).join(' · ')}</div></div>`);
+  }
+
+  return page({
+    title: rec.id,
+    session,
+    active: 'books',
+    body: `
+      <h1>${esc(spec.title.map((f) => rec[f]).find(Boolean) || rec.id)}</h1>
+      <p class="sub"><span class="tnum">${esc(rec.id)}</span> · ${esc(spec.label)} · <a href="/books/list?col=${esc(spec.key)}">back to list</a></p>
+      ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
+      ${errors && errors.length ? `<div class="flash warn"><strong>Not saved:</strong><ul style="margin:6px 0 0 16px">${errors.map((e) => `<li>${esc(e)}</li>`).join('')}</ul></div>` : ''}
+
+      <form method="post" action="/books/edit?col=${esc(spec.key)}&id=${encodeURIComponent(rec.id)}">
+        <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+        <input type="hidden" name="__bools" value="${esc(boolPaths.join('|'))}">
+        <input type="hidden" name="__nums" value="${esc(numPaths.join('|'))}">
+        <div class="card">${fields}</div>
+        <div class="bar">
+          <button class="primary" type="submit" name="save" value="1">Save</button>
+          <a class="secondary" href="/books/list?col=${esc(spec.key)}">Cancel</a>
+          <span style="margin-left:auto;font-size:12.5px;color:var(--muted)">Ticking <em>delete</em> on a line, or <em>Add item</em>, also saves.</span>
+        </div>
+      </form>
+
+      ${legend.length ? `<div class="card"><h2 style="margin:0 0 12px;font-size:13.5px;color:var(--navy)">What the ids mean</h2>${legend.join('')}</div>` : ''}`
+  });
+}
+
+/** The few rules that stop a voucher being nonsense. */
+function validateBookRecord(spec, rec) {
+  const errors = [];
+  const num = (v) => Number(v || 0);
+  if (['receipts', 'payments', 'expenses', 'supplierDeposits'].includes(spec.key) && num(rec.amount) <= 0) {
+    errors.push('Amount must be greater than zero.');
+  }
+  if (['bills'].includes(spec.key) && num(rec.amount) < 0) errors.push('A bill cannot be negative.');
+  if (spec.key === 'invoices') {
+    if (!Array.isArray(rec.lines) || rec.lines.length === 0) errors.push('An invoice needs at least one line.');
+    else for (const [i, l] of rec.lines.entries()) {
+      if (num(l.qty) <= 0) errors.push(`Line ${i + 1}: quantity must be greater than zero.`);
+      if (num(l.unitPrice) < num(l.supplierCost)) {
+        errors.push(`Line ${i + 1}: selling price is below supplier cost — that is a loss, confirm it is deliberate by raising the price or lowering the cost.`);
+      }
+    }
+  }
+  if (spec.key === 'inventory') {
+    if (num(rec.sold) > num(rec.purchased)) errors.push('Sold cannot exceed purchased.');
+    if (num(rec.unitCost) < 0 || num(rec.unitSell) < 0) errors.push('Unit cost and unit sell cannot be negative.');
+  }
+  if (rec.date && !/^\d{4}-\d{2}-\d{2}$/.test(String(rec.date))) errors.push('Date must be YYYY-MM-DD.');
+  return errors;
 }
 
 /* ------------------------------------------------------ design / theme views */
@@ -1743,6 +1963,84 @@ const server = http.createServer(async (req, res) => {
       const leads = readJson(LEADS_FILE, []).filter((l) => !remove.has(l.id));
       await writeJsonAtomic(LEADS_FILE, leads);
       return redirect(res, '/leads?saved=1');
+    }
+
+    /* ---- accounting records: full CRUD ---- */
+
+    if (pathname === '/books' && req.method === 'GET') {
+      return send(res, 200, bookIndexView(session, bookFile(), url.searchParams.get('saved') ? 'Saved.' : null));
+    }
+
+    if (pathname === '/books/list' && req.method === 'GET') {
+      const spec = collSpec(url.searchParams.get('col'));
+      if (!spec) return redirect(res, '/books');
+      const q = Object.fromEntries(url.searchParams.entries());
+      return send(res, 200, bookListView(session, bookFile(), spec, q, q.saved ? 'Saved.' : null));
+    }
+
+    if (pathname === '/books/edit' && req.method === 'GET') {
+      const spec = collSpec(url.searchParams.get('col'));
+      if (!spec) return redirect(res, '/books');
+      const book = bookFile();
+      const rec = (book[spec.key] || []).find((r) => r.id === url.searchParams.get('id'));
+      if (!rec) return send(res, 404, page({ title: 'Not found', session, body: '<h1>No record with that id</h1><p><a href="/books">Back</a></p>' }));
+      return send(res, 200, bookEditView(session, book, spec, rec, url.searchParams.get('saved') ? 'Saved.' : null, null));
+    }
+
+    if (pathname === '/books/edit' && req.method === 'POST') {
+      const spec = collSpec(url.searchParams.get('col'));
+      if (!spec) return redirect(res, '/books');
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+
+      const book = bookFile();
+      const idx = (book[spec.key] || []).findIndex((r) => r.id === url.searchParams.get('id'));
+      if (idx < 0) return send(res, 404, page({ title: 'Not found', session, body: '<h1>No record with that id</h1>' }));
+
+      // reuse the storefront content editor's form engine on a single record
+      const holder = { rec: JSON.parse(JSON.stringify(book[spec.key][idx])) };
+      applyForm(holder, form);
+      const next = holder.rec;
+
+      const errors = validateBookRecord(spec, next);
+      if (errors.length) return send(res, 422, bookEditView(session, book, spec, next, null, errors));
+
+      book[spec.key][idx] = next;
+      await writeJsonAtomic(path.join(CONTENT_DIR, 'accounting.json'), book);
+      return redirect(res, `/books/edit?col=${encodeURIComponent(spec.key)}&id=${encodeURIComponent(next.id)}&saved=1`);
+    }
+
+    if (pathname === '/books/new' && req.method === 'POST') {
+      const spec = collSpec(url.searchParams.get('col'));
+      if (!spec) return redirect(res, '/books');
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+
+      const book = bookFile();
+      const rows = book[spec.key] || (book[spec.key] = []);
+      const rec = rows.length ? blankLike(rows[rows.length - 1]) : { id: '', date: '' };
+      rec.id = nextBookId(rows, spec.idPrefix);
+      if ('no' in rec && spec.noPrefix && book.company) {
+        rec.no = `${book.company[spec.noPrefix] || ''}${String(rows.length + 1).padStart(4, '0')}`;
+      }
+      if ('date' in rec) rec.date = new Date().toISOString().slice(0, 10);
+      rows.push(rec);
+      await writeJsonAtomic(path.join(CONTENT_DIR, 'accounting.json'), book);
+      return redirect(res, `/books/edit?col=${encodeURIComponent(spec.key)}&id=${encodeURIComponent(rec.id)}`);
+    }
+
+    if (pathname === '/books/delete' && req.method === 'POST') {
+      const spec = collSpec(url.searchParams.get('col'));
+      if (!spec) return redirect(res, '/books');
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const remove = new Set([].concat(form.remove ?? []));
+      if (remove.size) {
+        const book = bookFile();
+        book[spec.key] = (book[spec.key] || []).filter((r) => !remove.has(r.id));
+        await writeJsonAtomic(path.join(CONTENT_DIR, 'accounting.json'), book);
+      }
+      return redirect(res, `/books/list?col=${encodeURIComponent(spec.key)}&saved=1`);
     }
 
     /* ---- design & integrations ---- */
