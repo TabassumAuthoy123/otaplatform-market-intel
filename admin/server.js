@@ -35,11 +35,15 @@ const APP_URL = (process.env.APP_URL || 'http://localhost:3002').replace(/\/+$/,
 const PORTAL_URL = `${APP_URL}/portal`;
 
 const AGENCY = require('./agency-fields');
+const CRM = require('./crm-fields');
 
 const ROOT = path.resolve(__dirname, '..');
 const CONTENT_DIR = path.join(ROOT, 'content');
 const SITE_FILE = path.join(CONTENT_DIR, 'site.json');
 const AGENCIES_FILE = path.join(CONTENT_DIR, 'agencies.json');
+const CRM_LEADS_FILE = path.join(CONTENT_DIR, 'crm-leads.json');
+const CRM_USERS_FILE = path.join(CONTENT_DIR, 'crm-users.json');
+const CRM_ACTIVITIES_FILE = path.join(CONTENT_DIR, 'crm-activities.json');
 const USERS_FILE = path.join(CONTENT_DIR, 'users.json');
 const LEADS_FILE = path.join(CONTENT_DIR, 'leads.json');
 const SECRET_FILE = path.join(CONTENT_DIR, '.session-secret');
@@ -346,6 +350,10 @@ function page({ title, session, body, active = '' }) {
       <nav>
         <a href="/dashboard" class="${active === 'dashboard' ? 'on' : ''}">Overview</a>
         <a href="/leads" class="${active === 'leads' ? 'on' : ''}">Demo requests</a>
+        <div class="sep">Sales CRM · 400 prospects</div>
+        <a href="/crm/dashboard" class="${active === 'crm-dash' ? 'on' : ''}">Manager dashboard</a>
+        <a href="/crm" class="${active === 'crm' ? 'on' : ''}">Lead list</a>
+        <a href="/crm/call" class="${active === 'crm-call' ? 'on' : ''}">Call mode</a>
         <div class="sep">Market Intelligence</div>
         <a href="/agencies" class="${active === 'agencies' ? 'on' : ''}">Agency dataset</a>
         <div class="sep">B2C storefront</div>
@@ -580,6 +588,509 @@ function leadsView(session, leads, flash) {
            </form>`
       }
       </div>`
+  });
+}
+
+/* --------------------------------------------------------------- CRM views */
+
+const APP_EXPORT = (qs) => `${APP_URL}/api/crm/export?${qs}`;
+const todayISO = () => new Date().toISOString().slice(0, 10);
+
+const crmLeads = () => readJson(CRM_LEADS_FILE, []);
+const crmUsers = () => readJson(CRM_USERS_FILE, []);
+const crmActivities = () => readJson(CRM_ACTIVITIES_FILE, []);
+
+const repName = (users, id) => (id && (users.find((u) => u.id === id) || {}).name) || 'Unassigned';
+
+/** Same filter semantics as filterLeads() in lib/crm.ts. */
+function crmFilter(leads, q) {
+  const t = todayISO();
+  let rows = leads;
+  const term = String(q.q || '').trim().toLowerCase();
+  if (term) {
+    rows = rows.filter((l) =>
+      [l.company, l.decision_maker, l.phone, l.mobile, l.email, l.lead_id, l.address, l.segment]
+        .filter(Boolean).some((v) => String(v).toLowerCase().includes(term)));
+  }
+  if (q.priority) rows = rows.filter((l) => l.priority === q.priority);
+  if (q.tier) rows = rows.filter((l) => l.tier === q.tier);
+  if (q.city) rows = rows.filter((l) => l.city === q.city);
+  if (q.status) rows = rows.filter((l) => l.call_status === q.status);
+  if (q.disposition) rows = rows.filter((l) => l.disposition === q.disposition);
+  if (q.assigned) rows = rows.filter((l) => (q.assigned === 'unassigned' ? !l.assigned_to : l.assigned_to === q.assigned));
+  if (q.hasWebsite === 'yes') rows = rows.filter((l) => !!l.website);
+  if (q.hasWebsite === 'no') rows = rows.filter((l) => !l.website);
+  if (q.hasMobile === 'yes') rows = rows.filter((l) => !!l.mobile);
+  if (q.hasMobile === 'no') rows = rows.filter((l) => !l.mobile);
+
+  if (q.view === 'due_today') rows = rows.filter((l) => l.next_action_date && l.next_action_date <= t && !CRM.CLOSED.has(l.call_status));
+  if (q.view === 'untouched') rows = rows.filter((l) => l.call_status === 'not_started');
+  if (q.view === 'no_next_action') rows = rows.filter((l) => l.disposition && !l.next_action && !CRM.CLOSED.has(l.call_status));
+  if (q.view === 'p1_queue') rows = rows.filter((l) => l.priority === 'P1' && !CRM.CLOSED.has(l.call_status));
+  if (q.view === 'hot') rows = rows.filter((l) => l.disposition === 'interested_hot' || String(l.interest_level) === '5');
+  return rows;
+}
+
+const PRI_CHIP = {
+  P1: 'background:var(--navy);color:#fff',
+  P2: 'background:var(--teal);color:#fff',
+  P3: 'background:var(--panel);color:var(--muted);border:1px solid var(--hair)',
+  P4: 'background:var(--panel);color:var(--muted);border:1px solid var(--hair)',
+  P5: 'background:rgba(154,91,0,.12);color:var(--amber)'
+};
+
+function priChip(p) {
+  return `<span style="display:inline-block;padding:1px 7px;border-radius:4px;font-size:10.5px;font-weight:700;${PRI_CHIP[p] || ''}">${esc(p)}</span>`;
+}
+
+function statusChip(s) {
+  const tone = s === 'won' ? 'background:rgba(15,111,115,.12);color:var(--teal)'
+    : s === 'lost' || s === 'do_not_call' ? 'background:var(--panel);color:var(--muted)'
+    : s === 'not_started' ? 'background:var(--panel);color:var(--muted)'
+    : 'background:rgba(19,41,75,.07);color:var(--navy)';
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;${tone}">${esc(CRM.CALL_STATUS[s] || s)}</span>`;
+}
+
+const PAGE = 50;
+
+function crmListView(session, all, users, q, flash) {
+  const rows = crmFilter(all, q);
+  const pageNo = Math.max(1, Number(q.page) || 1);
+  const pages = Math.max(1, Math.ceil(rows.length / PAGE));
+  const slice = rows.slice((pageNo - 1) * PAGE, pageNo * PAGE);
+
+  const tiers = Array.from(new Set(all.map((l) => l.tier).filter(Boolean))).sort();
+  const cities = Array.from(new Set(all.map((l) => l.city).filter(Boolean))).sort();
+
+  const qsBase = (over) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries({ ...q, ...over })) if (v) p.set(k, v);
+    return p.toString();
+  };
+  const opt = (list, sel, blank) =>
+    [['', blank]].concat(list).map(([v, lab]) =>
+      `<option value="${esc(v)}"${String(v) === String(sel || '') ? ' selected' : ''}>${esc(lab)}</option>`).join('');
+
+  const exportQs = qsBase({ page: '' });
+
+  return page({
+    title: 'Lead list',
+    session,
+    active: 'crm',
+    body: `
+      <h1>Lead list</h1>
+      <p class="sub">${all.length} researched prospects from TOAB, BAIRA, ATAB and the MoRA Hajj register. ${rows.length} match the current filter.</p>
+      ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
+
+      <div class="card" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <strong style="font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)">Saved views</strong>
+        ${CRM.SAVED_VIEWS.map((v) =>
+          `<a href="/crm?${esc(qsBase({ view: v.key, page: '' }))}"
+              style="padding:5px 11px;border-radius:20px;font-size:12.5px;text-decoration:none;${
+                (q.view || '') === v.key ? 'background:var(--teal);color:#fff' : 'background:var(--panel);color:var(--navy)'
+              }">${esc(v.label)}</a>`).join('')}
+      </div>
+
+      <form method="get" action="/crm" class="card" style="display:grid;gap:11px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));align-items:end">
+        <input type="hidden" name="view" value="${esc(q.view || '')}">
+        <label class="row" style="margin:0;grid-column:span 2"><span class="lab">Search</span>
+          <input type="text" name="q" value="${esc(q.q || '')}" placeholder="company, owner, phone, email, lead id"></label>
+        <label class="row" style="margin:0"><span class="lab">Priority</span>
+          <select name="priority">${opt(['P1','P2','P3','P4','P5'].map((p) => [p, `${p} — ${CRM.PRIORITY_HINT[p]}`]), q.priority, 'All')}</select></label>
+        <label class="row" style="margin:0"><span class="lab">City</span>
+          <select name="city">${opt(cities.map((c) => [c, c]), q.city, 'All')}</select></label>
+        <label class="row" style="margin:0"><span class="lab">Tier</span>
+          <select name="tier">${opt(tiers.map((t) => [t, t]), q.tier, 'All')}</select></label>
+        <label class="row" style="margin:0"><span class="lab">Call status</span>
+          <select name="status">${opt(Object.entries(CRM.CALL_STATUS), q.status, 'All')}</select></label>
+        <label class="row" style="margin:0"><span class="lab">Disposition</span>
+          <select name="disposition">${opt(Object.entries(CRM.DISPOSITION), q.disposition, 'All')}</select></label>
+        <label class="row" style="margin:0"><span class="lab">Assigned to</span>
+          <select name="assigned">${opt([['unassigned', 'Unassigned']].concat(users.map((u) => [u.id, u.name])), q.assigned, 'Anyone')}</select></label>
+        <label class="row" style="margin:0"><span class="lab">Has website</span>
+          <select name="hasWebsite">${opt([['yes','Yes'],['no','No — sales signal']], q.hasWebsite, 'Either')}</select></label>
+        <label class="row" style="margin:0"><span class="lab">Has mobile</span>
+          <select name="hasMobile">${opt([['yes','Yes'],['no','No']], q.hasMobile, 'Either')}</select></label>
+        <div style="display:flex;gap:8px">
+          <button class="primary" type="submit">Filter</button>
+          <a class="secondary" href="/crm">Reset</a>
+        </div>
+      </form>
+
+      <div class="card" style="display:flex;gap:9px;flex-wrap:wrap;align-items:center">
+        <strong style="font-size:12px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted)">Download this list</strong>
+        <a class="secondary" href="${esc(APP_EXPORT(exportQs + '&format=xlsx'))}">Excel .xlsx</a>
+        <a class="secondary" href="${esc(APP_EXPORT(exportQs + '&format=docx'))}">Word .docx</a>
+        <a class="secondary" href="${esc(APP_EXPORT(exportQs + '&format=md'))}">Markdown .md</a>
+        <a class="secondary" href="${esc(APP_EXPORT(exportQs + '&format=csv'))}">CSV</a>
+        <span style="font-size:12px;color:var(--muted)">Exports honour the filters above</span>
+      </div>
+
+      <form method="post" action="/crm/bulk-assign" class="card" style="padding:0;overflow:hidden">
+        <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+        <input type="hidden" name="back" value="${esc(qsBase({}))}">
+        <table>
+          <thead><tr>
+            <th style="width:26px"></th><th>Lead</th><th>Pri</th><th>Company</th><th>Decision maker</th>
+            <th>City</th><th>Mobile</th><th>Status</th><th>Next action</th><th>Owner</th>
+          </tr></thead>
+          <tbody>
+          ${slice.length === 0
+            ? '<tr><td colspan="10" style="padding:24px;color:var(--muted)">Nothing matches that filter.</td></tr>'
+            : slice.map((l) => `<tr>
+                <td><input type="checkbox" name="lead" value="${esc(l.lead_id)}"></td>
+                <td class="tnum" style="white-space:nowrap"><a href="/crm/lead?id=${encodeURIComponent(l.lead_id)}">${esc(l.lead_id)}</a></td>
+                <td>${priChip(l.priority)}</td>
+                <td><strong>${esc(l.company)}</strong>${l.website ? '' : '<br><span style="font-size:11px;color:var(--teal)">no website</span>'}</td>
+                <td style="font-size:12.5px">${esc(l.decision_maker || '—')}</td>
+                <td>${esc(l.city || '—')}</td>
+                <td class="tnum" style="font-size:12px;white-space:nowrap">${esc((l.mobile || l.phone || '—').slice(0, 26))}</td>
+                <td>${statusChip(l.call_status)}</td>
+                <td style="font-size:12px">${esc(l.next_action || '—')}${l.next_action_date ? `<br><span class="tnum" style="color:var(--muted)">${esc(l.next_action_date)}</span>` : ''}</td>
+                <td style="font-size:12.5px">${esc(repName(users, l.assigned_to))}</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+        <div class="bar" style="padding:14px 18px;flex-wrap:wrap">
+          <select name="user_id" style="padding:9px 11px;border:1px solid var(--hair);border-radius:8px">
+            <option value="">— assign selected to —</option>
+            ${users.map((u) => `<option value="${esc(u.id)}">${esc(u.name)}</option>`).join('')}
+            <option value="__none__">Unassign</option>
+          </select>
+          <button class="primary" type="submit">Assign</button>
+          <span style="margin-left:auto;font-size:12.5px;color:var(--muted)">
+            ${slice.length} of ${rows.length} · page ${pageNo} of ${pages}
+          </span>
+          ${pageNo > 1 ? `<a class="secondary" href="/crm?${esc(qsBase({ page: pageNo - 1 }))}">← Prev</a>` : ''}
+          ${pageNo < pages ? `<a class="secondary" href="/crm?${esc(qsBase({ page: pageNo + 1 }))}">Next →</a>` : ''}
+        </div>
+      </form>`
+  });
+}
+
+function leadFormFields(lead, users) {
+  const sel = (name, map, cur, blank) => `
+    <label class="row"><span class="lab">${esc(name.replace(/_/g, ' '))}</span>
+      <select name="${esc(name)}">
+        ${blank ? `<option value=""${!cur ? ' selected' : ''}>${esc(blank)}</option>` : ''}
+        ${Object.entries(map).map(([v, lab]) =>
+          `<option value="${esc(v)}"${String(cur) === String(v) ? ' selected' : ''}>${esc(lab)}</option>`).join('')}
+      </select></label>`;
+
+  return `
+    <label class="row"><span class="lab">Assigned to</span>
+      <select name="assigned_to">
+        <option value=""${!lead.assigned_to ? ' selected' : ''}>Unassigned</option>
+        ${users.map((u) => `<option value="${esc(u.id)}"${lead.assigned_to === u.id ? ' selected' : ''}>${esc(u.name)}</option>`).join('')}
+      </select></label>
+    ${sel('call_status', CRM.CALL_STATUS, lead.call_status, null)}
+    <label class="row"><span class="lab">Last call date</span>
+      <input type="date" name="last_call_date" value="${esc(lead.last_call_date || '')}"></label>
+    ${sel('disposition', CRM.DISPOSITION, lead.disposition, '— none yet —')}
+    ${sel('interest_level', CRM.INTEREST, lead.interest_level, '— not scored —')}
+    ${sel('demo_scheduled', CRM.DEMO, lead.demo_scheduled, '— n/a —')}
+    <label class="row"><span class="lab">Next action</span>
+      <input type="text" name="next_action" value="${esc(lead.next_action || '')}" placeholder="e.g. send pricing, call owner back"></label>
+    <label class="row"><span class="lab">Next action date</span>
+      <input type="date" name="next_action_date" value="${esc(lead.next_action_date || '')}"></label>
+    <label class="row"><span class="lab">Do-not-call reason</span>
+      <input type="text" name="do_not_call_reason" value="${esc(lead.do_not_call_reason || '')}" placeholder="required if status is Do not call"></label>
+    <label class="row"><span class="lab">Notes — call notes and source corrections</span>
+      <textarea name="notes" rows="5">${esc(lead.notes || '')}</textarea></label>`;
+}
+
+function crmLeadView(session, lead, users, activities, flash, errors) {
+  const tel = CRM.telNumber(lead);
+  const wa = CRM.waNumber(lead);
+  const research = [
+    ['Tier', lead.tier], ['Segment', lead.segment], ['Decision maker', lead.decision_maker],
+    ['Address', `${lead.address}${lead.city ? ` — ${lead.city}` : ''}`],
+    ['Phone', lead.phone], ['Mobile', lead.mobile], ['Email', lead.email],
+    ['Website', lead.website], ['Facebook', lead.facebook],
+    ['Licence ref', lead.licence_ref], ['Booking engine', lead.booking_engine],
+    ['Why a prospect', lead.prospect_note], ['Source', lead.data_source]
+  ];
+
+  return page({
+    title: lead.company,
+    session,
+    active: 'crm',
+    body: `
+      <h1>${esc(lead.company)}</h1>
+      <p class="sub"><span class="tnum">${esc(lead.lead_id)}</span> · ${priChip(lead.priority)} ${statusChip(lead.call_status)}
+        · <a href="/crm">back to list</a></p>
+      ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
+      ${errors && errors.length ? `<div class="flash warn"><strong>Not saved:</strong><ul style="margin:6px 0 0 16px">${errors.map((e) => `<li>${esc(e)}</li>`).join('')}</ul></div>` : ''}
+
+      <div class="card" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        ${tel ? `<a class="primary" style="text-decoration:none;padding:10px 18px" href="tel:${esc(tel)}">Call ${esc(tel)}</a>` : '<span style="color:var(--muted);font-size:13px">No dialable number in the source</span>'}
+        ${wa ? `<a class="secondary" href="https://wa.me/${esc(wa)}" target="_blank" rel="noreferrer">WhatsApp</a>` : ''}
+        ${lead.email ? `<a class="secondary" href="mailto:${esc(lead.email)}">Email</a>` : ''}
+        ${lead.website ? `<a class="secondary" href="${esc(/^https?:/.test(lead.website) ? lead.website : 'https://' + lead.website)}" target="_blank" rel="noreferrer">Open website</a>` : ''}
+        ${lead.source_url ? `<a class="secondary" href="${esc(String(lead.source_url).split(' ')[0])}" target="_blank" rel="noreferrer">Source record</a>` : ''}
+      </div>
+
+      <div style="display:grid;gap:16px;grid-template-columns:minmax(0,1fr) minmax(0,1fr)">
+        <div class="card">
+          <h2 style="margin:0 0 4px;font-size:14px;color:var(--navy)">Research — verified, do not edit</h2>
+          <p style="margin:0 0 14px;font-size:12px;color:var(--muted)">
+            Reproduced verbatim from the source register, artefacts and all. Found something wrong? Write it in
+            <strong>Notes</strong> — an admin corrects it centrally so the change is traceable.
+          </p>
+          <table style="font-size:12.5px">
+            ${research.map(([k, v]) => `<tr>
+              <td style="width:34%;font-weight:600;color:var(--navy);vertical-align:top">${esc(k)}</td>
+              <td style="word-break:break-word">${esc(v || '—')}</td></tr>`).join('')}
+          </table>
+        </div>
+
+        <div>
+          <form method="post" action="/crm/lead?id=${encodeURIComponent(lead.lead_id)}" class="card">
+            <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+            <h2 style="margin:0 0 12px;font-size:14px;color:var(--navy)">Sales fields</h2>
+            ${leadFormFields(lead, users)}
+            <button class="primary" type="submit" style="width:100%;margin-top:6px">Save</button>
+          </form>
+
+          <form method="post" action="/crm/activity?id=${encodeURIComponent(lead.lead_id)}" class="card">
+            <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+            <h2 style="margin:0 0 12px;font-size:14px;color:var(--navy)">Log a touch</h2>
+            <label class="row"><span class="lab">Type</span>
+              <select name="activity_type">
+                ${Object.entries(CRM.ACTIVITY_TYPE).filter(([k]) => k !== 'status_change')
+                  .map(([v, lab]) => `<option value="${esc(v)}">${esc(lab)}</option>`).join('')}
+              </select></label>
+            <label class="row"><span class="lab">Outcome</span>
+              <input type="text" name="outcome" placeholder="e.g. spoke to owner, asked for pricing"></label>
+            <label class="row"><span class="lab">What was said</span>
+              <textarea name="body" rows="3"></textarea></label>
+            <button class="primary" type="submit" style="width:100%">Log it</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:14px 18px;border-bottom:1px solid var(--hair)">
+          <h2 style="margin:0;font-size:14px;color:var(--navy)">Activity timeline</h2>
+          <p style="margin:2px 0 0;font-size:12px;color:var(--muted)">${activities.length} entries, newest first. Never edited once written.</p>
+        </div>
+        ${activities.length === 0
+          ? '<p class="empty" style="padding:22px">Nothing logged yet.</p>'
+          : `<table><thead><tr><th>When</th><th>Type</th><th>By</th><th>Outcome</th><th>Detail</th></tr></thead><tbody>
+             ${activities.map((a) => `<tr>
+               <td class="tnum" style="white-space:nowrap">${esc(String(a.occurred_at).slice(0, 16).replace('T', ' '))}</td>
+               <td>${esc(CRM.ACTIVITY_TYPE[a.activity_type] || a.activity_type)}</td>
+               <td>${esc(repName(users, a.user_id))}</td>
+               <td>${esc(a.outcome || '—')}</td>
+               <td style="max-width:380px">${esc(a.body || '—')}</td></tr>`).join('')}
+             </tbody></table>`}
+      </div>`
+  });
+}
+
+function crmDashboardView(session, leads, users, activities, flash) {
+  const t = todayISO();
+  const total = leads.length;
+  const touched = leads.filter((l) => l.call_status !== 'not_started').length;
+  const contacted = leads.filter((l) => CRM.CONTACTED.has(l.call_status)).length;
+  const coverage = total ? (touched / total) * 100 : 0;
+  const p1Untouched = leads.filter((l) => l.priority === 'P1' && l.call_status === 'not_started').length;
+  const dueToday = leads.filter((l) => l.next_action_date && l.next_action_date <= t && !CRM.CLOSED.has(l.call_status));
+  const abandoned = leads.filter((l) => l.disposition && !l.next_action && !CRM.CLOSED.has(l.call_status));
+  const unassigned = leads.filter((l) => !l.assigned_to);
+
+  const funnel = CRM.FUNNEL_ORDER.map((s) => ({ s, n: leads.filter((l) => l.call_status === s).length })).filter((r) => r.n > 0);
+  const maxFunnel = Math.max(...funnel.map((r) => r.n), 1);
+
+  const dispo = Object.entries(CRM.DISPOSITION)
+    .map(([k, lab]) => ({ k, lab, n: leads.filter((l) => l.disposition === k).length })).filter((r) => r.n > 0);
+
+  const perRep = users.map((u) => {
+    const mine = leads.filter((l) => l.assigned_to === u.id);
+    return {
+      u, assigned: mine.length,
+      called: mine.filter((l) => l.call_status !== 'not_started').length,
+      reached: mine.filter((l) => CRM.CONTACTED.has(l.call_status)).length,
+      demos: mine.filter((l) => l.demo_scheduled === 'yes').length,
+      hot: mine.filter((l) => l.disposition === 'interested_hot').length,
+      won: mine.filter((l) => l.call_status === 'won').length,
+      acts: activities.filter((a) => a.user_id === u.id).length
+    };
+  });
+
+  const byTier = Array.from(new Set(leads.map((l) => l.tier))).map((tr) => {
+    const rows = leads.filter((l) => l.tier === tr);
+    return { tier: tr, total: rows.length, touched: rows.filter((l) => l.call_status !== 'not_started').length };
+  }).sort((a, b) => b.total - a.total);
+
+  const tile = (label, value, sub, tone) => `
+    <div class="tile"><strong class="tnum" style="${tone === 'warn' ? 'color:var(--amber)' : tone === 'good' ? 'color:var(--teal)' : ''}">${esc(value)}</strong>
+      <span>${esc(label)}</span>${sub ? `<span style="display:block;margin-top:2px;font-size:11.5px">${esc(sub)}</span>` : ''}</div>`;
+
+  return page({
+    title: 'Manager dashboard',
+    session,
+    active: 'crm-dash',
+    body: `
+      <h1>Manager dashboard</h1>
+      <p class="sub">Who is calling whom, what came back, and where the pipeline is stuck.</p>
+      ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
+
+      <div class="card"><div class="grid">
+        ${tile('Total prospects', String(total), 'TOAB · BAIRA · ATAB · MoRA')}
+        ${tile('Coverage', coverage.toFixed(1) + '%', `${touched} worked at least once`, coverage > 20 ? 'good' : 'warn')}
+        ${tile('Reached a human', String(contacted), 'gatekeeper or decision maker')}
+        ${tile('P1 untouched', String(p1Untouched), 'call these first', p1Untouched > 0 ? 'warn' : 'good')}
+        ${tile('Due today or overdue', String(dueToday.length), 'next action date has passed', dueToday.length ? 'warn' : 'good')}
+        ${tile('Abandoned', String(abandoned.length), 'has a disposition, no next action', abandoned.length ? 'warn' : 'good')}
+        ${tile('Unassigned', String(unassigned.length), 'nobody owns these', unassigned.length ? 'warn' : 'good')}
+        ${tile('Activities logged', String(activities.length), 'calls, notes, status changes')}
+      </div></div>
+
+      <div class="card">
+        <h2 style="margin:0 0 14px;font-size:14px;color:var(--navy)">Who is doing what</h2>
+        <table>
+          <thead><tr><th>Sales person</th><th>Role</th><th>Assigned</th><th>Called</th><th>Reached</th><th>Demos</th><th>Hot</th><th>Won</th><th>Activities</th></tr></thead>
+          <tbody>${perRep.map((r) => `<tr>
+            <td><strong>${esc(r.u.name)}</strong></td>
+            <td style="color:var(--muted)">${esc(r.u.role)}</td>
+            <td class="tnum">${r.assigned}</td><td class="tnum">${r.called}</td><td class="tnum">${r.reached}</td>
+            <td class="tnum">${r.demos}</td><td class="tnum">${r.hot}</td><td class="tnum">${r.won}</td><td class="tnum">${r.acts}</td>
+            </tr>`).join('')}</tbody>
+        </table>
+        ${unassigned.length ? `<p style="margin:12px 0 0;font-size:12.5px;color:var(--amber)">
+          ${unassigned.length} leads have no owner. <a href="/crm?assigned=unassigned">Assign them →</a></p>` : ''}
+      </div>
+
+      <div style="display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))">
+        <div class="card">
+          <h2 style="margin:0 0 14px;font-size:14px;color:var(--navy)">Funnel by call status</h2>
+          ${funnel.map((r) => `
+            <div style="padding:6px 0">
+              <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px">
+                <a href="/crm?status=${esc(r.s)}" style="color:var(--ink);text-decoration:none">${esc(CRM.CALL_STATUS[r.s])}</a>
+                <strong class="tnum">${r.n}</strong></div>
+              <div style="height:6px;background:var(--panel);border-radius:20px">
+                <div style="height:100%;width:${Math.max(2, (r.n / maxFunnel) * 100)}%;background:var(--teal);border-radius:20px"></div></div>
+            </div>`).join('')}
+        </div>
+
+        <div class="card">
+          <h2 style="margin:0 0 14px;font-size:14px;color:var(--navy)">What came back</h2>
+          ${dispo.length === 0
+            ? '<p style="font-size:13px;color:var(--muted)">No dispositions recorded yet — nobody has finished a qualifying call.</p>'
+            : dispo.map((r) => `<div style="display:flex;justify-content:space-between;padding:5px 0;font-size:13px;border-bottom:1px solid var(--hair)">
+                <a href="/crm?disposition=${esc(r.k)}" style="color:var(--ink);text-decoration:none">${esc(r.lab)}</a>
+                <strong class="tnum">${r.n}</strong></div>`).join('')}
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 style="margin:0 0 14px;font-size:14px;color:var(--navy)">Progress by tier</h2>
+        <table>
+          <thead><tr><th>Tier</th><th>Total</th><th>Worked</th><th>Untouched</th><th style="width:180px">Coverage</th></tr></thead>
+          <tbody>${byTier.map((r) => `<tr>
+            <td>${esc(r.tier)}</td><td class="tnum">${r.total}</td><td class="tnum">${r.touched}</td>
+            <td class="tnum">${r.total - r.touched}</td>
+            <td><div style="height:6px;background:var(--panel);border-radius:20px">
+              <div style="height:100%;width:${r.total ? Math.max(2, (r.touched / r.total) * 100) : 0}%;background:var(--teal);border-radius:20px"></div></div></td>
+            </tr>`).join('')}</tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2 style="margin:0 0 10px;font-size:14px;color:var(--navy)">Download the whole database</h2>
+        <div style="display:flex;gap:9px;flex-wrap:wrap">
+          <a class="secondary" href="${esc(APP_EXPORT('format=xlsx'))}">Excel .xlsx — 5 sheets</a>
+          <a class="secondary" href="${esc(APP_EXPORT('format=docx'))}">Word .docx — prospect brief</a>
+          <a class="secondary" href="${esc(APP_EXPORT('format=md'))}">Markdown .md</a>
+          <a class="secondary" href="${esc(APP_EXPORT('format=csv'))}">CSV</a>
+        </div>
+      </div>`
+  });
+}
+
+function crmCallView(session, lead, users, activities, remaining, flash, errors) {
+  if (!lead) {
+    return page({
+      title: 'Call mode',
+      session,
+      active: 'crm-call',
+      body: `<h1>Call mode</h1><p class="sub">Nothing left in the queue.</p>
+        <div class="card"><p style="margin:0;font-size:13.5px">Every open lead has been worked, or everything is
+        closed. <a href="/crm">Open the lead list</a> to widen the filter.</p></div>`
+    });
+  }
+  const tel = CRM.telNumber(lead);
+  const wa = CRM.waNumber(lead);
+
+  return page({
+    title: 'Call mode',
+    session,
+    active: 'crm-call',
+    body: `
+      <h1>Call mode</h1>
+      <p class="sub">${remaining} open leads in the queue · ordered by priority, then whatever is overdue.</p>
+      ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
+      ${errors && errors.length ? `<div class="flash warn"><strong>Not saved:</strong><ul style="margin:6px 0 0 16px">${errors.map((e) => `<li>${esc(e)}</li>`).join('')}</ul></div>` : ''}
+
+      <div class="card" style="border-left:4px solid var(--teal)">
+        <div style="display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;align-items:flex-start">
+          <div>
+            <div style="font-size:12px;color:var(--muted)"><span class="tnum">${esc(lead.lead_id)}</span> · ${priChip(lead.priority)} · ${esc(lead.tier)}</div>
+            <h2 style="margin:6px 0 2px;font-size:24px;color:var(--navy)">${esc(lead.company)}</h2>
+            <div style="font-size:13.5px">${esc(lead.decision_maker || 'Decision maker not published')}</div>
+            <div style="font-size:12.5px;color:var(--muted);margin-top:3px">${esc(lead.address || '')}${lead.city ? ' — ' + esc(lead.city) : ''}</div>
+          </div>
+          <div style="text-align:right">
+            <div class="tnum" style="font-size:19px;font-weight:700;color:var(--navy)">${esc(lead.mobile || lead.phone || 'no number')}</div>
+            <div style="margin-top:8px;display:flex;gap:7px;justify-content:flex-end;flex-wrap:wrap">
+              ${tel ? `<a class="primary" style="text-decoration:none;padding:9px 16px" href="tel:${esc(tel)}">Call</a>` : ''}
+              ${wa ? `<a class="secondary" href="https://wa.me/${esc(wa)}" target="_blank" rel="noreferrer">WhatsApp</a>` : ''}
+              ${lead.website ? `<a class="secondary" href="${esc(/^https?:/.test(lead.website) ? lead.website : 'https://' + lead.website)}" target="_blank" rel="noreferrer">Site</a>` : ''}
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:14px;padding:12px 14px;background:var(--surface);border-radius:8px;font-size:13px">
+          <strong style="color:var(--navy)">Why they are a prospect:</strong> ${esc(lead.prospect_note || '—')}
+          ${lead.booking_engine ? `<br><strong style="color:var(--navy)">Their site today:</strong> ${esc(lead.booking_engine)}` : ''}
+          ${lead.licence_ref ? `<br><strong style="color:var(--navy)">Licence:</strong> ${esc(lead.licence_ref)}` : ''}
+        </div>
+      </div>
+
+      <div class="card" style="background:var(--navy9);color:#fff">
+        <h2 style="margin:0 0 10px;font-size:13px;text-transform:uppercase;letter-spacing:.1em;color:var(--teal4)">Qualify in four questions</h2>
+        <ol style="margin:0;padding-left:18px;font-size:13.5px;line-height:1.9">
+          <li>Mash e roughly koto ta booking hoy? <span style="color:rgba(255,255,255,.55)">— under 20–30, disqualify politely</span></li>
+          <li>Ticket issue kivabe koren — nijer IATA, na onno agency er panel theke? <span style="color:rgba(255,255,255,.55)">— "onner panel" = core target</span></li>
+          <li>Nijer booking website ba app ache? <span style="color:rgba(255,255,255,.55)">— "ache" = log who built it, move on</span></li>
+          <li>Apnar under e sub-agent ache? Taderke kivabe manage koren? <span style="color:rgba(255,255,255,.55)">— "Excel e" = the B2B panel sells itself</span></li>
+        </ol>
+      </div>
+
+      <form method="post" action="/crm/call" class="card">
+        <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+        <input type="hidden" name="lead_id" value="${esc(lead.lead_id)}">
+        <h2 style="margin:0 0 12px;font-size:14px;color:var(--navy)">Log the outcome and move on</h2>
+        <div style="display:grid;gap:0 16px;grid-template-columns:repeat(auto-fit,minmax(240px,1fr))">
+          ${leadFormFields(lead, users)}
+        </div>
+        <label class="row"><span class="lab">Add to the timeline (optional)</span>
+          <input type="text" name="activity_body" placeholder="what they actually said"></label>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="primary" type="submit" name="advance" value="1">Save and next lead →</button>
+          <button class="secondary" type="submit" name="advance" value="">Save and stay</button>
+          <a class="secondary" href="/crm/call?skip=${encodeURIComponent(lead.lead_id)}">Skip for now</a>
+        </div>
+      </form>
+
+      ${activities.length ? `<div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:13px 18px;border-bottom:1px solid var(--hair)"><h2 style="margin:0;font-size:13.5px;color:var(--navy)">Previous touches</h2></div>
+        <table><tbody>${activities.slice(0, 6).map((a) => `<tr>
+          <td class="tnum" style="white-space:nowrap;width:130px">${esc(String(a.occurred_at).slice(0, 16).replace('T', ' '))}</td>
+          <td>${esc(CRM.ACTIVITY_TYPE[a.activity_type] || a.activity_type)}</td>
+          <td>${esc(a.outcome || '')}</td><td>${esc(a.body || '')}</td></tr>`).join('')}</tbody></table>
+      </div>` : ''}`
   });
 }
 
@@ -952,6 +1463,124 @@ const server = http.createServer(async (req, res) => {
       return redirect(res, '/leads?saved=1');
     }
 
+    /* ---- sales CRM ---- */
+
+    if (pathname === '/crm' && req.method === 'GET') {
+      const q = Object.fromEntries(url.searchParams.entries());
+      return send(res, 200, crmListView(session, crmLeads(), crmUsers(), q, q.saved ? 'Saved.' : null));
+    }
+
+    if (pathname === '/crm/dashboard' && req.method === 'GET') {
+      return send(res, 200, crmDashboardView(session, crmLeads(), crmUsers(), crmActivities(), null));
+    }
+
+    if (pathname === '/crm/lead' && req.method === 'GET') {
+      const leads = crmLeads();
+      const lead = leads.find((l) => l.lead_id === url.searchParams.get('id'));
+      if (!lead) return send(res, 404, page({ title: 'Not found', session, body: '<h1>No lead with that id</h1><p><a href="/crm">Back to list</a></p>' }));
+      const acts = crmActivities().filter((a) => a.lead_id === lead.lead_id)
+        .sort((a, b) => String(b.occurred_at).localeCompare(String(a.occurred_at)));
+      return send(res, 200, crmLeadView(session, lead, crmUsers(), acts, url.searchParams.get('saved') ? 'Saved.' : null, null));
+    }
+
+    if (pathname === '/crm/lead' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const leads = crmLeads();
+      const idx = leads.findIndex((l) => l.lead_id === url.searchParams.get('id'));
+      if (idx < 0) return send(res, 404, page({ title: 'Not found', session, body: '<h1>No lead with that id</h1>' }));
+
+      const result = await applyCrmForm(leads, idx, form, session);
+      if (result.errors.length) {
+        const acts = crmActivities().filter((a) => a.lead_id === leads[idx].lead_id)
+          .sort((a, b) => String(b.occurred_at).localeCompare(String(a.occurred_at)));
+        return send(res, 422, crmLeadView(session, result.candidate, crmUsers(), acts, null, result.errors));
+      }
+      return redirect(res, `/crm/lead?id=${encodeURIComponent(leads[idx].lead_id)}&saved=1`);
+    }
+
+    if (pathname === '/crm/activity' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const id = url.searchParams.get('id');
+      const acts = crmActivities();
+      acts.push({
+        id: 'ACT-' + Math.random().toString(36).slice(2, 10),
+        lead_id: id,
+        user_id: null,
+        activity_type: String(form.activity_type || 'note'),
+        outcome: String(form.outcome || '').slice(0, 96),
+        body: String(form.body || '').slice(0, 4000),
+        occurred_at: new Date().toISOString()
+      });
+      await writeJsonAtomic(CRM_ACTIVITIES_FILE, acts);
+      return redirect(res, `/crm/lead?id=${encodeURIComponent(id)}&saved=1`);
+    }
+
+    if (pathname === '/crm/bulk-assign' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const ids = new Set([].concat(form.lead ?? []));
+      const target = String(form.user_id || '');
+      if (ids.size && target) {
+        const leads = crmLeads();
+        const acts = crmActivities();
+        const now = new Date().toISOString();
+        for (const l of leads) {
+          if (!ids.has(l.lead_id)) continue;
+          const before = l.assigned_to;
+          l.assigned_to = target === '__none__' ? null : target;
+          l.updated_at = now;
+          l.updated_by = session.email;
+          if (before !== l.assigned_to) {
+            acts.push({
+              id: 'ACT-' + Math.random().toString(36).slice(2, 10),
+              lead_id: l.lead_id, user_id: l.assigned_to,
+              activity_type: 'status_change',
+              outcome: 'assigned',
+              body: `assigned_to: ${before || 'Unassigned'} → ${l.assigned_to || 'Unassigned'} (by ${session.email})`,
+              occurred_at: now
+            });
+          }
+        }
+        await writeJsonAtomic(CRM_LEADS_FILE, leads);
+        await writeJsonAtomic(CRM_ACTIVITIES_FILE, acts);
+      }
+      return redirect(res, `/crm?${form.back || ''}${form.back ? '&' : ''}saved=1`);
+    }
+
+    if (pathname === '/crm/call' && req.method === 'GET') {
+      const leads = crmLeads();
+      const t = todayISO();
+      const skip = url.searchParams.get('skip');
+      let queue = leads.filter((l) => !CRM.CLOSED.has(l.call_status))
+        .sort((a, b) => CRM.queueRank(a, t) - CRM.queueRank(b, t) || a.lead_id.localeCompare(b.lead_id));
+      if (skip) queue = queue.filter((l) => l.lead_id !== skip);
+      const wanted = url.searchParams.get('id');
+      const lead = wanted ? leads.find((l) => l.lead_id === wanted) : queue[0];
+      const acts = lead
+        ? crmActivities().filter((a) => a.lead_id === lead.lead_id).sort((a, b) => String(b.occurred_at).localeCompare(String(a.occurred_at)))
+        : [];
+      return send(res, 200, crmCallView(session, lead || null, crmUsers(), acts, queue.length, url.searchParams.get('saved') ? 'Saved.' : null, null));
+    }
+
+    if (pathname === '/crm/call' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const leads = crmLeads();
+      const idx = leads.findIndex((l) => l.lead_id === String(form.lead_id || ''));
+      if (idx < 0) return redirect(res, '/crm/call');
+
+      const result = await applyCrmForm(leads, idx, form, session, String(form.activity_body || ''));
+      if (result.errors.length) {
+        const t = todayISO();
+        const queue = leads.filter((l) => !CRM.CLOSED.has(l.call_status));
+        const acts = crmActivities().filter((a) => a.lead_id === leads[idx].lead_id);
+        return send(res, 422, crmCallView(session, result.candidate, crmUsers(), acts, queue.length, null, result.errors));
+      }
+      return redirect(res, form.advance ? '/crm/call?saved=1' : `/crm/call?id=${encodeURIComponent(leads[idx].lead_id)}&saved=1`);
+    }
+
     /* ---- agency dataset ---- */
 
     if (pathname === '/agencies' && req.method === 'GET') {
@@ -1042,6 +1671,69 @@ const server = http.createServer(async (req, res) => {
     return send(res, 500, page({ title: 'Error', session, body: `<h1>Server error</h1><pre>${esc(err.message)}</pre>` }));
   }
 });
+
+/**
+ * Writes the editable CRM fields of one lead from a submitted form.
+ *
+ * Research fields are not in CRM.EDITABLE and are therefore rejected here, not
+ * merely hidden in the UI — rule 7 of 05_DATA_DICTIONARY.md. Validation runs
+ * before anything touches disk, so a rejected save leaves the file untouched
+ * and the caller re-renders the form with the candidate values still in it.
+ *
+ * Every change to call_status, disposition, assigned_to or interest_level
+ * writes a status_change activity, which is what makes the manager dashboard
+ * and the per-lead timeline true.
+ */
+async function applyCrmForm(leads, idx, form, session, activityBody) {
+  const lead = leads[idx];
+  const candidate = { ...lead };
+
+  for (const f of CRM.EDITABLE) {
+    if (!(f in form)) continue;
+    const raw = form[f];
+    const v = String(Array.isArray(raw) ? raw[raw.length - 1] : raw).trim();
+    candidate[f] = v === '' ? null : v;
+  }
+  if (!candidate.call_status) candidate.call_status = lead.call_status || 'not_started';
+
+  const errors = CRM.validateLead(candidate, todayISO());
+  if (errors.length) return { errors, candidate };
+
+  const now = new Date().toISOString();
+  const acts = crmActivities();
+  const watched = ['call_status', 'disposition', 'assigned_to', 'interest_level'];
+  for (const f of watched) {
+    if (String(lead[f] ?? '') === String(candidate[f] ?? '')) continue;
+    acts.push({
+      id: 'ACT-' + Math.random().toString(36).slice(2, 10),
+      lead_id: lead.lead_id,
+      user_id: candidate.assigned_to || null,
+      activity_type: 'status_change',
+      outcome: f,
+      body: `${f}: ${lead[f] || '—'} → ${candidate[f] || '—'} (by ${session.email})`,
+      occurred_at: now
+    });
+  }
+  if (activityBody && activityBody.trim()) {
+    acts.push({
+      id: 'ACT-' + Math.random().toString(36).slice(2, 10),
+      lead_id: lead.lead_id,
+      user_id: candidate.assigned_to || null,
+      activity_type: 'call',
+      outcome: CRM.CALL_STATUS[candidate.call_status] || candidate.call_status,
+      body: activityBody.trim().slice(0, 4000),
+      occurred_at: now
+    });
+  }
+
+  candidate.updated_at = now;
+  candidate.updated_by = session.email;
+  leads[idx] = candidate;
+
+  await writeJsonAtomic(CRM_LEADS_FILE, leads);
+  await writeJsonAtomic(CRM_ACTIVITIES_FILE, acts);
+  return { errors: [], candidate };
+}
 
 function stampMeta(content, session) {
   content._meta = content._meta || {};

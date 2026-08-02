@@ -16,3 +16,13 @@ content/users.json
 content/leads.json
 content/.session-secret
 content/*.tmp
+
+# CRM working data. crm-activities.json accumulates call notes about named
+# individuals — what someone said on the phone, why they said no. That is
+# working data about real people and does not belong in a public repository.
+# crm-leads.json IS committed: it is the compiled research from the public
+# TOAB / BAIRA / ATAB / MoRA registers and is the shared raw-data file.
+content/crm-activities.json
+
+# TypeScript incremental build artefact
+*.tsbuildinfo

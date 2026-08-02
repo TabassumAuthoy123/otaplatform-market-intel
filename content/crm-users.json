@@ -1,0 +1,26 @@
+[
+  {
+    "id": "U1",
+    "name": "Tabassum Authoy",
+    "role": "bd_manager",
+    "active": true
+  },
+  {
+    "id": "U2",
+    "name": "Sales Rep 2",
+    "role": "sales_rep",
+    "active": true
+  },
+  {
+    "id": "U3",
+    "name": "Sales Rep 3",
+    "role": "sales_rep",
+    "active": true
+  },
+  {
+    "id": "U4",
+    "name": "Sales Rep 4",
+    "role": "sales_rep",
+    "active": true
+  }
+]
