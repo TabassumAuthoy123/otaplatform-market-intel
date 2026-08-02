@@ -1,9 +1,13 @@
 import Link from 'next/link';
 import { SEGMENTS } from '@/data/schema';
-import { TARGETS } from '@/data/agencies';
 import { Kicker, SectionTitle, Card, Tag, StatCard } from '@/components/ui';
+import { getDataset } from '@/lib/agencies';
 
-export default function SegmentsPage() {
+// Records come from content/agencies.json, which the admin portal writes.
+export const dynamic = 'force-dynamic';
+
+export default async function SegmentsPage() {
+  const { targets: TARGETS } = await getDataset();
   return (
     <div className="space-y-8">
       <div>

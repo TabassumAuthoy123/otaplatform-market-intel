@@ -1,14 +1,21 @@
 import Link from 'next/link';
-import { AGENCIES, TARGETS, EXCLUDED, STATS, PIPELINE, countBy } from '@/data/agencies';
 import { CLUSTERS, SEGMENTS } from '@/data/schema';
 import {
   StatCard, SectionTitle, Kicker, BarRow, Donut, Callout, Card, PriorityChip, Tag
 } from '@/components/ui';
+import { countBy, getDataset } from '@/lib/agencies';
+
+// Records come from content/agencies.json, which the admin portal writes.
+export const dynamic = 'force-dynamic';
 
 const bdt = (n: number) =>
   n >= 10000000 ? `৳${(n / 10000000).toFixed(2)} cr` : n >= 100000 ? `৳${(n / 100000).toFixed(1)} lakh` : `৳${n.toLocaleString()}`;
 
-export default function Dashboard() {
+export default async function Dashboard() {
+  const {
+    agencies: AGENCIES, targets: TARGETS, excluded: EXCLUDED, stats: STATS, pipeline: PIPELINE
+  } = await getDataset();
+
   const byCluster = countBy(TARGETS, (a) => a.clusterId);
   const clusterRows = CLUSTERS.map((c) => ({ c, n: byCluster.get(c.id) ?? 0 }))
     .filter((r) => r.n > 0)

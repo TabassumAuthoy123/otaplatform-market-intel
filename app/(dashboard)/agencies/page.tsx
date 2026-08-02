@@ -1,13 +1,17 @@
-import { AGENCIES } from '@/data/agencies';
 import { CLUSTERS, SEGMENTS } from '@/data/schema';
 import AgencyTable from '@/components/AgencyTable';
 import { Kicker, SectionTitle } from '@/components/ui';
+import { getAgencies } from '@/lib/agencies';
 
-export default function AgenciesPage({
+// Records come from content/agencies.json, which the admin portal writes.
+export const dynamic = 'force-dynamic';
+
+export default async function AgenciesPage({
   searchParams
 }: {
   searchParams: { segment?: string; cluster?: string; priority?: string; q?: string; district?: string };
 }) {
+  const AGENCIES = await getAgencies();
   return (
     <div>
       <Kicker>Agency database</Kicker>

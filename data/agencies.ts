@@ -2,7 +2,15 @@ import type { Agency, CredentialState, Priority, SalesMode, SegmentCode } from '
 import { CLUSTERS } from './schema';
 
 // ============================================================================
-//  VERIFIED AGENCY DATASET
+//  VERIFIED AGENCY DATASET — SEED ONLY, NOT THE RUNTIME SOURCE
+//
+//  content/agencies.json is what the app reads and what the admin portal on
+//  :4001 writes. This file is the curated original the JSON was generated from,
+//  kept for provenance and as a restore path. Editing it changes nothing until
+//  you regenerate the JSON:
+//      curl "http://localhost:3002/api/agencies" > tmp.json   (before migrating)
+//  Runtime loading and all derived aggregates now live in lib/agencies.ts.
+//
 //  Names, addresses and phone numbers pulled from live public business
 //  listings on 29 July 2026. Nothing invented.
 //

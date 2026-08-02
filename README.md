@@ -21,8 +21,9 @@ npm run dev
 
 Open **http://localhost:3000**
 
-No database, no API key, no Docker needed to demo — the dataset ships as typed TypeScript
-so the dashboard works offline out of the box.
+No database, no API key, no Docker needed to demo — the dataset is a JSON file on disk,
+so the dashboard works offline out of the box. Edit it from the admin portal
+(`npm run admin`, port 4001) rather than by hand.
 
 ```bash
 npm run build && npm start   # production build
@@ -83,8 +84,10 @@ Do not present an inferred credential to a client as a fact.
 ## Project structure
 
 ```
-data/schema.ts          <- CANONICAL data schema. Types, segments, clusters. Change here first.
-data/agencies.ts        <- the 114-record dataset + derived STATS / PIPELINE aggregates
+data/schema.ts          <- CANONICAL types, segments, clusters, label maps. Change here first.
+data/agencies.ts        <- SEED ONLY. The curated original content/agencies.json came from
+content/agencies.json   <- the live 114-record dataset. Written by the admin portal on :4001
+lib/agencies.ts         <- runtime loader + derived TARGETS / EXCLUDED / STATS / PIPELINE
 prisma/schema.prisma    <- Prisma mirror (MySQL 8): agencies, contacts, activities, deals, data_sources
 db/schema.sql           <- plain MySQL DDL + 3 reporting views, for the dev/DBA team
 
@@ -110,7 +113,7 @@ docs/                   <- source documents: market pack (docx), deck brief (md)
 
 ## Wiring the real database
 
-The dataset is static TypeScript so the demo cannot break. When you want it live:
+The dataset is a flat JSON file so the demo cannot break. When you want it in MySQL:
 
 **Option A — Prisma (recommended)**
 
@@ -133,8 +136,8 @@ Three reporting views ship with the DDL:
 - `v_cluster_rollup` — agencies, A/B/C split and IATA count per cluster
 - `v_call_sheet` — the dial-ready list: A and B priority, no existing platform
 
-Once the DB is live, replace the `AGENCIES` import in `app/(dashboard)/page.tsx` and
-`app/(dashboard)/agencies/page.tsx` with a Prisma query. Nothing else changes — the schema is
+Once the DB is live, swap the file reads in `lib/agencies.ts` for Prisma queries.
+Every page and the API route go through that one module, so nothing else changes — the schema is
 identical.
 
 ---

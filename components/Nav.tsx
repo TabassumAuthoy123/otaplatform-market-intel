@@ -4,14 +4,20 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
 import { SEGMENTS, CLUSTERS } from '@/data/schema';
-import { AGENCIES } from '@/data/agencies';
 
-const countSeg = (code: string) =>
-  AGENCIES.filter((a) => a.priority !== 'X' && (a.segment === code || a.segmentSecondary === code)).length;
-const countCluster = (id: string) =>
-  AGENCIES.filter((a) => a.priority !== 'X' && a.clusterId === id).length;
-
-export default function Nav() {
+/**
+ * Counts arrive as props. This is a client component, and the dataset now lives
+ * in content/agencies.json, which only the server can read.
+ */
+export default function Nav({
+  segCounts = {},
+  clusterCounts = {}
+}: {
+  segCounts?: Record<string, number>;
+  clusterCounts?: Record<string, number>;
+}) {
+  const countSeg = (code: string) => segCounts[code] ?? 0;
+  const countCluster = (id: string) => clusterCounts[id] ?? 0;
   const path = usePathname();
   const [open, setOpen] = useState<'seg' | 'cluster' | null>(null);
   const [mobile, setMobile] = useState(false);

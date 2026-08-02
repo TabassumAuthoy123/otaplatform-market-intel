@@ -7,7 +7,7 @@ item in the dashboard nav bar. Only two processes run.
 | Process | Port | Open | What it is |
 |---|---|---|---|
 | **Market Intelligence** (main app) | `3002` | http://localhost:3002 | Dashboard, agency database, segments — **and** `/portal`, the B2C storefront |
-| **Admin portal** | `4001` | http://localhost:4001 | Email + password login. Content management for the storefront |
+| **Admin portal** | `4001` | http://localhost:4001 | Email + password login. Content management for **both** the storefront and the 114-agency dataset |
 | OTAPlatform nginx | `8080` | http://localhost:8080 | Existing Laravel stack, untouched |
 | OTAPlatform phpMyAdmin | `8081` | http://localhost:8081 | Existing |
 
@@ -170,12 +170,46 @@ which appends to `content/leads.json`. Admin lists them under **Demo requests**
 with a delete action. That file is **gitignored** — it holds names and phone
 numbers.
 
-### What admin does *not* edit
+---
 
-The 114-agency dataset. That lives in `data/agencies.ts` as typed TypeScript and
-is the dashboard's data, not storefront content. Editing it needs either the
-Prisma path in [README.md](README.md) or a separate editor — say the word if you
-want one.
+## Agency dataset — the dashboard's own data
+
+Admin also edits the 114-agency dataset, under **Agency dataset** in the sidebar.
+
+```
+content/agencies.json   <- 114 records, authoritative
+       ^ writes                          | reads on every request
+  admin :4001                 app :3002  /  /agencies  /segments  /api/agencies
+```
+
+| Screen | What you can do |
+|---|---|
+| `/agencies` | Search by name, phone, address, signal or ID · filter by priority, segment, cluster · 25 per page · delete selected |
+| `+ Add a new agency` | Creates the next free `AG-NNN` and opens its editor |
+| `/agencies/edit?id=…` | All 32 fields in seven groups: Identity, Location, Contact, Segment & priority, Credentials, Commercial, CRM state |
+
+Enums are dropdowns, not free text — priority `A/B/C/X`, segments `S1–S6`,
+credential states `verified/inferred/unknown/none`, sales mode, suggested tier,
+pipeline stage, exclusion reason. Cluster options are derived from the
+`clusterId` values already in the dataset. `id` is read-only.
+
+Save a change and the dashboard picks it up on the next request: move a record
+from priority A to B and the A count drops by one immediately.
+
+### Where the dataset lives now
+
+`data/agencies.ts` is no longer read at runtime. It is kept as the curated seed
+`content/agencies.json` was generated from, and as a restore path. Types,
+`SEGMENTS`, `CLUSTERS` and the label maps still come from `data/schema.ts` —
+that file is canonical config, not editable content.
+
+If you add a field to the `Agency` interface in `data/schema.ts`, add it to
+`admin/agency-fields.js` too. Admin is plain Node and cannot import the
+TypeScript, so that file is a hand-kept mirror — a field missing from it simply
+will not appear in the editor.
+
+Runtime loading and all derived aggregates (`STATS`, `PIPELINE`, `TARGETS`,
+`EXCLUDED`, `countBy`) live in `lib/agencies.ts`.
 
 ---
 
@@ -230,7 +264,7 @@ docs/                     market pack, target-customer deck, Sabre PNR logs
 node_modules, .next
 ```
 
-`content/site.json` **is** committed — it is the demo content, and the repo is
+`content/site.json` and `content/agencies.json` **are** committed — it is the demo content, and the repo is
 public by your decision. It contains no agency names, no phone numbers from the
 target list and no taka pricing.
 

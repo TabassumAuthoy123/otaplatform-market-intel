@@ -34,9 +34,12 @@ const PORT = Number(process.env.ADMIN_PORT || 4001);
 const APP_URL = (process.env.APP_URL || 'http://localhost:3002').replace(/\/+$/, '');
 const PORTAL_URL = `${APP_URL}/portal`;
 
+const AGENCY = require('./agency-fields');
+
 const ROOT = path.resolve(__dirname, '..');
 const CONTENT_DIR = path.join(ROOT, 'content');
 const SITE_FILE = path.join(CONTENT_DIR, 'site.json');
+const AGENCIES_FILE = path.join(CONTENT_DIR, 'agencies.json');
 const USERS_FILE = path.join(CONTENT_DIR, 'users.json');
 const LEADS_FILE = path.join(CONTENT_DIR, 'leads.json');
 const SECRET_FILE = path.join(CONTENT_DIR, '.session-secret');
@@ -343,7 +346,9 @@ function page({ title, session, body, active = '' }) {
       <nav>
         <a href="/dashboard" class="${active === 'dashboard' ? 'on' : ''}">Overview</a>
         <a href="/leads" class="${active === 'leads' ? 'on' : ''}">Demo requests</a>
-        <div class="sep">Content</div>
+        <div class="sep">Market Intelligence</div>
+        <a href="/agencies" class="${active === 'agencies' ? 'on' : ''}">Agency dataset</a>
+        <div class="sep">B2C storefront</div>
         ${SECTIONS.map(
           (s) => `<a href="/edit/${s.key}" class="${active === s.key ? 'on' : ''}">${esc(s.label)}</a>`
         ).join('')}
@@ -463,7 +468,7 @@ function loginView(error, seeded) {
   });
 }
 
-function dashboardView(session, content, leadCount, flash) {
+function dashboardView(session, content, leadCount, agencyCount, flash) {
   const counts = {
     routes: content.routes?.length ?? 0,
     packages: content.packages?.length ?? 0,
@@ -480,10 +485,11 @@ function dashboardView(session, content, leadCount, flash) {
       ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
       <div class="card">
         <div class="grid">
+          <a class="tile" href="/agencies"><strong class="tnum">${agencyCount}</strong><span>Agency records →</span></a>
           <div class="tile"><strong class="tnum">${counts.routes}</strong><span>Flight routes</span></div>
           <div class="tile"><strong class="tnum">${counts.packages}</strong><span>Packages</span></div>
           <div class="tile"><strong class="tnum">${counts.hotels}</strong><span>Hotels</span></div>
-          <div class="tile"><strong class="tnum">${leadCount}</strong><span>Demo requests</span></div>
+          <a class="tile" href="/leads"><strong class="tnum">${leadCount}</strong><span>Demo requests →</span></a>
         </div>
       </div>
       <div class="card">
@@ -575,6 +581,227 @@ function leadsView(session, leads, flash) {
       }
       </div>`
   });
+}
+
+/* ------------------------------------------------------------ agency views */
+
+const PAGE_SIZE = 25;
+
+function clusterOptions(rows) {
+  return Array.from(new Set(rows.map((r) => r.clusterId).filter(Boolean))).sort();
+}
+
+function agencyListView(session, rows, q, flash) {
+  const clusters = clusterOptions(rows);
+
+  let filtered = rows;
+  const term = (q.q || '').trim().toLowerCase();
+  if (term) {
+    filtered = filtered.filter((r) =>
+      [r.name, r.address, r.phone, r.district, r.signal, r.id]
+        .filter(Boolean)
+        .some((v) => String(v).toLowerCase().includes(term))
+    );
+  }
+  if (q.priority) filtered = filtered.filter((r) => r.priority === q.priority);
+  if (q.segment) filtered = filtered.filter((r) => r.segment === q.segment || r.segmentSecondary === q.segment);
+  if (q.cluster) filtered = filtered.filter((r) => r.clusterId === q.cluster);
+
+  const pageNo = Math.max(1, Number(q.page) || 1);
+  const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const slice = filtered.slice((pageNo - 1) * PAGE_SIZE, pageNo * PAGE_SIZE);
+
+  const qs = (over) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries({ ...q, ...over })) if (v) p.set(k, v);
+    return p.toString();
+  };
+
+  const opt = (list, sel) =>
+    list.map((v) => `<option value="${esc(v)}"${v === sel ? ' selected' : ''}>${esc(v || 'All')}</option>`).join('');
+
+  return page({
+    title: 'Agency dataset',
+    session,
+    active: 'agencies',
+    body: `
+      <h1>Agency dataset</h1>
+      <p class="sub">${rows.length} records in content/agencies.json. The dashboard, the agency database page and /api/agencies all read this file.</p>
+      ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
+
+      <form method="get" action="/agencies" class="card" style="display:flex;gap:11px;flex-wrap:wrap;align-items:flex-end">
+        <label class="row" style="flex:2;min-width:220px;margin:0"><span class="lab">Search</span>
+          <input type="text" name="q" value="${esc(q.q || '')}" placeholder="name, phone, address, signal"></label>
+        <label class="row" style="margin:0"><span class="lab">Priority</span>
+          <select name="priority">${opt(['', ...AGENCY.PRIORITIES], q.priority || '')}</select></label>
+        <label class="row" style="margin:0"><span class="lab">Segment</span>
+          <select name="segment">${opt(['', ...AGENCY.SEGMENTS], q.segment || '')}</select></label>
+        <label class="row" style="margin:0"><span class="lab">Cluster</span>
+          <select name="cluster">${opt(['', ...clusters], q.cluster || '')}</select></label>
+        <button class="primary" type="submit">Filter</button>
+        <a class="secondary" href="/agencies">Reset</a>
+      </form>
+
+      <form method="post" action="/agencies/new" style="margin-bottom:16px">
+        <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+        <button class="btn-add" type="submit">+ Add a new agency</button>
+      </form>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <form method="post" action="/agencies/delete">
+          <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+          <table>
+            <thead><tr>
+              <th>ID</th><th>Agency</th><th>Cluster / district</th><th>Pri</th><th>Seg</th>
+              <th>Phone</th><th>Stage</th><th></th><th></th>
+            </tr></thead>
+            <tbody>
+            ${
+              slice.length === 0
+                ? '<tr><td colspan="9" style="padding:22px;color:var(--muted)">Nothing matches that filter.</td></tr>'
+                : slice
+                    .map(
+                      (r) => `<tr>
+                <td class="tnum" style="white-space:nowrap">${esc(r.id)}</td>
+                <td><strong>${esc(r.name)}</strong></td>
+                <td>${esc(r.clusterId)}<br><span style="color:var(--muted)">${esc(r.district)}</span></td>
+                <td><strong>${esc(r.priority)}</strong></td>
+                <td>${esc(r.segment)}${r.segmentSecondary ? ' + ' + esc(r.segmentSecondary) : ''}</td>
+                <td class="tnum" style="white-space:nowrap">${esc(r.phone || '—')}</td>
+                <td>${esc(r.stage)}</td>
+                <td><a href="/agencies/edit?id=${encodeURIComponent(r.id)}">Edit</a></td>
+                <td><label class="del"><input type="checkbox" name="remove" value="${esc(r.id)}"> delete</label></td>
+              </tr>`
+                    )
+                    .join('')
+            }
+            </tbody>
+          </table>
+          <div class="bar" style="padding:14px 18px">
+            <button class="primary" type="submit">Delete selected</button>
+            <span style="margin-left:auto;font-size:12.5px;color:var(--muted)">
+              Showing ${slice.length} of ${filtered.length} matching · page ${pageNo} of ${pages}
+            </span>
+            ${pageNo > 1 ? `<a class="secondary" href="/agencies?${esc(qs({ page: pageNo - 1 }))}">← Prev</a>` : ''}
+            ${pageNo < pages ? `<a class="secondary" href="/agencies?${esc(qs({ page: pageNo + 1 }))}">Next →</a>` : ''}
+          </div>
+        </form>
+      </div>`
+  });
+}
+
+function agencyEditView(session, rec, clusters, flash) {
+  const field = (f) => {
+    const v = rec[f.key];
+    const id = 'f_' + f.key;
+    const lab = `<span class="lab">${esc(f.label)}</span>`;
+
+    if (f.readonly) {
+      return `<label class="row">${lab}<input type="text" value="${esc(v ?? '')}" readonly
+        style="background:var(--panel);color:var(--muted)"><input type="hidden" name="${esc(f.key)}" value="${esc(v ?? '')}"></label>`;
+    }
+    if (f.type === 'bool') {
+      return `<label class="row check"><input type="checkbox" name="${esc(f.key)}" id="${id}"${v ? ' checked' : ''}>
+        <span class="lab">${esc(f.label)}</span></label>`;
+    }
+    if (f.type === 'number') {
+      return `<label class="row">${lab}<input type="number" step="any" name="${esc(f.key)}" id="${id}" value="${v === null || v === undefined ? '' : esc(v)}"></label>`;
+    }
+    if (f.type === 'textarea') {
+      return `<label class="row">${lab}<textarea name="${esc(f.key)}" id="${id}" rows="3">${esc(v ?? '')}</textarea></label>`;
+    }
+    if (f.type === 'lines') {
+      const arr = Array.isArray(v) ? v : [];
+      return `<label class="row"><span class="lab">${esc(f.label)} <em>one per line</em></span>
+        <textarea name="lines:${esc(f.key)}" rows="${Math.max(2, arr.length + 1)}">${esc(arr.join('\n'))}</textarea></label>`;
+    }
+    if (f.type === 'select' || f.type === 'cluster') {
+      const options = f.type === 'cluster' ? clusters : f.options;
+      const cur = v ?? '';
+      return `<label class="row">${lab}<select name="${esc(f.key)}" id="${id}">
+        ${options.map((o) => `<option value="${esc(o)}"${String(o) === String(cur) ? ' selected' : ''}>${esc(o === '' ? '— none —' : o)}</option>`).join('')}
+      </select></label>`;
+    }
+    return `<label class="row">${lab}<input type="text" name="${esc(f.key)}" id="${id}" value="${esc(v ?? '')}"></label>`;
+  };
+
+  return page({
+    title: rec.name || 'New agency',
+    session,
+    active: 'agencies',
+    body: `
+      <h1>${esc(rec.name || 'New agency')}</h1>
+      <p class="sub"><span class="tnum">${esc(rec.id)}</span> · editing content/agencies.json</p>
+      ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
+      <form method="post" action="/agencies/edit?id=${encodeURIComponent(rec.id)}">
+        <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+        ${AGENCY.GROUPS.map(
+          (g) => `<fieldset class="obj"><legend>${esc(g.title)}</legend>
+            <div style="display:grid;gap:0 16px;grid-template-columns:repeat(auto-fill,minmax(280px,1fr))">
+              ${g.fields.map(field).join('')}
+            </div>
+          </fieldset>`
+        ).join('')}
+        <div class="bar">
+          <button class="primary" type="submit">Save agency</button>
+          <a class="secondary" href="/agencies">Back to list</a>
+        </div>
+      </form>`
+  });
+}
+
+/** Write a submitted agency form back onto a record, coercing by field type. */
+function applyAgencyForm(rec, form) {
+  for (const f of AGENCY.FIELDS) {
+    if (f.readonly) continue;
+
+    if (f.type === 'bool') {
+      rec[f.key] = f.key in form;
+      continue;
+    }
+    if (f.type === 'lines') {
+      const raw = form[`lines:${f.key}`];
+      const val = String(Array.isArray(raw) ? raw[raw.length - 1] : raw ?? '')
+        .split('\n')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (val.length) rec[f.key] = val;
+      else delete rec[f.key];
+      continue;
+    }
+
+    if (!(f.key in form)) continue;
+    const raw = form[f.key];
+    const v = String(Array.isArray(raw) ? raw[raw.length - 1] : raw).trim();
+
+    if (f.type === 'number') {
+      if (v === '') rec[f.key] = null;
+      else {
+        const n = Number(v);
+        rec[f.key] = Number.isFinite(n) ? n : null;
+      }
+      continue;
+    }
+
+    if (v === '' && f.nullable) {
+      // segmentSecondary is optional rather than nullable — drop the key entirely
+      if (f.key === 'segmentSecondary') delete rec[f.key];
+      else rec[f.key] = null;
+      continue;
+    }
+    rec[f.key] = v;
+  }
+  return rec;
+}
+
+/** AG-001, AG-002 … next free id. */
+function nextAgencyId(rows) {
+  let max = 0;
+  for (const r of rows) {
+    const m = /^AG-(\d+)$/.exec(String(r.id || ''));
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return `AG-${String(max + 1).padStart(3, '0')}`;
 }
 
 function rawView(session, content, flash, error) {
@@ -698,7 +925,12 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/' || pathname === '/dashboard') {
       const content = readJson(SITE_FILE, {});
       const leads = readJson(LEADS_FILE, []);
-      return send(res, 200, dashboardView(session, content, leads.length, url.searchParams.get('saved') ? 'Saved.' : null));
+      const agencies = readJson(AGENCIES_FILE, []);
+      return send(
+        res,
+        200,
+        dashboardView(session, content, leads.length, agencies.length, url.searchParams.get('saved') ? 'Saved.' : null)
+      );
     }
 
     if (pathname === '/logout' && req.method === 'POST') {
@@ -718,6 +950,52 @@ const server = http.createServer(async (req, res) => {
       const leads = readJson(LEADS_FILE, []).filter((l) => !remove.has(l.id));
       await writeJsonAtomic(LEADS_FILE, leads);
       return redirect(res, '/leads?saved=1');
+    }
+
+    /* ---- agency dataset ---- */
+
+    if (pathname === '/agencies' && req.method === 'GET') {
+      const rows = readJson(AGENCIES_FILE, []);
+      const q = Object.fromEntries(url.searchParams.entries());
+      return send(res, 200, agencyListView(session, rows, q, q.saved ? 'Saved.' : null));
+    }
+
+    if (pathname === '/agencies/edit' && req.method === 'GET') {
+      const rows = readJson(AGENCIES_FILE, []);
+      const rec = rows.find((r) => r.id === url.searchParams.get('id'));
+      if (!rec) return send(res, 404, page({ title: 'Not found', session, body: '<h1>No agency with that id</h1><p><a href="/agencies">Back to list</a></p>' }));
+      return send(res, 200, agencyEditView(session, rec, clusterOptions(rows), url.searchParams.get('saved') ? 'Saved.' : null));
+    }
+
+    if (pathname === '/agencies/edit' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const rows = readJson(AGENCIES_FILE, []);
+      const idx = rows.findIndex((r) => r.id === url.searchParams.get('id'));
+      if (idx < 0) return send(res, 404, page({ title: 'Not found', session, body: '<h1>No agency with that id</h1>' }));
+      applyAgencyForm(rows[idx], form);
+      await writeJsonAtomic(AGENCIES_FILE, rows);
+      return redirect(res, `/agencies/edit?id=${encodeURIComponent(rows[idx].id)}&saved=1`);
+    }
+
+    if (pathname === '/agencies/new' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const rows = readJson(AGENCIES_FILE, []);
+      const rec = AGENCY.blankAgency(nextAgencyId(rows));
+      rows.push(rec);
+      await writeJsonAtomic(AGENCIES_FILE, rows);
+      return redirect(res, `/agencies/edit?id=${encodeURIComponent(rec.id)}`);
+    }
+
+    if (pathname === '/agencies/delete' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const remove = new Set([].concat(form.remove ?? []));
+      if (remove.size === 0) return redirect(res, '/agencies');
+      const rows = readJson(AGENCIES_FILE, []).filter((r) => !remove.has(r.id));
+      await writeJsonAtomic(AGENCIES_FILE, rows);
+      return redirect(res, '/agencies?saved=1');
     }
 
     if (pathname === '/raw' && req.method === 'GET') {

@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
-import { AGENCIES, TARGETS, STATS, PIPELINE } from '@/data/agencies';
 import { CLUSTERS, SEGMENTS, CRED_LABEL, SALES_MODE_LABEL } from '@/data/schema';
+import { getDataset } from '@/lib/agencies';
+
+// Records come from content/agencies.json, which the admin portal writes.
+export const dynamic = 'force-dynamic';
 
 /**
  * GET /api/agencies
@@ -14,6 +17,7 @@ import { CLUSTERS, SEGMENTS, CRED_LABEL, SALES_MODE_LABEL } from '@/data/schema'
  */
 export async function GET(req: Request) {
   const p = new URL(req.url).searchParams;
+  const { agencies: AGENCIES, targets: TARGETS, stats: STATS, pipeline: PIPELINE } = await getDataset();
 
   if (p.get('stats')) {
     return NextResponse.json({ stats: STATS, pipeline: PIPELINE, clusters: CLUSTERS.length, segments: SEGMENTS.length });
