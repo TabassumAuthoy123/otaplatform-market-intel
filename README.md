@@ -1,9 +1,19 @@
 # OTA Platform — Bangladesh Market Intelligence Dashboard
 
-> This app now also serves a **B2C consumer storefront** at `/portal`, reachable
-> from the **B2C Portal ↗** item in the nav bar. Its content is edited from a
-> separate **admin portal** on port 4001 (`npm run admin`) — see
-> [B2C-ADMIN.md](B2C-ADMIN.md).
+> **New here? Read [GETTING-STARTED.md](GETTING-STARTED.md) first.** It explains
+> the whole project from nothing — what it is, how to run it, where credentials
+> go, how to change things, and what is deliberately not built yet.
+>
+> This app now serves three areas from one Next.js project:
+>
+> | Area | Route | What it is |
+> |---|---|---|
+> | Market Intelligence | `/` | The 114-agency lead dataset below |
+> | B2C storefront | `/portal` | What a travel customer sees |
+> | Travel Accounts | `/accounts` | Invoices, bills, cash, bank, reports |
+>
+> All three are edited from a separate **admin portal** on port 4001
+> (`npm run admin`) — see [B2C-ADMIN.md](B2C-ADMIN.md).
 
 Lead-intelligence dashboard for **Softifybd OTA Platform**. Built to be shown to the CEO
 and used on the phone the same day.
@@ -40,6 +50,7 @@ npm run build && npm start   # production build
 | **Segments** | `/segments` | S1–S6 explained with live counts and the disqualification rules |
 | **API** | `/api/agencies` | JSON + CSV for anyone who wants the raw data |
 | **B2C Portal** | `/portal` | The consumer-facing storefront — flights, Hajj/Umrah, hotels, visa, agent signup. Content editable from the admin portal on 4001. See [B2C-ADMIN.md](B2C-ADMIN.md) |
+| **Travel Accounts** | `/accounts` | Travel-agency accounting built from the structure document: sales, purchases, cash, bank, expenses, reports, statements, PNR live check. See [GETTING-STARTED.md](GETTING-STARTED.md) §4.3 |
 
 The two numbers the CEO asks for are the first two tiles in the hero:
 **Civil Aviation certificate holders** and **IATA registered**.

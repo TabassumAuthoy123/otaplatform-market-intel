@@ -121,6 +121,12 @@ export default function Nav({
           >
             B2C Portal ↗
           </Link>
+          <Link
+            href="/accounts"
+            className="ml-1 rounded border border-teal-400/50 px-3 py-2 text-sm text-teal-300 transition-colors hover:border-teal-400 hover:bg-teal-400/10 hover:text-white"
+          >
+            Accounts ↗
+          </Link>
 
           <a
             href="/api/agencies?format=csv"
@@ -146,6 +152,7 @@ export default function Nav({
             {link('/segments', 'Segments')}
             {link('/agencies?priority=A', 'Call First (A)')}
             {link('/portal', 'B2C Portal ↗')}
+            {link('/accounts', 'Accounts ↗')}
           </div>
         </div>
       )}
