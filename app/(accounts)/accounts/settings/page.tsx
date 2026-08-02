@@ -71,12 +71,15 @@ export default async function SettingsPage() {
         </Table>
       </Panel>
 
-      <div className="rounded-lg border-l-[3px] border-amber-700 bg-amber-700/5 px-5 py-4">
-        <p className="text-[13px] font-semibold text-navy-900">Roles are described, not enforced</p>
+      <div className="rounded-lg border-l-[3px] border-teal-600 bg-teal-600/5 px-5 py-4">
+        <p className="text-[13px] font-semibold text-navy-900">Roles are enforced, and managed from the admin portal</p>
         <p className="mt-1 text-[12.5px] leading-relaxed text-ink">
-          The six roles above come from the specification and are stored in the book, but this build has one admin login
-          and no per-role permission checks. Anyone who can reach the admin portal can edit everything. That is fine for
-          a local demo and is not fine for real users — it is listed in the README as outstanding work.
+          Each of the six roles above maps to a set of capabilities in the admin portal, checked on every request
+          before any handler runs — so hiding a menu item is a convenience and the route guard is the actual control.
+          A Sales Executive can raise an invoice and a receipt but is refused on a supplier bill; Read Only can open
+          every screen and is refused on every write. Add users and set roles at{' '}
+          <span className="font-semibold text-navy-900">localhost:4001/users</span>. The last Super Admin cannot be
+          demoted or deleted, so the portal can never lock everyone out.
         </p>
       </div>
     </div>

@@ -28,27 +28,33 @@
   "roles": [
     {
       "name": "Super Admin",
+      "key": "super_admin",
       "can": "Everything, including settings and user management"
     },
     {
       "name": "Accountant",
-      "can": "All vouchers, reports and statements. No settings"
+      "key": "accountant",
+      "can": "All vouchers, reports and statements. No settings, no user management"
     },
     {
       "name": "Sales Executive",
-      "can": "Quotations, invoices and customer receipts only"
+      "key": "sales_exec",
+      "can": "The prospect queue, quotations, invoices and customer receipts"
     },
     {
       "name": "Operations Staff",
-      "can": "Supplier bookings and bills only"
+      "key": "operations",
+      "can": "Supplier bookings, bills, payments and stock only"
     },
     {
       "name": "Manager",
-      "can": "Read all, approve credit notes and cancellations"
+      "key": "manager",
+      "can": "Read everything, reassign leads, approve cancellations"
     },
     {
       "name": "Read Only",
-      "can": "Reports and statements, nothing editable"
+      "key": "read_only",
+      "can": "Reports and statements. Nothing editable anywhere"
     }
   ],
   "customers": [

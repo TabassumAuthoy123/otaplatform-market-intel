@@ -36,6 +36,7 @@ const PORTAL_URL = `${APP_URL}/portal`;
 
 const AGENCY = require('./agency-fields');
 const CRM = require('./crm-fields');
+const RBAC = require('./roles');
 
 const ROOT = path.resolve(__dirname, '..');
 const CONTENT_DIR = path.join(ROOT, 'content');
@@ -343,34 +344,37 @@ function itemTitle(item, i) {
 /* -------------------------------------------------------------------- layout */
 
 function page({ title, session, body, active = '' }) {
+  const vis = session ? RBAC.visible(session.role) : {};
+  const roleLabel = session ? ((RBAC.ROLES[RBAC.normaliseRole(session.role)] || {}).label || session.role) : '';
   const nav = session
     ? `
     <aside class="side">
       <div class="brand"><span class="mark">OTA</span><span>Admin</span></div>
       <nav>
         <a href="/dashboard" class="${active === 'dashboard' ? 'on' : ''}">Overview</a>
-        <a href="/leads" class="${active === 'leads' ? 'on' : ''}">Demo requests</a>
-        <div class="sep">Accounting</div>
-        <a href="/books" class="${active === 'books' ? 'on' : ''}">Records — add / edit / delete</a>
-        <div class="sep">Storefront</div>
-        <a href="/design" class="${active === 'design' ? 'on' : ''}">Design &amp; layout</a>
-        <a href="/integrations" class="${active === 'integrations' ? 'on' : ''}">API integrations</a>
-        <div class="sep">Sales CRM · 400 prospects</div>
+        ${vis.leads ? `<a href="/leads" class="${active === 'leads' ? 'on' : ''}">Demo requests</a>` : ''}
+        ${vis.books ? `<div class="sep">Accounting</div>
+        <a href="/books" class="${active === 'books' ? 'on' : ''}">Records${RBAC.canWriteBooks(session.role) ? ' — add / edit / delete' : ' — read only'}</a>` : ''}
+        ${vis.design || vis.integrations ? '<div class="sep">Storefront</div>' : ''}
+        ${vis.design ? `<a href="/design" class="${active === 'design' ? 'on' : ''}">Design &amp; layout</a>` : ''}
+        ${vis.integrations ? `<a href="/integrations" class="${active === 'integrations' ? 'on' : ''}">API integrations</a>` : ''}
+        ${vis.crm ? `<div class="sep">Sales CRM · 400 prospects</div>
         <a href="/crm/dashboard" class="${active === 'crm-dash' ? 'on' : ''}">Manager dashboard</a>
         <a href="/crm" class="${active === 'crm' ? 'on' : ''}">Lead list</a>
-        <a href="/crm/call" class="${active === 'crm-call' ? 'on' : ''}">Call mode</a>
-        <div class="sep">Market Intelligence</div>
-        <a href="/agencies" class="${active === 'agencies' ? 'on' : ''}">Agency dataset</a>
-        <div class="sep">B2C storefront</div>
+        <a href="/crm/call" class="${active === 'crm-call' ? 'on' : ''}">Call mode</a>` : ''}
+        ${vis.agencies ? `<div class="sep">Market Intelligence</div>
+        <a href="/agencies" class="${active === 'agencies' ? 'on' : ''}">Agency dataset</a>` : ''}
+        ${vis.design ? '<div class="sep">B2C storefront content</div>' : ''}
         ${SECTIONS.map(
           (s) => `<a href="/edit/${s.key}" class="${active === s.key ? 'on' : ''}">${esc(s.label)}</a>`
         ).join('')}
-        <div class="sep">Advanced</div>
-        <a href="/raw" class="${active === 'raw' ? 'on' : ''}">Raw JSON</a>
+        ${vis.users ? `<div class="sep">Administration</div>
+        <a href="/users" class="${active === 'users' ? 'on' : ''}">Users &amp; roles</a>` : ''}
+        ${vis.raw ? `<a href="/raw" class="${active === 'raw' ? 'on' : ''}">Raw JSON</a>` : ''}
       </nav>
       <form method="post" action="/logout" class="out">
         <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
-        <div class="who">${esc(session.email)}</div>
+        <div class="who">${esc(session.email)}<br><span style="color:var(--teal4)">${esc(roleLabel)}</span></div>
         <button type="submit">Sign out</button>
       </form>
     </aside>`
@@ -592,6 +596,122 @@ function leadsView(session, leads, flash) {
              <div class="bar" style="padding:14px 18px"><button class="primary" type="submit">Delete selected</button></div>
            </form>`
       }
+      </div>`
+  });
+}
+
+/* --------------------------------------------------------------- RBAC views */
+
+function forbiddenView(session, verdict, pathname) {
+  return page({
+    title: 'Not permitted',
+    session,
+    active: '',
+    body: `
+      <h1>Not permitted</h1>
+      <p class="sub">Your role does not include this.</p>
+      <div class="card" style="border-left:4px solid var(--amber)">
+        <table>
+          <tbody>
+            <tr><td style="width:180px;font-weight:600">You are signed in as</td>
+                <td>${esc(session.email)} — <strong>${esc(verdict.roleLabel)}</strong></td></tr>
+            <tr><td style="font-weight:600">You tried to reach</td><td class="tnum">${esc(pathname)}</td></tr>
+            <tr><td style="font-weight:600">That needs</td><td><strong>${esc(verdict.reason)}</strong></td></tr>
+          </tbody>
+        </table>
+        <p style="margin:14px 0 0;font-size:12.5px;color:var(--muted)">
+          A Super Admin can change your role under <strong>Users &amp; roles</strong>. This block is applied at the
+          route, so it holds whether you clicked a link, typed the address or replayed a form.
+        </p>
+        <p style="margin:12px 0 0"><a class="secondary" href="/dashboard" style="text-decoration:none">Back to overview</a></p>
+      </div>`
+  });
+}
+
+function usersView(session, users, flash, errors, seededPassword) {
+  const roleOptions = (cur) =>
+    Object.entries(RBAC.ROLES).map(([k, r]) =>
+      `<option value="${esc(k)}"${RBAC.normaliseRole(cur) === k ? ' selected' : ''}>${esc(r.label)}</option>`).join('');
+
+  return page({
+    title: 'Users & roles',
+    session,
+    active: 'users',
+    body: `
+      <h1>Users &amp; roles</h1>
+      <p class="sub">Who can sign in, and what each of them may touch. Enforced at the route, not just in the menu.</p>
+      ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
+      ${errors && errors.length ? `<div class="flash warn"><ul style="margin:0 0 0 16px">${errors.map((e) => `<li>${esc(e)}</li>`).join('')}</ul></div>` : ''}
+      ${seededPassword ? `<div class="flash warn">
+        <strong>New user created.</strong> Give them this password once — it is not stored and cannot be shown again:<br>
+        <code style="font-size:15px;background:#fff;padding:3px 8px;border-radius:5px;display:inline-block;margin-top:6px">${esc(seededPassword)}</code>
+      </div>` : ''}
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <table>
+          <thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Change role</th><th></th></tr></thead>
+          <tbody>
+          ${users.map((u) => {
+            const isSelf = u.email === session.email;
+            return `<tr>
+              <td class="tnum" style="font-weight:600;color:var(--navy)">${esc(u.email)}${isSelf ? ' <span style="font-weight:400;color:var(--muted)">(you)</span>' : ''}</td>
+              <td>${esc(u.name || '—')}</td>
+              <td>${esc((RBAC.ROLES[RBAC.normaliseRole(u.role)] || {}).label || u.role)}</td>
+              <td>
+                <form method="post" action="/users/role" style="display:flex;gap:7px">
+                  <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+                  <input type="hidden" name="email" value="${esc(u.email)}">
+                  <select name="role" style="padding:6px 9px;border:1px solid var(--hair);border-radius:7px;font-size:12.5px">${roleOptions(u.role)}</select>
+                  <button class="secondary" type="submit" style="padding:6px 12px">Set</button>
+                </form>
+              </td>
+              <td>
+                ${isSelf ? '<span style="color:var(--muted);font-size:12px">cannot remove yourself</span>' :
+                `<form method="post" action="/users/delete" onsubmit="return confirm('Remove ${esc(u.email)}?')">
+                  <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+                  <input type="hidden" name="email" value="${esc(u.email)}">
+                  <button type="submit" style="background:none;border:0;color:var(--amber);cursor:pointer;font-size:12.5px">Remove</button>
+                </form>`}
+              </td>
+            </tr>`;
+          }).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <form method="post" action="/users/new" class="card">
+        <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+        <h2 style="margin:0 0 12px;font-size:14px;color:var(--navy)">Add a user</h2>
+        <div style="display:grid;gap:13px;grid-template-columns:repeat(auto-fit,minmax(200px,1fr))">
+          <label class="row" style="margin:0"><span class="lab">Email</span><input type="email" name="email" required></label>
+          <label class="row" style="margin:0"><span class="lab">Name</span><input type="text" name="name"></label>
+          <label class="row" style="margin:0"><span class="lab">Role</span><select name="role">${roleOptions('sales_exec')}</select></label>
+          <label class="row" style="margin:0"><span class="lab">Password — blank to generate one</span><input type="text" name="password" placeholder="leave blank"></label>
+        </div>
+        <button class="primary" type="submit" style="margin-top:6px">Create user</button>
+      </form>
+
+      <div class="card">
+        <h2 style="margin:0 0 12px;font-size:14px;color:var(--navy)">What each role may do</h2>
+        <table>
+          <thead><tr><th>Role</th><th>Summary</th><th>Capabilities</th></tr></thead>
+          <tbody>
+            ${Object.entries(RBAC.ROLES).map(([k, r]) => `<tr>
+              <td style="font-weight:600;color:var(--navy);white-space:nowrap">${esc(r.label)}</td>
+              <td style="font-size:12.5px">${esc(r.summary)}</td>
+              <td style="font-size:11.5px;color:var(--muted)">${r.caps.length === Object.keys(RBAC.CAPS).length ? 'everything' : r.caps.map((c) => esc(c)).join(' · ')}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2 style="margin:0 0 10px;font-size:14px;color:var(--navy)">Password handling</h2>
+        <p style="margin:0;font-size:12.5px;color:var(--muted)">
+          Passwords are hashed with scrypt and a per-user salt. The plaintext is shown once at creation and never
+          again — there is no "view password" because the value is not kept. To reset one, remove the user and add
+          them again.
+        </p>
       </div>`
   });
 }
@@ -1931,6 +2051,15 @@ const server = http.createServer(async (req, res) => {
 
     if (!session) return redirect(res, '/login');
 
+    /* ---- role guard ----
+       Enforced here, before any handler runs, so hiding a sidebar link is a
+       convenience and this is the actual control. Unmapped routes are
+       super-admin only by design. */
+    {
+      const verdict = RBAC.check(session.role, pathname, req.method, url.searchParams.get('col'));
+      if (!verdict.ok) return send(res, 403, forbiddenView(session, verdict, pathname));
+    }
+
     /* ---- authenticated ---- */
     // Every POST handler below verifies form.csrf against csrfFor(session)
     // after parsing its own body.
@@ -1963,6 +2092,66 @@ const server = http.createServer(async (req, res) => {
       const leads = readJson(LEADS_FILE, []).filter((l) => !remove.has(l.id));
       await writeJsonAtomic(LEADS_FILE, leads);
       return redirect(res, '/leads?saved=1');
+    }
+
+    /* ---- users & roles ---- */
+
+    if (pathname === '/users' && req.method === 'GET') {
+      const db = readJson(USERS_FILE, { users: [] });
+      return send(res, 200, usersView(session, db.users, url.searchParams.get('saved') ? 'Saved.' : null, null, null));
+    }
+
+    if (pathname === '/users/role' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const db = readJson(USERS_FILE, { users: [] });
+      const target = db.users.find((u) => u.email === String(form.email || '').toLowerCase());
+      const role = String(form.role || '');
+      if (!target || !RBAC.ROLES[role]) return redirect(res, '/users');
+      // never let the last super admin demote themselves out of existence
+      const supers = db.users.filter((u) => RBAC.normaliseRole(u.role) === 'super_admin');
+      if (supers.length === 1 && supers[0].email === target.email && role !== 'super_admin') {
+        return send(res, 422, usersView(session, db.users, null, ['That is the only Super Admin - promote someone else first, or nobody can manage users.'], null));
+      }
+      target.role = role;
+      await writeJsonAtomic(USERS_FILE, db);
+      return redirect(res, '/users?saved=1');
+    }
+
+    if (pathname === '/users/new' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const db = readJson(USERS_FILE, { users: [] });
+      const email = String(form.email || '').trim().toLowerCase();
+      const role = String(form.role || '');
+      const errors = [];
+      if (!/^[^@\s]+@[^@\s]+$/.test(email)) errors.push('Give a valid email address.');
+      if (db.users.some((u) => u.email === email)) errors.push('That email already has an account.');
+      if (!RBAC.ROLES[role]) errors.push('Pick a role.');
+      if (errors.length) return send(res, 422, usersView(session, db.users, null, errors, null));
+
+      const plain = String(form.password || '').trim() || crypto.randomBytes(9).toString('base64url');
+      const seeded = hashPassword(plain);
+      db.users.push({ email, name: String(form.name || '').trim() || email, role, salt: seeded.salt, hash: seeded.hash });
+      await writeJsonAtomic(USERS_FILE, db);
+      return send(res, 200, usersView(session, db.users, 'User created.', null, plain));
+    }
+
+    if (pathname === '/users/delete' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const db = readJson(USERS_FILE, { users: [] });
+      const email = String(form.email || '').toLowerCase();
+      if (email === session.email) {
+        return send(res, 422, usersView(session, db.users, null, ['You cannot remove your own account while signed in.'], null));
+      }
+      const kept = db.users.filter((u) => u.email !== email);
+      if (!kept.some((u) => RBAC.normaliseRole(u.role) === 'super_admin')) {
+        return send(res, 422, usersView(session, db.users, null, ['Removing that user would leave no Super Admin.'], null));
+      }
+      db.users = kept;
+      await writeJsonAtomic(USERS_FILE, db);
+      return redirect(res, '/users?saved=1');
     }
 
     /* ---- accounting records: full CRUD ---- */
