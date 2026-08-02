@@ -280,6 +280,11 @@ so the trial balance does not move.
 node scripts/verify-srs.mjs
 ```
 
+Run it with the app on :3002 and the admin on :4001. **Do not run `next build`
+while the dev server is up** — it overwrites `.next` underneath the running
+process and every page starts returning 500 until the server is restarted with a
+clean `.next`. It looks exactly like a catastrophic regression and is not one.
+
 Seventy checks against the running app: each one loads the page and looks for
 the feature the specification asks for, or reads the book and tests that an
 identity holds. It is there because "it is all done" is not a claim anybody

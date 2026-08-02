@@ -294,10 +294,12 @@ await check('Ticketing integration exists and runs for real', async () => {
   const reached = d.results.every((r) => r.httpStatus !== undefined);
   return [res.status === 200 && reached, line];
 });
-await check('Ticketing is reported as blocked, not as working', () => {
+await check('Ticketing is documented as blocked, with both supplier codes', () => {
   const readme = readFileSync('README.md', 'utf8');
-  return [readme.includes('1201') && readme.includes('NOT_AUTHORIZED'),
-    'README names both entitlement errors rather than claiming ticketing works'];
+  // The codes the suppliers actually return today. 8236 replaced 1201 once the
+  // request got far enough to be validated rather than rejected at the door.
+  const has = ['8236', 'NOT_AUTHORIZED', '3BX8', 'S00L'].filter((x) => readme.includes(x));
+  return [has.length === 4, `README names ${has.join(', ')}`];
 });
 
 /* --------------------------------------------------------------------- report */
