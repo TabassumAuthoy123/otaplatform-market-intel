@@ -1,70 +1,131 @@
-# OTA Platform — Bangladesh Market Intelligence Dashboard
+# OTA Platform — Softifybd
 
-> **New here? Read [GETTING-STARTED.md](GETTING-STARTED.md) first.** It explains
-> the whole project from nothing — what it is, how to run it, where credentials
-> go, how to change things, and what is deliberately not built yet.
->
-> This app now serves three areas from one Next.js project:
->
-> | Area | Route | What it is |
-> |---|---|---|
-> | Market Intelligence | `/` | The 114-agency lead dataset below |
-> | B2C storefront | `/portal` | What a travel customer sees |
-> | Travel Accounts | `/accounts` | Invoices, bills, cash, bank, reports |
->
-> All three are edited from a separate **admin portal** on port 4001
-> (`npm run admin`) — see [B2C-ADMIN.md](B2C-ADMIN.md).
+Four things in one Next.js app, plus a zero-dependency admin portal that drives
+all of them.
 
-Lead-intelligence dashboard for **Softifybd OTA Platform**. Built to be shown to the CEO
-and used on the phone the same day.
+| Area | Route | What it is |
+|---|---|---|
+| **Market Intelligence** | `/` | 400 researched B2B prospects — who to sell a white-label OTA to |
+| **B2C storefront** | `/portal` | The consumer product: live Travelport flight search, booking, packages, hotels, visa |
+| **Travel Accounts** | `/accounts` | Invoices, supplier bills, cash, bank, expenses, reports, statements |
+| **Admin portal** | `:4001` | Sales CRM, content, section toggles, theme, API integrations |
 
-**114 records · 104 targets · 10 excluded · 16 clusters · 9 districts**
+> **New here? Read [GETTING-STARTED.md](GETTING-STARTED.md).** It explains the
+> whole project from nothing — how to run it, where credentials go, how to
+> change things, and an honest list of what is deliberately not built.
 
 ---
 
-## Run it locally (2 commands)
+## Run it
 
 ```bash
 npm install
-npm run dev
 ```
-
-Open **http://localhost:3000**
-
-No database, no API key, no Docker needed to demo — the dataset is a JSON file on disk,
-so the dashboard works offline out of the box. Edit it from the admin portal
-(`npm run admin`, port 4001) rather than by hand.
 
 ```bash
-npm run build && npm start   # production build
+npm run dev:alt
 ```
+
+```bash
+npm run admin
+```
+
+App on **http://localhost:3002**, admin on **http://localhost:4001**. The admin
+prints its login to the terminal on first start — no password is written in this
+repository.
+
+`npm run dev` uses port 3000, which on this machine is taken by an unrelated
+process, hence `dev:alt` on 3002.
 
 ---
 
-## What the CEO sees
+## Travelport uAPI — live
 
-| Page | Route | Purpose |
+Flight search on `/portal/flights` calls Travelport uAPI over SOAP and comes back
+with real fares in about two seconds.
+
+The one thing that cost days: **the Basic Auth username needs the service
+prefix.**
+
+```
+uAPI3848278978-b1e674f7                 -> HTTP 401, SOAP faultcode 76
+Universal API/uAPI3848278978-b1e674f7   -> HTTP 200
+```
+
+Same password, same endpoint, same PCC. If you ever see faultcode 76 again,
+check the prefix before writing to Travelport.
+
+Credentials live in `.env` — gitignored, never committed. `.env.example`
+documents every variable. `lib/gds.ts` is the only place that talks to a GDS:
+host, path, method and body all come from the environment, so a second supplier
+is a block of variables and a response parser, not a rewrite.
+
+### Booking flow
+
+`/portal/flights` → **Select** → `/portal/book` → `/portal/booking?ref=…`
+
+The fare is **re-priced against Travelport when you confirm**, matched on a
+stable itinerary signature rather than Travelport's own key, which is
+transaction-scoped and changes on every search. A stale fare gets a 409 and an
+honest "search again", not a silent wrong price.
+
+Every booking writes a confirmed invoice **and** the matching airline bill into
+`content/accounting.json`, so the sale lands in receivables and the margin
+report without anyone re-keying it. Selling price is what the customer accepted,
+supplier cost is the base fare, and the difference is the agency's margin.
+
+**Bookings are held, not ticketed.** Issuing needs AirCreateReservation and
+AirTicketing, which are not wired. Every confirmation screen says so. Never tell
+a passenger they are ticketed until that step exists.
+
+---
+
+## Admin portal — http://localhost:4001
+
+| Screen | What it does |
+|---|---|
+| **Design & layout** | Show/hide any storefront section, six curated palettes plus per-colour pickers and font pairs — all beside a live desktop/tablet/mobile preview of the storefront |
+| **API integrations** | Which Travelport variables are set (status only, never values) and a **Test connection** button that makes a real DAC–CGP search and reports status, latency and cheapest fare |
+| **Sales CRM** | 400 prospects: lead list with nine filters and six saved views, lead detail with call logging, manager dashboard, and a Call Mode that serves one lead at a time |
+| **Agency dataset** | Full CRUD over the researched records |
+| **B2C content** | Twenty sections — every word, fare, package and link on the storefront |
+| **Demo requests** | Enquiries captured from the storefront |
+
+Colours work by CSS variable, so a palette change repaints the whole storefront
+with no rebuild.
+
+---
+
+## The data
+
+| File | Holds | Committed? |
 |---|---|---|
-| **Dashboard** | `/` | Headline credential counts, verified-vs-inferred donuts, cluster and district rollups, top 10 calls, exclusion list, scale-up sources |
-| **Agency Database** | `/agencies` | All 114 records. Live filters on priority, segment, cluster, district, free text. Click-to-dial and click-to-WhatsApp. CSV export of the current filter |
-| **Segments** | `/segments` | S1–S6 explained with live counts and the disqualification rules |
-| **API** | `/api/agencies` | JSON + CSV for anyone who wants the raw data |
-| **B2C Portal** | `/portal` | The consumer-facing storefront — flights, Hajj/Umrah, hotels, visa, agent signup. Content editable from the admin portal on 4001. See [B2C-ADMIN.md](B2C-ADMIN.md) |
-| **Travel Accounts** | `/accounts` | Travel-agency accounting built from the structure document: sales, purchases, cash, bank, expenses, reports, statements, PNR live check. See [GETTING-STARTED.md](GETTING-STARTED.md) §4.3 |
+| `content/crm-leads.json` | 400 prospects from TOAB, BAIRA, ATAB and the MoRA Hajj register | yes |
+| `content/site.json` | Every word on the storefront, plus theme and section toggles | yes |
+| `content/accounting.json` | Invoices, bills, receipts, payments, expenses | yes |
+| `content/competitors.json` | 28 vendors profiled; only two publish a price | yes |
+| `content/crm-activities.json` | Call notes about named individuals | **no** |
+| `content/bookings.json` | Passenger names and passport numbers | **no** |
+| `content/users.json`, `.session-secret`, `.env` | Credentials | **no** |
 
-The two numbers the CEO asks for are the first two tiles in the hero:
-**Civil Aviation certificate holders** and **IATA registered**.
+Nothing is stored twice. Every total — profit, balance, outstanding, coverage —
+is derived from these files at request time, so a total can never drift from the
+entries underneath it.
 
-### Deep links that work as menu items
+**Contact details are never reformatted.** The government registers print legacy
+Dhaka landlines, emails with a comma instead of a dot and backslashes in
+addresses. They are preserved deliberately — check the source URL on a lead
+before disputing any field.
 
-```
-/agencies?priority=A            # the 42 call-first targets
-/agencies?segment=S2            # Hajj / Umrah
-/agencies?cluster=paltan        # Naya Paltan / Purana Paltan / Bijoynagar
-/agencies?district=Rajshahi
-/api/agencies?format=csv&targetsOnly=1
-/api/agencies?stats=1
-```
+---
+
+## Exports
+
+`/api/crm/export?format=xlsx|docx|md|csv` — real files, not CSV in a costume.
+The Excel workbook has five sheets (master leads, dial-ready call queue,
+summary, by tier, per rep); the Word document is a prospect brief grouped by
+priority. Every export honours the current filters, so "export what I am looking
+at" works. Download buttons sit on `/agencies` and in the admin lead list.
 
 ---
 

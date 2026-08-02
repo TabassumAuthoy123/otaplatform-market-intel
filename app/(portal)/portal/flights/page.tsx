@@ -182,6 +182,12 @@ export default async function FlightsPage({
                           ticket by {o.latestTicketing.slice(0, 10)}
                         </div>
                       )}
+                      <Link
+                        href={`/portal/book?from=${encodeURIComponent(code(searchParams.from ?? ''))}&to=${encodeURIComponent(code(searchParams.to ?? ''))}&date=${encodeURIComponent(searchParams.depart ?? '')}&sig=${encodeURIComponent(o.sig)}`}
+                        className="mt-2.5 inline-block rounded-lg bg-teal-600 px-5 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-teal-700"
+                      >
+                        Select
+                      </Link>
                     </div>
                   </div>
                 ))}

@@ -247,7 +247,14 @@ export async function retrievePnr(locator: string): Promise<GdsAttempt> {
 /* ------------------------------------------------- uAPI LowFareSearch parse */
 
 export type FareOffer = {
+  /** Travelport's key. Transaction-scoped: a new search mints new keys. */
   key: string;
+  /**
+   * Stable identifier for the same flights at the same price. Travelport's own
+   * key cannot be used to re-find an offer after a fresh search, so selecting a
+   * fare and then re-pricing it has to match on the itinerary instead.
+   */
+  sig: string;
   totalPrice: string;
   basePrice: string;
   taxes: string;
@@ -301,18 +308,24 @@ export function parseLowFareSearch(xml: unknown): FareOffer[] {
   }
 
   const offers: FareOffer[] = [];
-  // AirPricePoint blocks are self-contained; split on the opening tag and take
-  // everything up to the matching close.
-  for (const m of xml.matchAll(/<air:AirPricePoint\b([^>]*)>([\s\S]*?)<\/air:AirPricePoint>/g)) {
-    const head = m[1];
-    const body = m[2];
+  // One AirPricePoint can hold SEVERAL AirPricingInfo blocks — the same money
+  // for different flight combinations. Each AirPricingInfo is one itinerary, so
+  // iterate those rather than the price point. Reading BookingInfo across the
+  // whole price point instead makes every offer carry every leg of every
+  // option, which is what this once did.
+  for (const pp of xml.matchAll(/<air:AirPricePoint\b([^>]*)>([\s\S]*?)<\/air:AirPricePoint>/g)) {
+    const head = pp[1];
+    const ppBody = pp[2];
 
     const total = attr(head, 'TotalPrice');
     const currency = total.slice(0, 3);
-    const amount = Number(total.slice(3)) || 0;
 
-    const infoTag = body.match(/<air:AirPricingInfo\b([^>]*)>/)?.[1] ?? '';
-    const bookings = Array.from(body.matchAll(/<air:BookingInfo\b([^>]*)\/>/g)).map((b) => b[1]);
+    for (const pi of ppBody.matchAll(/<air:AirPricingInfo\b([^>]*)>([\s\S]*?)<\/air:AirPricingInfo>/g)) {
+    const infoTag = pi[1];
+    const infoBody = pi[2];
+    const totalHere = attr(infoTag, 'TotalPrice') || total;
+    const amount = Number(totalHere.slice(3)) || 0;
+    const bookings = Array.from(infoBody.matchAll(/<air:BookingInfo\b([^>]*)\/>/g)).map((b) => b[1]);
 
     const segs = bookings
       .map((b) => segments.get(attr(b, 'SegmentRef')))
@@ -320,20 +333,40 @@ export function parseLowFareSearch(xml: unknown): FareOffer[] {
 
     if (!segs.length) continue;
 
-    offers.push({
-      key: attr(head, 'Key'),
-      totalPrice: total,
-      basePrice: attr(head, 'BasePrice'),
-      taxes: attr(head, 'Taxes'),
-      currency,
-      amount,
-      refundable: attr(infoTag, 'Refundable') === 'true',
-      platingCarrier: attr(infoTag, 'PlatingCarrier'),
-      latestTicketing: attr(infoTag, 'LatestTicketingTime'),
-      cabin: attr(bookings[0] ?? '', 'CabinClass'),
-      bookingCode: attr(bookings[0] ?? '', 'BookingCode'),
-      segments: segs
-    });
+    /**
+     * A one-way LowFareSearch commonly returns one fare that applies to several
+     * departures — same money, pick your time. Those segments are ALTERNATIVES,
+     * not a connection, and showing them as one itinerary produces a card that
+     * claims the passenger flies DAC–CGP six times.
+     *
+     * Detect it: if every segment shares the same origin and destination, they
+     * are alternatives, so emit one offer each. Anything else is a genuine
+     * multi-leg itinerary and stays together.
+     */
+    const sameOD =
+      segs.length > 1 &&
+      segs.every((s) => s.origin === segs[0].origin && s.destination === segs[0].destination);
+    const groups = sameOD ? segs.map((s) => [s]) : [segs];
+
+    for (const group of groups) {
+      const sig = group.map((s) => `${s.carrier}${s.flightNumber}@${s.departure}`).join('|') + `#${amount}`;
+      offers.push({
+        key: attr(infoTag, 'Key') || attr(head, 'Key'),
+        sig: Buffer.from(sig).toString('base64url'),
+        totalPrice: totalHere,
+        basePrice: attr(infoTag, 'BasePrice') || attr(head, 'BasePrice'),
+        taxes: attr(infoTag, 'Taxes') || attr(head, 'Taxes'),
+        currency,
+        amount,
+        refundable: attr(infoTag, 'Refundable') === 'true',
+        platingCarrier: attr(infoTag, 'PlatingCarrier'),
+        latestTicketing: attr(infoTag, 'LatestTicketingTime'),
+        cabin: attr(bookings[0] ?? '', 'CabinClass'),
+        bookingCode: attr(bookings[0] ?? '', 'BookingCode'),
+        segments: group
+      });
+    }
+    }
   }
 
   // cheapest first, then de-duplicate identical flight+price combinations
@@ -341,9 +374,8 @@ export function parseLowFareSearch(xml: unknown): FareOffer[] {
   return offers
     .sort((a, b) => a.amount - b.amount)
     .filter((o) => {
-      const sig = o.amount + '|' + o.segments.map((s) => s.carrier + s.flightNumber + s.departure).join(',');
-      if (seen.has(sig)) return false;
-      seen.add(sig);
+      if (seen.has(o.sig)) return false;
+      seen.add(o.sig);
       return true;
     });
 }

@@ -189,6 +189,14 @@
       "phone": "",
       "email": "",
       "openingBalance": 0
+    },
+    {
+      "id": "SUP-009",
+      "name": "BS",
+      "type": "airline",
+      "phone": "",
+      "email": "",
+      "openingBalance": 0
     }
   ],
   "services": [

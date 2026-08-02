@@ -26,3 +26,6 @@ content/crm-activities.json
 
 # TypeScript incremental build artefact
 *.tsbuildinfo
+
+# Storefront bookings — passenger names, passports and contact details.
+content/bookings.json
