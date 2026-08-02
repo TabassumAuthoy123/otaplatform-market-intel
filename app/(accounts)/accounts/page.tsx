@@ -1,8 +1,8 @@
 import Link from 'next/link';
 import { Bar, PageHead, Panel, Table, Td, Tile } from '@/components/accounts/ui';
 import {
-  allBankBalances, cashBook, dailyRollup, expensesByCategory, getBook, money, moneyShort,
-  payables, receivables, recentTransactions, salesByService, summarise, todayISO
+  allBankBalances, cashBook, dailyRollup, expensesByCategory, getBook, inventory, money, moneyShort,
+  payables, receivables, recentTransactions, salesByService, summarise, supplierDeposits, todayISO
 } from '@/lib/accounting';
 
 export const dynamic = 'force-dynamic';
@@ -12,6 +12,7 @@ const QUICK = [
   { href: '/accounts/bills', label: 'Supplier bills' },
   { href: '/accounts/cash', label: 'Cash book' },
   { href: '/accounts/expenses', label: 'Record expenses' },
+  { href: '/accounts/inventory', label: 'Inventory & float' },
   { href: '/accounts/reports', label: 'Reports' },
   { href: '/accounts/gds', label: 'GDS live check' }
 ];
@@ -31,6 +32,8 @@ export default async function AccountsDashboard() {
   const days = dailyRollup(book, 10);
   const byService = salesByService(book);
   const byExpense = expensesByCategory(book);
+  const inv = inventory(book);
+  const dep = supplierDeposits(book);
 
   const maxSvc = Math.max(...byService.map((r) => r.sales), 1);
   const maxExp = Math.max(...byExpense.map((r) => r.amount), 1);
@@ -74,6 +77,14 @@ export default async function AccountsDashboard() {
         <Tile label="Supplier cost" value={moneyShort(all.cost, sym)} sub="Cost of sales" />
         <Tile label="Gross profit" value={moneyShort(all.grossProfit, sym)} sub={`${all.marginPct.toFixed(1)}% margin`} tone="good" />
         <Tile label="Net profit" value={moneyShort(all.netProfit, sym)} sub={`After ${moneyShort(all.expenses, sym)} expenses`} tone={all.netProfit >= 0 ? 'good' : 'bad'} />
+      </div>
+
+      {/* ------------------------------------------------ stock & float */}
+      <div className="grid gap-4 lg:grid-cols-4">
+        <Tile label="Unsold stock at cost" value={moneyShort(inv.totalAtRisk, sym)} sub={`${inv.rows.length} blocks committed`} tone={inv.totalAtRisk > 0 ? 'warn' : 'good'} />
+        <Tile label="Margin on the shelf" value={moneyShort(inv.potential, sym)} sub="If every remaining unit sells" />
+        <Tile label="Supplier float available" value={moneyShort(dep.totalAvailable, sym)} sub="What you can issue against" tone={dep.totalAvailable >= 0 ? 'good' : 'bad'} />
+        <Tile label="Blocks expiring soon" value={String(inv.expiringSoon + inv.expired)} sub="Under 30 days, a third unsold" tone={inv.expiringSoon + inv.expired > 0 ? 'warn' : 'good'} />
       </div>
 
       {/* ------------------------------------------------ recent transactions */}

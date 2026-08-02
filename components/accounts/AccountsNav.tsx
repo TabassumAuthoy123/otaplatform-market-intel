@@ -11,6 +11,7 @@ const ITEMS = [
   { href: '/accounts/cash', label: 'Cash' },
   { href: '/accounts/bank', label: 'Bank' },
   { href: '/accounts/expenses', label: 'Expenses' },
+  { href: '/accounts/inventory', label: 'Inventory' },
   { href: '/accounts/reports', label: 'Reports' },
   { href: '/accounts/statements', label: 'Statements' },
   { href: '/accounts/masters', label: 'Masters' },

@@ -436,3 +436,98 @@ export const todayISO = (book: Book) => {
   const all = book.invoices.map((i) => i.date).concat(book.receipts.map((r) => r.date)).sort();
   return all[all.length - 1] ?? new Date().toISOString().slice(0, 10);
 };
+
+/* ------------------------------------------- supplier deposits & inventory */
+
+export type SupplierDeposit = {
+  id: string; no: string; date: string; supplierId: string;
+  kind: 'deposit'; method: PayMethod; bankId: string | null;
+  amount: number; reference: string; note: string;
+};
+
+export type InventoryItem = {
+  id: string; name: string; kind: string; supplierId: string;
+  purchased: number; sold: number; unitCost: number; unitSell: number;
+  expiresOn: string; note: string;
+};
+
+export const INVENTORY_KIND: Record<string, string> = {
+  hajj_seat: 'Hajj seat block',
+  hotel_room: 'Hotel room nights',
+  air_seat: 'Group air seats',
+  visa_slot: 'Visa processing quota'
+};
+
+/**
+ * What we have put on account with each supplier, and what we have drawn
+ * against it. In travel this matters more than in most trades: an agency
+ * pre-funds a consolidator and then issues against that float, so the number
+ * that decides whether you can ticket tomorrow is the UNUSED balance, not the
+ * payable.
+ */
+export function supplierDeposits(book: Book) {
+  const deposits = (book as unknown as { supplierDeposits?: SupplierDeposit[] }).supplierDeposits ?? [];
+
+  const rows = book.suppliers.map((s) => {
+    const paidIn = deposits.filter((d) => d.supplierId === s.id).reduce((t, d) => t + d.amount, 0);
+    const billed = book.bills.filter((b) => b.supplierId === s.id).reduce((t, b) => t + b.amount, 0);
+    const settled = book.payments.filter((p) => p.supplierId === s.id).reduce((t, p) => t + p.amount, 0);
+    // the float is what we advanced, less anything the bills have not already paid for
+    const outstandingBills = Math.max(0, billed - settled);
+    return {
+      supplier: s,
+      deposited: paidIn,
+      billed,
+      settled,
+      outstandingBills,
+      available: paidIn - outstandingBills,
+      depositCount: deposits.filter((d) => d.supplierId === s.id).length
+    };
+  }).filter((r) => r.deposited > 0 || r.billed > 0);
+
+  return {
+    rows: rows.sort((a, b) => b.deposited - a.deposited),
+    deposits: [...deposits].sort((a, b) => b.date.localeCompare(a.date)),
+    totalDeposited: rows.reduce((t, r) => t + r.deposited, 0),
+    totalAvailable: rows.reduce((t, r) => t + r.available, 0),
+    totalOutstanding: rows.reduce((t, r) => t + r.outstandingBills, 0)
+  };
+}
+
+/**
+ * Blocks bought up front — Hajj seats, room nights, group fares, visa quota.
+ * Unsold units are cash sitting on a shelf with an expiry date on it, which is
+ * the whole reason a travel agency needs stock control at all.
+ */
+export function inventory(book: Book, today = new Date().toISOString().slice(0, 10)) {
+  const items = (book as unknown as { inventory?: InventoryItem[] }).inventory ?? [];
+
+  const rows = items.map((i) => {
+    const remaining = Math.max(0, i.purchased - i.sold);
+    const daysLeft = Math.ceil((Date.parse(i.expiresOn) - Date.parse(today)) / 86400000);
+    return {
+      item: i,
+      supplier: book.suppliers.find((s) => s.id === i.supplierId)?.name ?? i.supplierId,
+      remaining,
+      soldPct: i.purchased ? (i.sold / i.purchased) * 100 : 0,
+      costCommitted: i.purchased * i.unitCost,
+      valueAtRisk: remaining * i.unitCost,
+      realisedMargin: i.sold * (i.unitSell - i.unitCost),
+      potentialMargin: remaining * (i.unitSell - i.unitCost),
+      daysLeft,
+      expired: daysLeft < 0,
+      /** Under 30 days with a third still unsold is where money gets lost. */
+      atRisk: daysLeft >= 0 && daysLeft <= 30 && remaining / Math.max(1, i.purchased) > 0.33
+    };
+  });
+
+  return {
+    rows: rows.sort((a, b) => b.valueAtRisk - a.valueAtRisk),
+    totalCommitted: rows.reduce((t, r) => t + r.costCommitted, 0),
+    totalAtRisk: rows.reduce((t, r) => t + r.valueAtRisk, 0),
+    realised: rows.reduce((t, r) => t + r.realisedMargin, 0),
+    potential: rows.reduce((t, r) => t + r.potentialMargin, 0),
+    expiringSoon: rows.filter((r) => r.atRisk).length,
+    expired: rows.filter((r) => r.expired && r.remaining > 0).length
+  };
+}

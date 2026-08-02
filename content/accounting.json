@@ -8271,5 +8271,213 @@
       "employeeId": null
     }
   ],
-  "creditNotes": []
+  "creditNotes": [],
+  "supplierDeposits": [
+    {
+      "id": "DEP-0001",
+      "no": "SFT-DEP-0001",
+      "date": "2026-06-16",
+      "supplierId": "SUP-001",
+      "kind": "deposit",
+      "method": "bank_transfer",
+      "bankId": "BNK-001",
+      "amount": 650000,
+      "reference": "TT-932296",
+      "note": "Advance against ticket stock"
+    },
+    {
+      "id": "DEP-0002",
+      "no": "SFT-DEP-0002",
+      "date": "2026-07-18",
+      "supplierId": "SUP-002",
+      "kind": "deposit",
+      "method": "cash",
+      "bankId": "BNK-001",
+      "amount": 350000,
+      "reference": "TT-423800",
+      "note": "Advance against ticket stock"
+    },
+    {
+      "id": "DEP-0003",
+      "no": "SFT-DEP-0003",
+      "date": "2026-06-21",
+      "supplierId": "SUP-002",
+      "kind": "deposit",
+      "method": "bank_transfer",
+      "bankId": "BNK-001",
+      "amount": 500000,
+      "reference": "TT-627159",
+      "note": "Advance against ticket stock"
+    },
+    {
+      "id": "DEP-0004",
+      "no": "SFT-DEP-0004",
+      "date": "2026-07-11",
+      "supplierId": "SUP-002",
+      "kind": "deposit",
+      "method": "bank_transfer",
+      "bankId": "BNK-001",
+      "amount": 950000,
+      "reference": "TT-505907",
+      "note": "Advance against ticket stock"
+    },
+    {
+      "id": "DEP-0005",
+      "no": "SFT-DEP-0005",
+      "date": "2026-07-17",
+      "supplierId": "SUP-003",
+      "kind": "deposit",
+      "method": "bank_transfer",
+      "bankId": "BNK-001",
+      "amount": 1400000,
+      "reference": "TT-364100",
+      "note": "Advance against ticket stock"
+    },
+    {
+      "id": "DEP-0006",
+      "no": "SFT-DEP-0006",
+      "date": "2026-07-14",
+      "supplierId": "SUP-004",
+      "kind": "deposit",
+      "method": "bank_transfer",
+      "bankId": "BNK-001",
+      "amount": 550000,
+      "reference": "TT-685000",
+      "note": "Advance against ticket stock"
+    },
+    {
+      "id": "DEP-0007",
+      "no": "SFT-DEP-0007",
+      "date": "2026-06-23",
+      "supplierId": "SUP-005",
+      "kind": "deposit",
+      "method": "cash",
+      "bankId": "BNK-001",
+      "amount": 700000,
+      "reference": "TT-250696",
+      "note": "Advance against ticket stock"
+    },
+    {
+      "id": "DEP-0008",
+      "no": "SFT-DEP-0008",
+      "date": "2026-06-17",
+      "supplierId": "SUP-005",
+      "kind": "deposit",
+      "method": "bank_transfer",
+      "bankId": "BNK-001",
+      "amount": 750000,
+      "reference": "TT-740180",
+      "note": "Advance against ticket stock"
+    },
+    {
+      "id": "DEP-0009",
+      "no": "SFT-DEP-0009",
+      "date": "2026-06-13",
+      "supplierId": "SUP-006",
+      "kind": "deposit",
+      "method": "cash",
+      "bankId": "BNK-001",
+      "amount": 1200000,
+      "reference": "TT-249620",
+      "note": "Advance against ticket stock"
+    },
+    {
+      "id": "DEP-0010",
+      "no": "SFT-DEP-0010",
+      "date": "2026-06-17",
+      "supplierId": "SUP-006",
+      "kind": "deposit",
+      "method": "cash",
+      "bankId": "BNK-001",
+      "amount": 1150000,
+      "reference": "TT-808046",
+      "note": "Advance against ticket stock"
+    },
+    {
+      "id": "DEP-0011",
+      "no": "SFT-DEP-0011",
+      "date": "2026-07-23",
+      "supplierId": "SUP-006",
+      "kind": "deposit",
+      "method": "cash",
+      "bankId": "BNK-001",
+      "amount": 600000,
+      "reference": "TT-711956",
+      "note": "Advance against ticket stock"
+    }
+  ],
+  "inventory": [
+    {
+      "id": "INV-HAJJ-01",
+      "name": "Hajj 2027 — Category B seat block",
+      "kind": "hajj_seat",
+      "supplierId": "SUP-003",
+      "purchased": 40,
+      "sold": 14,
+      "unitCost": 485000,
+      "unitSell": 585000,
+      "expiresOn": "2027-05-20",
+      "note": "Block purchased up front — unsold units are money sitting on the shelf."
+    },
+    {
+      "id": "INV-UMR-01",
+      "name": "Umrah Dec — Makkah 4★ room nights",
+      "kind": "hotel_room",
+      "supplierId": "SUP-006",
+      "purchased": 120,
+      "sold": 85,
+      "unitCost": 7200,
+      "unitSell": 9800,
+      "expiresOn": "2026-12-31",
+      "note": "Block purchased up front — unsold units are money sitting on the shelf."
+    },
+    {
+      "id": "INV-UMR-02",
+      "name": "Umrah Dec — Madinah 4★ room nights",
+      "kind": "hotel_room",
+      "supplierId": "SUP-007",
+      "purchased": 90,
+      "sold": 37,
+      "unitCost": 5600,
+      "unitSell": 7400,
+      "expiresOn": "2026-12-31",
+      "note": "Block purchased up front — unsold units are money sitting on the shelf."
+    },
+    {
+      "id": "INV-AIR-01",
+      "name": "DAC–JED group seat block (Saudia)",
+      "kind": "air_seat",
+      "supplierId": "SUP-003",
+      "purchased": 60,
+      "sold": 38,
+      "unitCost": 52000,
+      "unitSell": 62500,
+      "expiresOn": "2026-11-30",
+      "note": "Block purchased up front — unsold units are money sitting on the shelf."
+    },
+    {
+      "id": "INV-AIR-02",
+      "name": "DAC–DXB group seat block (Emirates)",
+      "kind": "air_seat",
+      "supplierId": "SUP-002",
+      "purchased": 30,
+      "sold": 7,
+      "unitCost": 41000,
+      "unitSell": 48900,
+      "expiresOn": "2026-10-31",
+      "note": "Block purchased up front — unsold units are money sitting on the shelf."
+    },
+    {
+      "id": "INV-VIS-01",
+      "name": "KSA visa processing quota",
+      "kind": "visa_slot",
+      "supplierId": "SUP-008",
+      "purchased": 200,
+      "sold": 127,
+      "unitCost": 3200,
+      "unitSell": 4500,
+      "expiresOn": "2026-12-31",
+      "note": "Block purchased up front — unsold units are money sitting on the shelf."
+    }
+  ]
 }
