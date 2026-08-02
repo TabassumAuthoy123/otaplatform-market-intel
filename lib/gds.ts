@@ -39,7 +39,49 @@ export type GdsAttempt = {
   data?: unknown;
   error?: string;
   message?: string;
+  /** Parsed out of a SOAP fault, when the upstream returns one. */
+  fault?: { code?: string; description?: string; faultString?: string; diagnosis?: string };
 };
+
+/**
+ * Travelport answers a rejected call with a SOAP fault rather than a clean
+ * status, so the useful information is inside the XML. Pull the numeric error
+ * code and the description out, and translate the codes we have actually seen
+ * into something a non-integrator can act on.
+ */
+function parseSoapFault(xml: string): GdsAttempt['fault'] | undefined {
+  if (typeof xml !== 'string' || !/fault|ErrorInfo/i.test(xml)) return undefined;
+
+  const pick = (re: RegExp) => {
+    const m = xml.match(re);
+    return m ? m[1].trim() : undefined;
+  };
+
+  // uAPI returns SOAP 1.1 faults as <SOAP-ENV:faultcode>76</SOAP-ENV:faultcode>,
+  // so faultcode has to be tried before the generic *Code element.
+  const code =
+    pick(/<[\w-]*:?faultcode>\s*([^<]+?)\s*<\/[\w-]*:?faultcode>/i) ??
+    pick(/<[\w:]*Code>\s*([^<]+?)\s*<\/[\w:]*Code>/i) ??
+    pick(/ErrorCode="([^"]+)"/i);
+  const description =
+    pick(/<[\w:]*Description>\s*([^<]+?)\s*<\/[\w:]*Description>/i) ??
+    pick(/<[\w:]*Message>\s*([^<]+?)\s*<\/[\w:]*Message>/i);
+  const faultString = pick(/<[\w-]*:?faultstring>\s*([\s\S]+?)\s*<\/[\w-]*:?faultstring>/i);
+
+  if (!code && !description && !faultString) return undefined;
+
+  const DIAGNOSIS: Record<string, string> = {
+    '76':
+      'Travelport rejected the credentials themselves. This is provisioning on their side, not a bug here: ' +
+      'the account has to be enabled for programmatic uAPI SOAP access, and the PCC and Target Branch have to be ' +
+      'linked to it in Agency Manager. A credential that works in the developer web portal is not the same ' +
+      'grant as SOAP API access.',
+    '77': 'The credential is known but not authorised for this service. Ask Travelport which services the account is provisioned for.',
+    '1002': 'The Target Branch does not match the credential. Check the branch code with Travelport.'
+  };
+
+  return { code, description, faultString, diagnosis: code ? DIAGNOSIS[code] : undefined };
+}
 
 const BASE_KEYS = ['GDS_BASE_URL', 'GDS_USERNAME', 'GDS_PASSWORD'] as const;
 
@@ -120,6 +162,8 @@ async function call(path: string, method: string, body: string | undefined, conf
         authorization: `Basic ${auth}`,
         accept: config.accept,
         ...(body ? { 'content-type': process.env.GDS_CONTENT_TYPE || 'application/json' } : {}),
+        // uAPI is SOAP 1.1: it expects the header even when the value is empty
+        ...(process.env.GDS_SOAP_ACTION !== undefined ? { soapaction: process.env.GDS_SOAP_ACTION } : {}),
         ...config.extraHeaders
       },
       body,
@@ -133,13 +177,14 @@ async function call(path: string, method: string, body: string | undefined, conf
     try {
       data = JSON.parse(text);
     } catch {
-      // upstream may answer XML — hand it back rather than mangling it
+      // uAPI answers XML — hand it back rather than mangling it
     }
 
     return {
       configured: true, missing: [], attempted: true,
       upstreamStatus: upstream.status, upstreamOk: upstream.ok,
-      elapsedMs: Date.now() - started, endpointHost: host, data
+      elapsedMs: Date.now() - started, endpointHost: host, data,
+      fault: parseSoapFault(text)
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unknown transport error';
@@ -187,7 +232,14 @@ export async function retrievePnr(locator: string): Promise<GdsAttempt> {
     };
   }
   const { config } = baseConfig();
+  // The locator goes into XML, not a URL, so it must NOT be percent-encoded
+  // there. Path substitution stays encoded; body substitution does not.
   const path = process.env.GDS_PNR_PATH!.replace(/\{locator\}/g, encodeURIComponent(locator));
   const method = (process.env.GDS_PNR_METHOD || 'GET').toUpperCase();
-  return call(path, method, undefined, config!);
+  const bodyTemplate = process.env.GDS_PNR_BODY;
+  const body =
+    method === 'GET' || !bodyTemplate
+      ? undefined
+      : bodyTemplate.replace(/\{locator\}/g, locator.replace(/[<>&"']/g, ''));
+  return call(path, method, body, config!);
 }

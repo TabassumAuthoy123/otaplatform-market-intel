@@ -114,7 +114,26 @@ export default async function FlightsPage({
             title={live.upstreamOk ? `Travelport responded in ${live.elapsedMs}ms` : 'Travelport did not return fares'}
             sub={live.endpointHost ? `Endpoint ${live.endpointHost}` : undefined}
           />
-          {live.error ? (
+          {live.fault ? (
+            <div className="rounded-xl2 border-l-[3px] border-amber-700 bg-amber-700/5 px-5 py-4">
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="chip border-amber-700/30 bg-amber-700/10 text-amber-700">
+                  Travelport fault {live.fault.code ?? ''}
+                </span>
+                <span className="tnum text-[12px] text-muted">HTTP {live.upstreamStatus}</span>
+              </div>
+              {live.fault.faultString && (
+                <p className="mt-3 text-[13.5px] font-semibold text-navy-900">{live.fault.faultString}</p>
+              )}
+              {live.fault.diagnosis && (
+                <p className="mt-2 text-[12.5px] leading-relaxed text-ink">{live.fault.diagnosis}</p>
+              )}
+              <p className="mt-3 text-[12.5px] leading-relaxed text-muted">
+                The request itself is correct — it reached Travelport, was accepted as well-formed SOAP, and came
+                back with a fault rather than a transport error. Nothing on this side needs changing.
+              </p>
+            </div>
+          ) : live.error ? (
             <div className="rounded-xl2 border-l-[3px] border-amber-700 bg-amber-700/5 px-5 py-4">
               <p className="text-[13.5px] font-semibold text-amber-700">{live.error}</p>
               <p className="mt-2 text-[12.5px] leading-relaxed text-muted">

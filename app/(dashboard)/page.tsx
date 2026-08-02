@@ -1,417 +1,288 @@
 import Link from 'next/link';
-import { CLUSTERS, SEGMENTS } from '@/data/schema';
-import {
-  StatCard, SectionTitle, Kicker, BarRow, Donut, Callout, Card, PriorityChip, Tag
-} from '@/components/ui';
-import { countBy, getDataset } from '@/lib/agencies';
+import { getCompetitors, getMarket } from '@/lib/market';
 
-// Records come from content/agencies.json, which the admin portal writes.
+// Runs off content/crm-leads.json — the same 400 records the sales floor calls
+// from, so the wall numbers and the queue can never disagree.
 export const dynamic = 'force-dynamic';
 
-const bdt = (n: number) =>
-  n >= 10000000 ? `৳${(n / 10000000).toFixed(2)} cr` : n >= 100000 ? `৳${(n / 100000).toFixed(1)} lakh` : `৳${n.toLocaleString()}`;
+const pct = (n: number, d: number) => (d ? ((n / d) * 100).toFixed(1) : '0.0');
+
+function Tile({
+  value, label, sub, tone = 'plain', href
+}: {
+  value: string; label: string; sub?: string; tone?: 'plain' | 'good' | 'warn'; href?: string;
+}) {
+  const accent = tone === 'good' ? 'text-teal-700' : tone === 'warn' ? 'text-amber-700' : 'text-navy-900';
+  const inner = (
+    <>
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-muted">{label}</div>
+      <div className={`tnum mt-1.5 text-[28px] font-bold leading-none ${accent}`}>{value}</div>
+      {sub && <div className="mt-1.5 text-[12px] leading-snug text-muted">{sub}</div>}
+    </>
+  );
+  const cls = 'rounded-xl2 border border-hair bg-white px-5 py-4 block';
+  return href ? (
+    <Link href={href} className={`${cls} transition-colors hover:border-teal-500`}>{inner}</Link>
+  ) : (
+    <div className={cls}>{inner}</div>
+  );
+}
+
+function Panel({ title, sub, children, action }: { title: string; sub?: string; children: React.ReactNode; action?: React.ReactNode }) {
+  return (
+    <section className="rounded-xl2 border border-hair bg-white">
+      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-hair px-5 py-3.5">
+        <div>
+          <h2 className="text-[14px] font-bold text-navy-900">{title}</h2>
+          {sub && <p className="mt-0.5 text-[12px] text-muted">{sub}</p>}
+        </div>
+        {action}
+      </header>
+      <div className="p-5">{children}</div>
+    </section>
+  );
+}
+
+function Bar({ label, value, max, note, href }: { label: string; value: number; max: number; note?: string; href?: string }) {
+  const w = max > 0 ? Math.max(2, (value / max) * 100) : 0;
+  return (
+    <div className="py-2">
+      <div className="mb-1 flex items-baseline justify-between gap-3">
+        {href ? (
+          <Link href={href} className="text-[13px] text-ink hover:text-teal-700">{label}</Link>
+        ) : (
+          <span className="text-[13px] text-ink">{label}</span>
+        )}
+        <span className="tnum shrink-0 text-[13px] font-semibold text-navy-900">
+          {value}{note && <span className="ml-2 font-normal text-muted">{note}</span>}
+        </span>
+      </div>
+      <div className="h-1.5 w-full rounded-full bg-panel">
+        <div className="h-full rounded-full bg-teal-600" style={{ width: `${w}%` }} />
+      </div>
+    </div>
+  );
+}
 
 export default async function Dashboard() {
-  const {
-    agencies: AGENCIES, targets: TARGETS, excluded: EXCLUDED, stats: STATS, pipeline: PIPELINE
-  } = await getDataset();
+  const m = await getMarket();
+  const comp = await getCompetitors();
 
-  const byCluster = countBy(TARGETS, (a) => a.clusterId);
-  const clusterRows = CLUSTERS.map((c) => ({ c, n: byCluster.get(c.id) ?? 0 }))
-    .filter((r) => r.n > 0)
-    .sort((a, b) => b.n - a.n);
-  const maxCluster = Math.max(...clusterRows.map((r) => r.n), 1);
+  const iata = m.byCredential.find((c) => c.key === 'iata')!.count;
+  const hajj = m.byCredential.find((c) => c.key === 'hajj')!.count;
+  const baira = m.byCredential.find((c) => c.key === 'baira')!.count;
+  const toab = m.byCredential.find((c) => c.key === 'toab')!.count;
+  const noNumber = m.byCredential.find((c) => c.key === 'none')!.count;
+  const noEngine = m.byEngine.find((e) => e.key === 'none_seen')!.count;
+  const brochure = m.byEngine.find((e) => e.key === 'brochure')!.count;
+  const liveEngine = m.byEngine.find((e) => e.key === 'live_engine')!.count;
 
-  const bySegment = SEGMENTS.map((s) => ({
-    s,
-    n: TARGETS.filter((a) => a.segment === s.code || a.segmentSecondary === s.code).length
-  }));
-  const maxSeg = Math.max(...bySegment.map((r) => r.n), 1);
-
-  const byDistrict = Array.from(countBy(TARGETS, (a) => a.district).entries()).sort((a, b) => b[1] - a[1]);
-  const maxDist = Math.max(...byDistrict.map((d) => d[1]), 1);
-
-  const topA = TARGETS.filter((a) => a.priority === 'A')
-    .sort((a, b) => (b.reviewCount ?? 0) - (a.reviewCount ?? 0))
-    .slice(0, 10);
+  const maxTier = Math.max(...m.byTier.map((t) => t.count), 1);
+  const maxCity = Math.max(...m.byCity.map((c) => c.count), 1);
+  const maxSeg = Math.max(...m.bySegment.map((s) => s.count), 1);
 
   return (
-    <div className="space-y-14">
-      {/* ============================== HERO ============================== */}
-      <section className="-mx-5 -mt-8 bg-navy-950 px-5 py-14 lg:-mx-8 lg:px-8">
-        <div className="mx-auto max-w-[1340px]">
-          <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-teal-400">
-            Bangladesh B2B Market · July 2026
-          </p>
-          <h1 className="mt-3 max-w-4xl text-[38px] font-bold leading-[1.1] tracking-tight text-white lg:text-[52px]">
-            Licensed travel agencies with <span className="text-teal-400">no OTA platform</span>
-          </h1>
-          <p className="mt-4 max-w-2xl text-base leading-relaxed text-white/70">
-            {STATS.targets} verified agencies selling manually or as sub-agents on someone else&rsquo;s
-            IATA. Every name, address and phone number captured from live public business listings.
-          </p>
+    <div className="space-y-8">
+      <div>
+        <div className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.14em] text-teal-600">
+          Softifybd · OTA Platform · B2B market intelligence
+        </div>
+        <h1 className="text-[26px] font-bold leading-tight text-navy-900 sm:text-[32px]">
+          Who to sell a white-label OTA to in Bangladesh
+        </h1>
+        <p className="mt-2.5 max-w-3xl text-[14px] leading-relaxed text-muted">
+          {m.pipeline.total} agencies compiled from the TOAB directory, the BAIRA register, the ATAB member
+          directory and the Ministry of Religious Affairs Hajj register. Every figure below is counted from those
+          records at page load — nothing is typed in by hand.
+        </p>
+      </div>
 
-          {/* headline credential numbers — the two the CEO asks for */}
-          <div className="mt-9 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <div className="rounded-lg border border-teal-500/40 bg-teal-600/15 p-5">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-teal-300">
-                Civil Aviation certificate holders
-              </p>
-              <p className="mt-2 text-5xl font-bold tabular-nums text-white">{STATS.caabHeld}</p>
-              <p className="mt-2 text-xs leading-snug text-white/60">
-                Ministry of Civil Aviation &amp; Tourism licence via TAMS.
-                <br />
-                {STATS.caabVerified} verified · {STATS.caabInferred} inferred, pending portal check
-              </p>
+      {/* ------------------------------------------------- headline numbers */}
+      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Tile value={String(m.pipeline.total)} label="Prospects in the database" sub="Compiled from four public registers" href="/agencies" />
+        <Tile value={String(iata)} label="IATA accredited" sub="Quoted by the agency or its register entry" tone="good" href="/agencies?credential=iata" />
+        <Tile value={String(hajj)} label="Hajj licence holders" sub="MoRA register printed a licence number" tone="good" href="/agencies?credential=hajj" />
+        <Tile value={String(noEngine + brochure)} label="No booking engine" sub={`${noEngine} with no website at all · ${brochure} brochure-only`} tone="good" href="/agencies?engine=none_seen" />
+      </div>
+
+      {/* -------------------------------------------- the two CEO questions */}
+      <Panel
+        title="The two questions you were asked"
+        sub="Answered from the data, with the limits of the data stated"
+      >
+        <div className="grid gap-6 lg:grid-cols-2">
+          <div>
+            <h3 className="text-[13px] font-bold text-navy-900">1. Who holds a Civil Aviation certificate?</h3>
+            <p className="mt-2 text-[13px] leading-relaxed text-ink">
+              The credential people call a “Civil Aviation certificate” is the{' '}
+              <strong>Travel Agency Registration Certificate</strong>, issued by the{' '}
+              <strong>Ministry of Civil Aviation &amp; Tourism</strong> under the Travel Agency (Registration and
+              Control) Act 2013 — not by CAAB. CAAB handles airports, airworthiness and aviation personnel. If an
+              agency says “CAAB certified”, that is marketing language.
+            </p>
+            <p className="mt-2 text-[13px] leading-relaxed text-ink">
+              The register is <strong>TAMS — regtravelagency.gov.bd</strong>, and it publishes{' '}
+              <strong>no bulk export</strong>. So this database cannot claim to be a licence list. What it can show
+              is which register printed a number for each agency:
+            </p>
+            <div className="mt-3 space-y-1">
+              <Bar label="TOAB membership number printed" value={toab} max={m.pipeline.total} href="/agencies?credential=toab" />
+              <Bar label="BAIRA recruiting licence (RL) printed" value={baira} max={m.pipeline.total} href="/agencies?credential=baira" />
+              <Bar label="Hajj licence number printed" value={hajj} max={m.pipeline.total} href="/agencies?credential=hajj" />
+              <Bar label="No number printed in the source" value={noNumber} max={m.pipeline.total} href="/agencies?credential=none" />
             </div>
-            <div className="rounded-lg border border-white/15 bg-white/5 p-5">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-teal-300">
-                IATA registered
-              </p>
-              <p className="mt-2 text-5xl font-bold tabular-nums text-white">{STATS.iataHeld}</p>
-              <p className="mt-2 text-xs leading-snug text-white/60">
-                {STATS.iataVerified} verified number · {STATS.iataInferred} inferred from public claims
-                <br />
-                {STATS.iataUnknown} unknown — ask on the qualifying call
-              </p>
-            </div>
-            <div className="rounded-lg border border-white/15 bg-white/5 p-5">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-teal-300">
-                Hajj / Umrah licensed
-              </p>
-              <p className="mt-2 text-5xl font-bold tabular-nums text-white">{STATS.hajjHeld}</p>
-              <p className="mt-2 text-xs leading-snug text-white/60">
-                Highest-margin niche. ~750 agencies cleared nationally for the 2026 season against a
-                127,198-pilgrim quota.
-              </p>
-            </div>
-            <div className="rounded-lg border border-white/15 bg-white/5 p-5">
-              <p className="text-[11px] font-semibold uppercase tracking-wider text-teal-300">
-                Addressable MRR
-              </p>
-              <p className="mt-2 text-5xl font-bold tabular-nums text-white">{bdt(PIPELINE.fullMrr)}</p>
-              <p className="mt-2 text-xs leading-snug text-white/60">
-                If every target signed at its suggested tier.
-                <br />
-                Priority A alone: {bdt(PIPELINE.aMrr)} / month
-              </p>
-            </div>
+            <p className="mt-3 rounded-lg border-l-[3px] border-amber-700 bg-amber-700/5 px-4 py-2.5 text-[12.5px] leading-relaxed text-ink">
+              “No number printed” does <strong>not</strong> mean unlicensed. It means the directory the record came
+              from did not publish one. Verify on TAMS before you contract — never present this as a licence check.
+            </p>
           </div>
 
-          <div className="mt-7 flex flex-wrap items-center gap-3">
-            <Link
-              href="/agencies?priority=A"
-              className="rounded bg-teal-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-teal-500"
-            >
-              Open the call list ({STATS.priorityA} Priority A)
-            </Link>
-            <Link
-              href="/agencies"
-              className="rounded border border-white/25 px-5 py-2.5 text-sm font-semibold text-white hover:bg-white/10"
-            >
-              Full database ({STATS.total} records)
-            </Link>
-            <a
-              href="/api/agencies?format=csv"
-              className="rounded border border-white/25 px-5 py-2.5 text-sm font-semibold text-white hover:bg-white/10"
-            >
-              Export CSV
-            </a>
-          </div>
-        </div>
-      </section>
-
-      {/* ========================== COVERAGE ============================== */}
-      <section>
-        <Kicker>Coverage</Kicker>
-        <SectionTitle sub="What is actually in the database today, and how much of it is ready to dial.">
-          Database at a glance
-        </SectionTitle>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard label="Total records" value={STATS.total} note={`${STATS.targets} targets + ${STATS.excluded} excluded`} tone="navy" />
-          <StatCard label="No platform — targetable" value={STATS.noPlatform} note="The core pitch applies to every one" tone="teal" />
-          <StatCard label="Clusters" value={STATS.clusters} note={`Across ${STATS.districts} districts`} />
-          <StatCard label="Phone number on file" value={STATS.targets - STATS.noPhone} suffix={`/ ${STATS.targets}`} note={`${STATS.noPhone} need a Facebook or walk-in approach`} />
-          <StatCard label="Priority A — call first" value={STATS.priorityA} note="Strong fit + ability to pay" />
-          <StatCard label="Priority B — wave two" value={STATS.priorityB} />
-          <StatCard label="Priority C — qualify first" value={STATS.priorityC} />
-          <StatCard label="Open 24/7" value={STATS.open247} note="Highest manual load — automation ROI lands hardest" tone="amber" />
-        </div>
-      </section>
-
-      {/* ========================= CREDENTIALS =========================== */}
-      <section>
-        <Kicker>Credentials</Kicker>
-        <SectionTitle sub="We never present an inferred credential as a fact. Verified means the number is published by the agency or confirmed on an official portal; inferred means a strong public signal that still has to be confirmed on the call.">
-          Verified vs inferred
-        </SectionTitle>
-        <div className="grid gap-5 lg:grid-cols-3">
-          <Card>
-            <p className="mb-4 text-sm font-semibold text-navy-900">Civil Aviation licence (TAMS)</p>
-            <Donut
-              centerLabel="Records"
-              centerValue={STATS.total}
-              segments={[
-                { label: 'Verified', value: STATS.caabVerified, color: '#0F6F73' },
-                { label: 'Inferred', value: STATS.caabInferred, color: '#1FA8AE' },
-                { label: 'Unknown', value: STATS.total - STATS.caabHeld, color: '#DCE6EC' }
-              ]}
-            />
-          </Card>
-          <Card>
-            <p className="mb-4 text-sm font-semibold text-navy-900">IATA accreditation</p>
-            <Donut
-              centerLabel="Records"
-              centerValue={STATS.total}
-              segments={[
-                { label: 'Verified', value: STATS.iataVerified, color: '#13294B' },
-                { label: 'Inferred', value: STATS.iataInferred, color: '#254F87' },
-                { label: 'Unknown', value: STATS.iataUnknown, color: '#DCE6EC' }
-              ]}
-            />
-          </Card>
-          <div className="space-y-4">
-            <Callout label="How to verify" tone="teal">
-              <p>
-                <strong>Civil Aviation licence</strong> — Ministry of Civil Aviation &amp; Tourism,
-                TAMS portal: <span className="font-mono text-xs">regtravelagency.gov.bd</span>. CAAB
-                issues only the NOC needed before an IATA application.
-              </p>
-              <p>
-                <strong>IATA</strong> — per-agency lookup on the IATA customer portal. No bulk country
-                export exists, so each number is confirmed one at a time.
-              </p>
-              <p>
-                <strong>Hajj</strong> — phase lists published on{' '}
-                <span className="font-mono text-xs">hajj.gov.bd</span>. Free and downloadable today.
-              </p>
-            </Callout>
-            <Callout label="Compliance gate" tone="amber">
-              <p>
-                {EXCLUDED.filter((e) => e.exclusionReason === 'compliance_risk').length} records carry
-                serious public allegations of misrepresentation. Flagged, never auto-onboarded —
-                management signs off first.
-              </p>
-            </Callout>
-          </div>
-        </div>
-      </section>
-
-      {/* =========================== SEGMENTS ============================ */}
-      <section>
-        <Kicker>Segments</Kicker>
-        <SectionTitle sub="S1 leads by volume. S2 leads by margin. Counts include agencies that span two segments.">
-          Where the targets sit
-        </SectionTitle>
-        <div className="grid gap-5 lg:grid-cols-2">
-          <Card>
-            <div className="space-y-3.5">
-              {bySegment.map(({ s, n }) => (
-                <BarRow
-                  key={s.code}
-                  label={`${s.code} · ${s.shortName}`}
-                  value={n}
-                  max={maxSeg}
-                  sub={s.tierHint}
-                  href={`/agencies?segment=${s.code}`}
-                />
+          <div>
+            <h3 className="text-[13px] font-bold text-navy-900">2. Who holds IATA?</h3>
+            <p className="mt-2 text-[13px] leading-relaxed text-ink">
+              IATA publishes no bulk country export either. These <strong>{iata}</strong> are the agencies whose own
+              site, trade-press entry or register line states accreditation. They are the highest-value segment:
+              they already issue on their own stock, so they buy the sub-agent panel, the rules engine and the audit
+              trail rather than the ticketing itself.
+            </p>
+            <ul className="mt-3 space-y-1.5">
+              {m.iataTargets.slice(0, 10).map((l) => (
+                <li key={l.lead_id} className="flex items-baseline justify-between gap-3 border-b border-hair py-1.5 last:border-0">
+                  <span className="text-[13px] font-semibold text-navy-900">{l.company}</span>
+                  <span className="tnum shrink-0 text-[11.5px] text-muted">{l.city || '—'}</span>
+                </li>
               ))}
-            </div>
-          </Card>
-          <div className="grid gap-4 sm:grid-cols-2">
-            {SEGMENTS.slice(0, 4).map((s) => (
-              <Link
-                key={s.code}
-                href={`/agencies?segment=${s.code}`}
-                className="group rounded-lg border border-hair bg-white p-4 transition-colors hover:border-teal-600"
-              >
-                <div className="mb-2 flex items-center gap-2">
-                  <span className="rounded bg-navy-900 px-1.5 py-0.5 text-[10px] font-bold text-white">
-                    {s.code}
-                  </span>
-                  <Tag tone="teal">Rank {s.priorityRank}</Tag>
-                </div>
-                <p className="text-sm font-semibold text-navy-900 group-hover:text-teal-600">
-                  {s.shortName}
-                </p>
-                <p className="mt-1.5 text-xs leading-relaxed text-muted">{s.description}</p>
-              </Link>
+            </ul>
+            <Link href="/agencies?credential=iata" className="mt-3 inline-block text-[13px] font-semibold text-teal-700 hover:underline">
+              All {iata} IATA-accredited targets →
+            </Link>
+          </div>
+        </div>
+      </Panel>
+
+      {/* ----------------------------------------------- the buying signal */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Panel title="The buying signal" sub="Observed by opening each agency's site — not inferred">
+          <div className="space-y-1">
+            {m.byEngine.map((e) => (
+              <Bar
+                key={e.key}
+                label={e.label}
+                value={e.count}
+                max={m.pipeline.total}
+                note={`${pct(e.count, m.pipeline.total)}%`}
+                href={`/agencies?engine=${e.key}`}
+              />
             ))}
           </div>
-        </div>
-      </section>
+          <p className="mt-4 text-[12.5px] leading-relaxed text-muted">
+            {liveEngine === 0
+              ? 'Not one agency checked so far runs a live booking engine of its own. Every site opened was a brochure or nothing at all.'
+              : `${liveEngine} already run a live engine — those are displacement conversations, not greenfield.`}
+          </p>
+        </Panel>
 
-      {/* ========================== GEOGRAPHY ============================ */}
-      <section>
-        <Kicker>Geography</Kicker>
-        <SectionTitle sub="Dhaka clusters are dense enough to walk floor by floor. Outside the metros there is no vendor competition at all — offshore vendors do not sell to Cumilla, and the local vendors sit in Dhaka.">
-          Clusters and districts
-        </SectionTitle>
-        <div className="grid gap-5 lg:grid-cols-[1.4fr_1fr]">
-          <Card>
-            <p className="mb-4 text-sm font-semibold text-navy-900">Targets by cluster</p>
-            <div className="space-y-3">
-              {clusterRows.map(({ c, n }) => (
-                <BarRow
-                  key={c.id}
-                  label={c.name}
-                  value={n}
-                  max={maxCluster}
-                  sub={`${c.district} · Phase ${c.phase} · ${c.landmarks.slice(0, 3).join(', ')}`}
-                  href={`/agencies?cluster=${c.id}`}
-                />
-              ))}
-            </div>
-          </Card>
-          <div className="space-y-5">
-            <Card>
-              <p className="mb-4 text-sm font-semibold text-navy-900">Targets by district</p>
-              <div className="space-y-3">
-                {byDistrict.map(([d, n]) => (
-                  <BarRow key={d} label={d} value={n} max={maxDist} />
-                ))}
-              </div>
-            </Card>
-            <Callout label="Field sequencing" tone="teal">
-              <p>
-                <strong>Phase 1</strong> — Dhaka. Start at Sattara Centre, 15th Floor, 30/A Naya
-                Paltan: ATAB head office, the ATAB Tourism Training Institute and HAAB are all in that
-                one building.
-              </p>
-              <p>
-                <strong>Phase 2</strong> — Chattogram, Sylhet, Narayanganj, Cumilla. Book meetings
-                before travelling.
-              </p>
-              <p>
-                <strong>Phase 3</strong> — Brahmanbaria, Khulna, Rajshahi, Bogura. First mover takes
-                the district.
-              </p>
-            </Callout>
+        <Panel title="Can a caller actually reach them?" sub="A prospect you cannot dial is not a prospect">
+          <div className="space-y-1">
+            <Bar label="Has a mobile number" value={m.reach.withMobile} max={m.pipeline.total} note={`${pct(m.reach.withMobile, m.pipeline.total)}%`} href="/agencies?hasMobile=yes" />
+            <Bar label="Has a landline" value={m.reach.withPhone} max={m.pipeline.total} note={`${pct(m.reach.withPhone, m.pipeline.total)}%`} />
+            <Bar label="Has an email" value={m.reach.withEmail} max={m.pipeline.total} note={`${pct(m.reach.withEmail, m.pipeline.total)}%`} />
+            <Bar label="Decision maker named" value={m.reach.withDecisionMaker} max={m.pipeline.total} note={`${pct(m.reach.withDecisionMaker, m.pipeline.total)}%`} />
+            <Bar label="Has a website" value={m.reach.withWebsite} max={m.pipeline.total} note={`${pct(m.reach.withWebsite, m.pipeline.total)}%`} />
           </div>
-        </div>
-      </section>
+          {m.reach.noContactAtAll > 0 && (
+            <p className="mt-4 text-[12.5px] text-amber-700">
+              {m.reach.noContactAtAll} records carry no phone and no email — field visit or drop them.
+            </p>
+          )}
+        </Panel>
+      </div>
 
-      {/* ============================ TOP A ============================== */}
-      <section>
-        <Kicker>Start here</Kicker>
-        <SectionTitle sub="Priority A targets ranked by public review volume — our only available proxy for scale.">
-          Top 10 calls this week
-        </SectionTitle>
-        <Card className="overflow-x-auto p-0 scroll-thin">
-          <table className="w-full min-w-[900px] text-sm">
-            <thead>
-              <tr className="bg-navy-900 text-left text-xs uppercase tracking-wider text-white">
-                <th className="w-8 px-4 py-3" />
-                <th className="px-4 py-3">Agency</th>
-                <th className="px-4 py-3">Cluster</th>
-                <th className="px-4 py-3">Phone</th>
-                <th className="px-4 py-3 text-right">Reviews</th>
-                <th className="px-4 py-3">Tier</th>
-              </tr>
-            </thead>
-            <tbody>
-              {topA.map((a, i) => (
-                <tr key={a.id} className={i % 2 ? 'bg-white' : 'bg-surface'}>
-                  <td className="px-4 py-3"><PriorityChip p={a.priority} /></td>
-                  <td className="px-4 py-3">
-                    <Link href={`/agencies?q=${encodeURIComponent(a.name)}`} className="font-semibold text-navy-900 hover:text-teal-600">
-                      {a.name}
-                    </Link>
-                    <p className="mt-0.5 max-w-xl text-xs leading-snug text-muted">{a.signal}</p>
-                  </td>
-                  <td className="px-4 py-3 text-xs text-muted">{CLUSTERS.find((c) => c.id === a.clusterId)?.district}</td>
-                  <td className="px-4 py-3">
-                    {a.phone ? (
-                      <a href={`tel:+880${a.phone.replace(/[^0-9]/g, '').replace(/^0/, '')}`} className="font-mono text-xs text-teal-600 hover:underline">
-                        {a.phone}
-                      </a>
-                    ) : (
-                      <span className="text-xs text-amber-700">visit / Facebook</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-right font-bold tabular-nums text-navy-900">{a.reviewCount ?? '—'}</td>
-                  <td className="px-4 py-3">{a.suggestedTier ? <Tag tone="teal">{a.suggestedTier}</Tag> : <span className="text-xs text-muted">—</span>}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
-        <div className="mt-4">
-          <Link href="/agencies?priority=A" className="text-sm font-semibold text-teal-600 hover:underline">
-            See all {STATS.priorityA} Priority A targets →
+      {/* ------------------------------------------------------ segmentation */}
+      <div className="grid gap-4 lg:grid-cols-2">
+        <Panel title="By tier" sub="How the research graded each agency">
+          <div className="space-y-1">
+            {m.byTier.map((t) => (
+              <Bar key={t.tier} label={t.tier} value={t.count} max={maxTier} note={t.worked ? `${t.worked} worked` : undefined} />
+            ))}
+          </div>
+        </Panel>
+
+        <Panel title="By city" sub="Where the calling happens">
+          <div className="space-y-1">
+            {m.byCity.slice(0, 10).map((c) => (
+              <Bar key={c.city} label={c.city} value={c.count} max={maxCity} href={`/agencies?city=${encodeURIComponent(c.city)}`} />
+            ))}
+          </div>
+          <p className="mt-3 text-[12.5px] text-muted">{m.byCity.length} cities in total.</p>
+        </Panel>
+      </div>
+
+      <Panel title="By business segment" sub="What they actually sell — drives which module you demo first">
+        <div className="grid gap-x-8 sm:grid-cols-2">
+          {m.bySegment.slice(0, 16).map((s) => (
+            <Bar key={s.segment} label={s.segment} value={s.count} max={maxSeg} />
+          ))}
+        </div>
+      </Panel>
+
+      {/* ------------------------------------------------------- competitors */}
+      <Panel
+        title="Who you are up against"
+        sub={`${comp.headline.vendorsProfiled} vendors profiled · only ${comp.headline.publishPricing} publish a price · ${comp.headline.foreignVendorsWithNamedBdClient} foreign vendors have a named Bangladeshi client`}
+        action={
+          <Link href="/competitors" className="text-[13px] font-semibold text-teal-700 hover:underline">
+            Full battlecards →
           </Link>
-        </div>
-      </section>
-
-      {/* =========================== EXCLUDED =========================== */}
-      <section>
-        <Kicker>Do not call</Kicker>
-        <SectionTitle sub="Agencies that already run a platform, are building one in-house, are competitors, or carry a compliance flag. Kept in the database so no time is wasted on them twice.">
-          Excluded ({EXCLUDED.length})
-        </SectionTitle>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-          {EXCLUDED.map((e) => (
-            <div key={e.id} className="rounded-lg border border-hair border-l-4 border-l-amber-700 bg-white p-4">
-              <div className="flex items-start justify-between gap-2">
-                <p className="text-sm font-semibold text-navy-900">{e.name}</p>
-                <Tag tone="amber">
-                  {e.exclusionReason === 'has_own_platform' && 'Has platform'}
-                  {e.exclusionReason === 'building_in_house' && 'In-house build'}
-                  {e.exclusionReason === 'is_competitor' && 'Competitor'}
-                  {e.exclusionReason === 'compliance_risk' && 'Compliance'}
-                </Tag>
+        }
+      >
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {comp.groups[0].vendors.map((v) => (
+            <div key={v.name} className="rounded-lg border border-hair bg-surface p-4">
+              <div className="text-[13.5px] font-bold text-navy-900">{v.name}</div>
+              <div className="mt-0.5 text-[11.5px] text-muted">{v.tag}</div>
+              <div className="mt-2.5">
+                <span className={`chip ${v.pricingPublished ? 'border-teal-600/30 bg-teal-600/10 text-teal-700' : 'border-hair bg-panel text-muted'}`}>
+                  {v.pricingPublished ? 'Publishes price' : 'No public price'}
+                </span>
               </div>
-              <p className="mt-2 text-xs leading-relaxed text-muted">{e.signal}</p>
-              {e.iataNo && (
-                <p className="mt-2 font-mono text-[11px] text-teal-600">
-                  IATA {e.iataNo} · ATAB {e.atabNo} · CAAB {e.caabLicenceNo}
-                </p>
-              )}
             </div>
           ))}
         </div>
-      </section>
-
-      {/* ============================ SOURCES =========================== */}
-      <section>
-        <Kicker>Scale-up</Kicker>
-        <SectionTitle sub={`This database covers ${STATS.total} agencies. The national market is roughly 3,500 ATAB members and about 1,500 operating at real scale. These are the five routes to the rest.`}>
-          Getting from {STATS.total} to 1,500+
-        </SectionTitle>
-        <div className="grid gap-4 lg:grid-cols-5">
-          {[
-            { n: '1', t: 'hajj.gov.bd', d: 'Phase-wise 2026 approved Hajj agency lists. ~750 licensed records. Free, downloadable, today.', tag: 'Do first' },
-            { n: '2', t: 'regtravelagency.gov.bd', d: 'TAMS — the definitive licence register with numbers and expiry dates. Search directly, or file an RTI request.', tag: 'Ground truth' },
-            { n: '3', t: 'ATAB + HAAB', d: 'Sattara Centre, 15th Floor, 30/A Naya Paltan. ~3,500 members. Verify tool at member.atab.org.bd.', tag: 'Highest leverage' },
-            { n: '4', t: 'Listing sweep by thana', d: 'Repeat the capture method used here for every Dhaka thana, then Gazipur, Savar, Feni, Noakhali, Jashore, Barishal, Mymensingh.', tag: 'Repeatable' },
-            { n: '5', t: 'Training-course graduates', d: 'Newly licensed agencies coming out of travel-business courses. No platform, no incumbent vendor.', tag: 'Warmest' }
-          ].map((s) => (
-            <Card key={s.n}>
-              <div className="mb-2 flex items-center gap-2">
-                <span className="flex h-6 w-6 items-center justify-center rounded bg-teal-600 text-xs font-bold text-white">
-                  {s.n}
-                </span>
-                <Tag tone="navy">{s.tag}</Tag>
-              </div>
-              <p className="font-mono text-sm font-semibold text-navy-900">{s.t}</p>
-              <p className="mt-2 text-xs leading-relaxed text-muted">{s.d}</p>
-            </Card>
-          ))}
+        <div className="mt-5 rounded-lg border-l-[3px] border-teal-600 bg-teal-600/5 px-4 py-3">
+          <p className="text-[13px] leading-relaxed text-ink">
+            <strong>The widest gap:</strong> {comp.gaps[0]}
+          </p>
         </div>
-      </section>
+      </Panel>
 
-      {/* ========================= CALL WINDOW ========================== */}
-      <section className="rounded-lg bg-navy-900 p-8">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-teal-400">Field rule</p>
-        <p className="mt-3 max-w-4xl text-2xl font-bold leading-snug text-white">
-          Call Sunday–Thursday, 11:00–13:00 and 15:00–17:00. Almost every agency on this list closes
-          Friday. Check the Facebook page before every dial.
+      {/* ------------------------------------------------------- call status */}
+      <Panel
+        title="Calling progress"
+        sub="Updated live from the CRM in the admin portal"
+        action={
+          <span className="text-[12.5px] text-muted">
+            Work the queue at <span className="font-semibold text-navy-900">localhost:4001/crm</span>
+          </span>
+        }
+      >
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <Tile value={String(m.pipeline.worked)} label="Worked at least once" sub={`${pct(m.pipeline.worked, m.pipeline.total)}% coverage`} tone={m.pipeline.worked ? 'good' : 'warn'} />
+          <Tile value={String(m.pipeline.contacted)} label="Reached a human" />
+          <Tile value={String(m.pipeline.demos)} label="Demos scheduled" />
+          <Tile value={String(m.pipeline.won)} label="Won" tone="good" />
+          <Tile value={String(m.pipeline.total - m.pipeline.assigned)} label="Nobody owns these" tone={m.pipeline.assigned < m.pipeline.total ? 'warn' : 'good'} />
+        </div>
+      </Panel>
+
+      <div className="rounded-xl2 border border-hair bg-panel px-5 py-4">
+        <p className="text-[12.5px] leading-relaxed text-muted">
+          <strong className="text-navy-900">Provenance.</strong> Sources:{' '}
+          {m.bySource.map((s) => `${s.source} (${s.count})`).join(' · ')}. Phone numbers, emails and addresses are
+          reproduced exactly as printed in those registers, including legacy Dhaka landlines and known typographic
+          artefacts. Open the source URL on a lead before disputing any field.
         </p>
-        <p className="mt-3 text-sm text-white/60">
-          Four qualifying questions: monthly bookings · own IATA or someone else&rsquo;s panel · own
-          website or app · how sub-agents are managed today.
-        </p>
-      </section>
+      </div>
     </div>
   );
 }

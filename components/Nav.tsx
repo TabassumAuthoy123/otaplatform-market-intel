@@ -3,27 +3,27 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
-import { SEGMENTS, CLUSTERS } from '@/data/schema';
 
 /**
- * Counts arrive as props. This is a client component, and the dataset now lives
- * in content/agencies.json, which only the server can read.
+ * Counts arrive as props. This is a client component and the dataset lives in
+ * content/crm-leads.json, which only the server can read.
  */
 export default function Nav({
-  segCounts = {},
-  clusterCounts = {}
+  credentialCounts = {},
+  cityCounts = {},
+  total = 0
 }: {
-  segCounts?: Record<string, number>;
-  clusterCounts?: Record<string, number>;
+  credentialCounts?: Record<string, number>;
+  cityCounts?: Record<string, number>;
+  total?: number;
 }) {
-  const countSeg = (code: string) => segCounts[code] ?? 0;
-  const countCluster = (id: string) => clusterCounts[id] ?? 0;
   const path = usePathname();
-  const [open, setOpen] = useState<'seg' | 'cluster' | null>(null);
+  const [open, setOpen] = useState<'cred' | 'city' | null>(null);
   const [mobile, setMobile] = useState(false);
 
   const link = (href: string, label: string) => (
     <Link
+      key={href + label}
       href={href}
       className={`rounded px-3 py-2 text-sm transition-colors ${
         path === href ? 'bg-white/15 text-white' : 'text-white/75 hover:bg-white/10 hover:text-white'
@@ -32,6 +32,16 @@ export default function Nav({
       {label}
     </Link>
   );
+
+  const CREDENTIALS: [string, string][] = [
+    ['iata', 'IATA accredited'],
+    ['hajj', 'Hajj licence (MoRA)'],
+    ['baira', 'BAIRA recruiting licence'],
+    ['toab', 'TOAB member'],
+    ['none', 'No number printed']
+  ];
+
+  const cities = Object.entries(cityCounts).sort((a, b) => b[1] - a[1]).slice(0, 14);
 
   return (
     <header className="sticky top-0 z-50 border-b border-navy-800 bg-navy-950 no-print">
@@ -45,76 +55,64 @@ export default function Nav({
 
         <nav className="ml-auto hidden items-center gap-1 lg:flex">
           {link('/', 'Dashboard')}
-          {link('/agencies', 'Agency Database')}
+          {link('/agencies', `Agencies${total ? ` (${total})` : ''}`)}
+          {link('/competitors', 'Competitors')}
 
-          {/* Segments dropdown */}
-          <div
-            className="relative"
-            onMouseEnter={() => setOpen('seg')}
-            onMouseLeave={() => setOpen(null)}
-          >
+          {/* Credential dropdown */}
+          <div className="relative" onMouseEnter={() => setOpen('cred')} onMouseLeave={() => setOpen(null)}>
             <button className="rounded px-3 py-2 text-sm text-white/75 hover:bg-white/10 hover:text-white">
-              Segments ▾
+              Credentials ▾
             </button>
-            {open === 'seg' && (
-              <div className="absolute right-0 top-full w-[420px] overflow-hidden rounded-lg border border-hair bg-white shadow-xl">
-                {SEGMENTS.map((s) => (
+            {open === 'cred' && (
+              <div className="absolute right-0 top-full w-[340px] overflow-hidden rounded-lg border border-hair bg-white shadow-xl">
+                {CREDENTIALS.map(([key, label]) => (
                   <Link
-                    key={s.code}
-                    href={`/agencies?segment=${s.code}`}
-                    className="flex items-start gap-3 border-b border-hair px-4 py-3 last:border-0 hover:bg-panel"
+                    key={key}
+                    href={`/agencies?credential=${key}`}
+                    className="flex items-center justify-between gap-3 border-b border-hair px-4 py-3 last:border-0 hover:bg-panel"
                   >
-                    <span className="mt-0.5 rounded bg-navy-900 px-1.5 py-0.5 text-[10px] font-bold text-white">
-                      {s.code}
-                    </span>
-                    <span className="flex-1">
-                      <span className="block text-sm font-semibold text-navy-900">{s.shortName}</span>
-                      <span className="block text-xs text-muted">{s.tierHint}</span>
-                    </span>
-                    <span className="text-sm font-bold text-teal-600">{countSeg(s.code)}</span>
+                    <span className="text-sm text-navy-900">{label}</span>
+                    <span className="text-sm font-bold text-teal-600">{credentialCounts[key] ?? 0}</span>
                   </Link>
                 ))}
-                <Link href="/segments" className="block bg-panel px-4 py-2.5 text-xs font-semibold text-teal-600">
-                  All segments explained →
+                <Link href="/agencies" className="block bg-panel px-4 py-2.5 text-xs font-semibold text-teal-600">
+                  All {total} agencies →
                 </Link>
               </div>
             )}
           </div>
 
-          {/* Clusters dropdown */}
-          <div
-            className="relative"
-            onMouseEnter={() => setOpen('cluster')}
-            onMouseLeave={() => setOpen(null)}
-          >
+          {/* City dropdown */}
+          <div className="relative" onMouseEnter={() => setOpen('city')} onMouseLeave={() => setOpen(null)}>
             <button className="rounded px-3 py-2 text-sm text-white/75 hover:bg-white/10 hover:text-white">
-              Clusters ▾
+              Cities ▾
             </button>
-            {open === 'cluster' && (
-              <div className="absolute right-0 top-full max-h-[70vh] w-[400px] overflow-y-auto rounded-lg border border-hair bg-white shadow-xl scroll-thin">
-                {CLUSTERS.map((c) => (
+            {open === 'city' && (
+              <div className="scroll-thin absolute right-0 top-full max-h-[70vh] w-[300px] overflow-y-auto rounded-lg border border-hair bg-white shadow-xl">
+                {cities.map(([city, n]) => (
                   <Link
-                    key={c.id}
-                    href={`/agencies?cluster=${c.id}`}
-                    className="flex items-center gap-3 border-b border-hair px-4 py-2.5 last:border-0 hover:bg-panel"
+                    key={city}
+                    href={`/agencies?city=${encodeURIComponent(city)}`}
+                    className="flex items-center justify-between gap-3 border-b border-hair px-4 py-2.5 last:border-0 hover:bg-panel"
                   >
-                    <span className="flex-1">
-                      <span className="block text-sm font-medium text-navy-900">{c.name}</span>
-                      <span className="block text-xs text-muted">
-                        {c.district} · Phase {c.phase}
-                      </span>
-                    </span>
-                    <span className="text-sm font-bold text-teal-600">{countCluster(c.id)}</span>
+                    <span className="text-sm text-navy-900">{city}</span>
+                    <span className="text-sm font-bold text-teal-600">{n}</span>
                   </Link>
                 ))}
               </div>
             )}
           </div>
 
-          {link('/agencies?priority=A', 'Call First (A)')}
+          {link('/agencies?engine=none_seen', 'No website')}
+          {link('/segments', 'Segments')}
 
-          {/* The consumer-facing storefront — separate product area, so it is
-              styled as an outlined link rather than another dashboard tab. */}
+          <a
+            href="/api/crm/export?format=xlsx"
+            className="ml-2 rounded bg-teal-600 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-500"
+          >
+            Export Excel
+          </a>
+
           <Link
             href="/portal"
             className="ml-1 rounded border border-teal-400/50 px-3 py-2 text-sm text-teal-300 transition-colors hover:border-teal-400 hover:bg-teal-400/10 hover:text-white"
@@ -127,13 +125,6 @@ export default function Nav({
           >
             Accounts ↗
           </Link>
-
-          <a
-            href="/api/agencies?format=csv"
-            className="ml-2 rounded bg-teal-600 px-3.5 py-2 text-sm font-semibold text-white hover:bg-teal-500"
-          >
-            Export CSV
-          </a>
         </nav>
 
         <button
@@ -148,9 +139,11 @@ export default function Nav({
         <div className="border-t border-navy-800 bg-navy-900 px-5 py-3 lg:hidden">
           <div className="flex flex-col gap-1">
             {link('/', 'Dashboard')}
-            {link('/agencies', 'Agency Database')}
+            {link('/agencies', 'Agencies')}
+            {link('/competitors', 'Competitors')}
+            {link('/agencies?credential=iata', 'IATA accredited')}
+            {link('/agencies?engine=none_seen', 'No website')}
             {link('/segments', 'Segments')}
-            {link('/agencies?priority=A', 'Call First (A)')}
             {link('/portal', 'B2C Portal ↗')}
             {link('/accounts', 'Accounts ↗')}
           </div>

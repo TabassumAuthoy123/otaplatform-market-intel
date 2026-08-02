@@ -1,0 +1,137 @@
+{
+  "_meta": {
+    "note": "Competitor landscape for the BD white-label OTA market. Compiled from the GTM package's 02_COMPETITOR_ANALYSIS.md — 28 vendors profiled from ~38 sources. Every claim was read off the vendor's own published page unless the row says otherwise. Only two vendors publish a price.",
+    "compiled": "2026-08",
+    "revision": 1
+  },
+  "headline": {
+    "vendorsProfiled": 28,
+    "publishPricing": 2,
+    "foreignVendorsWithNamedBdClient": 0
+  },
+  "groups": [
+    {
+      "key": "A",
+      "title": "Bangladeshi direct competitors",
+      "note": "These are the ones you actually lose deals to.",
+      "vendors": [
+        {
+          "name": "Travonis Limited",
+          "tag": "The price-setter — most dangerous",
+          "threat": "high",
+          "pricingPublished": true,
+          "pricing": "Basic ৳2,500/mo + ৳3,000 activation (any 3 modules) · Standard ৳3,500 + ৳5,000 (any 5) · Premium ৳5,000 + ৳15,000 (any 8)",
+          "strengths": [
+            "30+ payment gateways: bKash, Nagad, Rocket/DBBL, SSLCommerz, EBL, BRAC, City Bank, Stripe",
+            "Suppliers include BDFare, Duffel, Novoair, Verteil, Atlas, Sabre, Travelport, Amadeus, Agoda, Expedia, HotelBeds",
+            "Bangla + English support from a Bangladeshi team"
+          ],
+          "weaknesses": [
+            "Flights and hotels only — cars, tours and buses are listed as future support",
+            "Modules are rationed by tier; the caps are published on their own page",
+            "Footer reads \"Powered by Innovate Solution\" and \"© Reservation Hub 2025\" — it is a Bangladesh skin on Singapore/UAE ReservationHub, not local IP",
+            "Their coverage claims \"launch in under 24 hours\" and \"under 8 working days\" in the same article"
+          ],
+          "attack": "Agree on price, then ask which modules they must give up to hit it. Their own pricing page publishes the caps."
+        },
+        {
+          "name": "zooFamily / zooIT",
+          "tag": "Transparent one-time-fee incumbent",
+          "threat": "high",
+          "pricingPublished": true,
+          "pricing": "One-time: Corporate $650 · NON-IATA $1,150 · IATA $2,500 · hosting $99/yr · Flight API $650 · Hotel API $650 · GDS API fee $250 · GDS security deposit $2,000 (one GDS) / $5,000 (three)",
+          "strengths": [
+            "Dhanmondi and Uttara offices",
+            "Owns the IATA agencies Airways Office and Travelzoo Bangladesh Ltd",
+            "Runs travelnews.com.bd — owns the trade's attention",
+            "Meets prospects at their travel-business training course months before they are licensed"
+          ],
+          "weaknesses": [
+            "Tour and Visa modules are \"upload active\" with no live inventory",
+            "WhatsApp-only sales funnel",
+            "The same PCC is quoted as both ৳3,500 and ৳5,499 on one page",
+            "Markets an explicitly priced \"GDS API HX remover\" at $250 and \"no ADM\" positioning"
+          ],
+          "attack": "Compliance flank. For an IATA holder with real ADM and audit exposure, sell auditability, documented GDS relationships and one consistent contract. Do not fight at their price point."
+        },
+        {
+          "name": "M360 ICT Ltd.",
+          "tag": "The named competitor",
+          "threat": "high",
+          "pricingPublished": false,
+          "pricing": "Not published anywhere on m360ict.com, trabill.biz or any secondary source",
+          "address": "House 74, Road 7, Block H, Banani, Dhaka · +8809638336699",
+          "strengths": [
+            "Trabill — travel agency management and accounting SaaS, BASIS National ICT Award 2022 champion in Tourism & Hospitality",
+            "Commonwealth and South Asian Business Excellence awards; independently reported as used in 11–15 countries",
+            "Portfolio of 12+ products: AFOMS, Hotel360, Dokani POS, ERP BD, CRM360, Hajj Management, Islam360, TaskMate",
+            "Sister concerns: On The Way Ltd, T360, G360 Tours Australia, BookingExpert.us, AIBT"
+          ],
+          "weaknesses": [
+            "Trabill and the OTA at ota.m360ict.com are two separate products, not one platform",
+            "No published price anywhere"
+          ],
+          "attack": "Do not attack the brand — the awards are real. Attack the architecture: ask what happens when a booking has to reconcile against the accounting ledger across two systems. Then ask them for a written price."
+        },
+        {
+          "name": "IV Trip (Implevista)",
+          "tag": "Closest localisation rival",
+          "threat": "medium",
+          "pricingPublished": false,
+          "pricing": "Not published; their blog says \"many agencies invest only a few lakhs BDT in setup\"",
+          "strengths": [
+            "Full Bangla–English toggle",
+            "bKash / Nagad / Rocket / SSLCommerz plus manual bank deposit",
+            "Multi-currency BDT / USD / AED / SAR"
+          ],
+          "weaknesses": [
+            "Positioned as agency management, not OTA distribution"
+          ],
+          "attack": "Lead with the B2B sub-agent panel and the rules engine — distribution, not bookkeeping."
+        }
+      ]
+    },
+    {
+      "key": "B",
+      "title": "BD B2B portals and consolidators",
+      "note": "Same wallet, different product. They give the agent a free storefront and keep the brand.",
+      "vendors": [
+        { "name": "BDFare", "tag": "Competitor and supplier at once", "threat": "high", "pricingPublished": false, "pricing": "—", "strengths": ["B2B portal + flight API + NDC + white-label; Banani, launched 2023"], "weaknesses": ["Appears as a supplier on Travonis's own pricing page"], "attack": "Treat as a potential inventory partner and a competitor in the same conversation. Escalate the channel conflict before Wave 1." },
+        { "name": "ShareTrip B2B", "tag": "Aggregator", "threat": "medium", "pricingPublished": false, "pricing": "—", "strengths": ["Air, hotel, holidays, visa; agent mobile app"], "weaknesses": ["The agent books on ShareTrip's brand and inventory", "No white-label licence product found"], "attack": "The passenger sees ShareTrip, not the agency. That is the whole pitch." },
+        { "name": "Ticket Lagbe Ltd.", "tag": "Portal / consolidator", "threat": "medium", "pricingPublished": false, "pricing": "—", "strengths": ["BD + UAE + Singapore, IATA code 42343755, iOS and Android agent apps"], "weaknesses": [], "attack": "Same lock-in and data-ownership argument." },
+        { "name": "Buy Air Ticket Ltd.", "tag": "Their customers are your prospects", "threat": "medium", "pricingPublished": false, "pricing": "—", "strengths": ["B2B portal; resells Travelport / Sabre / Amadeus login IDs to BD agents"], "weaknesses": ["The Ordinance's credential-sharing ban puts that practice under pressure"], "attack": "Every agent renting a shared GDS login is a prospect who needs a compliant answer." },
+        { "name": "GoZayaan · Flight Expert", "tag": "Channel, not software", "threat": "low", "pricingPublished": false, "pricing": "—", "strengths": ["Consumer OTAs with B2B portals for sub-agents"], "weaknesses": ["Not a licensable platform"], "attack": "An agency will never out-advertise GoZayaan and should not try. It wins on relationship, service and its own sub-agent network — we make those three scalable." }
+      ]
+    },
+    {
+      "key": "C",
+      "title": "Indian and global vendors with Bangladesh landing pages",
+      "note": "Not one has a named BD client, a BD office, a BD phone number, BDT pricing or Bangla support.",
+      "vendors": [
+        { "name": "Provab", "tag": "No BD presence", "threat": "low", "pricingPublished": false, "pricing": "—", "strengths": [], "weaknesses": ["Their own Bangladesh page footer lists client geographies — USA, India, Middle East, North America, Far East, Europe, Africa — and omits Bangladesh entirely"], "attack": "Read them their own footer." },
+        { "name": "Trawex", "tag": "Abandoned page", "threat": "low", "pricingPublished": false, "pricing": "—", "strengths": [], "weaknesses": ["Bangladesh page carries a 2020 copyright, an empty client-logo strip, and live tiles that read \"Dummy Text\"", "Travel-tech copy bylined to a health writer"], "attack": "Show the prospect the page." },
+        { "name": "Travelopro", "tag": "Blank price table", "threat": "low", "pricingPublished": false, "pricing": "Publishes a five-tier pricing table in which every price cell is blank", "strengths": [], "weaknesses": ["No price, no BD client"], "attack": "Ask for the number in writing." },
+        { "name": "Travelomatix", "tag": "Useful only as a price anchor", "threat": "low", "pricingPublished": false, "pricing": "Their BD blog tells buyers a white-label portal costs $5,000–10,000 basic, $10,000–25,000 mid, $25,000–60,000+ premium — vendor marketing estimates, not observed transactions", "strengths": [], "weaknesses": ["Every tier reads \"Enquire Now\" on a page copyrighted 2016, citing a 2016 award", "Runs a duplicate SEO domain publishing \"Top 10 in Bangladesh\" listicles about itself"], "attack": "Quote their anchor honestly, then show a real BD price." }
+      ]
+    },
+    {
+      "key": "D",
+      "title": "The DIY floor",
+      "note": "Statistically the most common competitor in any deal.",
+      "vendors": [
+        { "name": "\"Amra nijera banabo\"", "tag": "In-house build", "threat": "high", "pricingPublished": false, "pricing": "—", "strengths": ["Feels free", "Owner is technically engaged — often your best prospect"], "weaknesses": ["GDS certification is a formal months-long process most owners do not know exists", "Fare, refund and reissue logic is where in-house builds actually die", "Key-person risk when the developer leaves"], "attack": "Four questions: who handles Sabre/Travelport certification and how long does it take · who writes the refund and reissue logic and what does one wrong rule cost · who maintains it when the developer leaves · our bug fix is 24 hours, what is your freelancer's? Never mock the plan." }
+      ]
+    }
+  ],
+  "gaps": [
+    "Only two vendors in the entire market publish a price. A written, itemised quote is itself a differentiator.",
+    "No foreign vendor has a named Bangladeshi client, a BD office, a BD phone number or Bangla support.",
+    "Travonis is a Bangladesh skin on a foreign product — local IP is a real claim if ours is genuinely local.",
+    "M360 ships accounting and OTA as two products; one platform that reconciles a booking to a ledger is a straight architectural win.",
+    "zooIT sells an explicitly priced HX remover and \"no ADM\" positioning — sell auditability to anyone with real ADM exposure.",
+    "B2B portals give a free storefront but keep the brand, the customer and the data. That is the single sharpest pitch available.",
+    "Buy Air Ticket resells shared GDS logins; the credential-sharing ban makes every one of their customers a prospect.",
+    "Tour and visa modules are weak or inventory-free across the local field.",
+    "Nobody is selling to Cumilla, Brahmanbaria, Khulna or Bogura. First mover takes the district."
+  ]
+}
