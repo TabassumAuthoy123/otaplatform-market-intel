@@ -16,6 +16,14 @@ all of them.
 
 ---
 
+> **The app binds 127.0.0.1.** `next dev` publishes on 0.0.0.0 by default, and
+> every route under `/api` serves data with no session in front of it — the whole
+> accounting book, the 400-lead CRM with named decision makers and their mobile
+> numbers, the agency dataset. On an office network that was one URL away for
+> anyone on the same wifi, and it was verified working from the LAN address
+> before it was closed. `npm run dev:lan` exposes it deliberately, and the data
+> routes then refuse any non-loopback request without `APP_ACCESS_KEY`.
+
 ## Run it
 
 ```bash
@@ -236,6 +244,40 @@ drift.
 
 ---
 
+## What a deep audit found, and what it changed
+
+Everything up to this point had been checked by asking whether a URL answered.
+That proves routing and nothing else, which is why the list below survived every
+earlier pass. Each item is now covered by a regression check in
+`scripts/verify-srs.mjs` or `scripts/verify-admin.mjs`.
+
+| Was | Now |
+|---|---|
+| Every `/api` route open, app on 0.0.0.0. The whole book and all 400 leads downloadable from the LAN — verified. | Binds 127.0.0.1; `middleware.ts` refuses non-loopback requests to the data routes without `APP_ACCESS_KEY`. |
+| Two saves a moment apart, and the first one silently gone — proven by replaying the real write path. | Writes serialised per file, and each record form carries a fingerprint. A stale save gets 409 and a page naming who changed it. |
+| Every date stamped in UTC. Between midnight and 6am Dhaka that is YESTERDAY; at a month end, the previous month's P&L. | `lib/clock.ts` and `admin/clock.js` stamp in `company.timezone`, default `Asia/Dhaka`. |
+| `crm_write` let any Sales Executive rewrite another rep's leads, despite the spec and the data dictionary both requiring otherwise. | `crm_all` is a separate capability. A rep is scoped to leads assigned to them, on the lead form and on call logging. |
+| Accounting pages at 2–4.3s. `journal()` rebuilt four or five times per render; `allBankBalances` scanned every voucher once per bank. | Memoised on the book object — a new request still re-derives from disk. Financials went from 2,165ms to under 500ms. |
+| `getBook()` was a bare `JSON.parse`. A truncated file gave a stack trace. | Fails with the filename, "nothing has been changed", and where the backup is. |
+| `crm-leads.json` re-parsed on every request — 421 KB now, ~6 MB at the 5,800 leads the spec asks for. | Cached on mtime and size, so an admin write still shows on the very next load. |
+| `salesByService` rounded per line while `invoiceTotals` rounded the total — no drift yet, but guaranteed once more foreign-currency invoices exist. | Both convert once per invoice. Checked by recomputing both ways and comparing. |
+| The shared Docker network to OTAPlatform's MySQL was commented out, so "runs alongside" needed an edit nobody would find. | Enabled and named, port published on loopback only. |
+| One aria attribute on the whole storefront. | Named menus and a labelled group per mega column — and deliberately no `aria-expanded`, because a CSS-only panel could never update it truthfully. |
+
+**Three findings were my own tests being wrong and the app being right**, and are
+recorded because a false alarm costs real time: outstanding is not the same as
+credit headroom on a bill; `fetch` silently drops a `Host` header, so a guard
+that worked looked broken; and disabling one menu entry removes four links, not
+two, because the header renders every entry twice and that href also sits in a
+mega panel.
+
+**And one thing this audit broke and caught.** Moving the version marker onto the
+record form put it in the wrong form first, taking all twenty storefront content
+editor pages to HTTP 500. Nothing failed, because the suite checked `/design`,
+`/books` and `/crm` and stopped. It now sweeps every `/edit/*` page.
+
+---
+
 ## How the accounting stays honest
 
 Three properties, each of which has caught a real bug in this codebase.
@@ -277,8 +319,12 @@ so the trial balance does not move.
 ## Verifying it rather than believing it
 
 ```bash
-node scripts/verify-srs.mjs      # 70 checks — the specification, end to end
-node scripts/verify-admin.mjs    # 17 checks — the admin portal, signed in
+npm run verify
+```
+
+```bash
+node scripts/verify-srs.mjs      # 88 checks — the specification, plus hardening
+node scripts/verify-admin.mjs    # 23 checks — the admin portal, signed in
 ```
 
 Run it with the app on :3002 and the admin on :4001. **Do not run `next build`

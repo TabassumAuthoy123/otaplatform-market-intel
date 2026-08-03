@@ -11,6 +11,7 @@
  * Requires the app on :3002 and the admin portal on :4001.
  */
 
+import http from 'node:http';
 import { readFileSync } from 'node:fs';
 
 const APP = process.env.APP_URL || 'http://127.0.0.1:3002';
@@ -300,6 +301,190 @@ await check('Ticketing is documented as blocked, with both supplier codes', () =
   // request got far enough to be validated rather than rejected at the door.
   const has = ['8236', 'NOT_AUTHORIZED', '3BX8', 'S00L'].filter((x) => readme.includes(x));
   return [has.length === 4, `README names ${has.join(', ')}`];
+});
+
+/* ================================================================ HARDENING
+   One check per defect found in the deep audit. These are the angles the rest
+   of this file did not cover, which is exactly why they survived it.
+   ======================================================================== */
+section('Hardening');
+
+/**
+ * `fetch` cannot do this check: Host is a forbidden header name, so undici drops
+ * it silently and the request arrives looking like loopback. The first version
+ * of this test therefore passed a request the middleware never saw as remote,
+ * and reported the guard broken when it was not. Raw http can set Host.
+ */
+function getWithHost(path, host, extraHeaders = {}) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(APP + path);
+    http
+      .get(
+        { host: url.hostname, port: url.port, path: url.pathname + url.search, headers: { Host: host, ...extraHeaders } },
+        (res) => {
+          res.resume();
+          res.on('end', () => resolve(res.statusCode));
+        }
+      )
+      .on('error', reject);
+  });
+}
+
+await check('Data routes refuse a non-loopback Host', async () => {
+  const status = await getWithHost('/api/accounts/export?format=csv&section=summary', '192.168.1.50:3002');
+  return [status === 401, `HTTP ${status} when the Host header is a LAN address`];
+});
+
+await check('A wrong access key is still refused', async () => {
+  const status = await getWithHost('/api/crm/export?format=csv', '192.168.1.50:3002', { 'x-app-key': 'wrong' });
+  return [status === 401, `HTTP ${status} with a bad x-app-key`];
+});
+
+await check('The storefront enquiry route stays reachable', async () => {
+  const r = await fetch(`${APP}/api/enquiry`, {
+    method: 'POST',
+    headers: { host: '192.168.1.50:3002', 'content-type': 'application/json' },
+    body: JSON.stringify({})
+  });
+  return [r.status !== 401, `HTTP ${r.status} — not gated, a customer may not be on loopback`];
+});
+
+await check('Dev and start scripts bind loopback', () => {
+  const pkg = JSON.parse(readFileSync('package.json', 'utf8'));
+  const bad = ['dev', 'dev:alt', 'start'].filter((k) => !pkg.scripts[k].includes('-H 127.0.0.1'));
+  return [bad.length === 0, bad.length ? `still open: ${bad.join(', ')}` : 'dev, dev:alt and start all bind 127.0.0.1'];
+});
+
+await check('Concurrent writes cannot silently lose one', () => {
+  const src = readFileSync('admin/server.js', 'utf8');
+  const guarded = (src.match(/guardedSave\(/g) ?? []).length;
+  const raw = (src.match(/await writeJsonAtomic\(path\.join\(CONTENT_DIR, 'accounting\.json'\)/g) ?? []).length;
+  return [src.includes('function serialise(') && guarded >= 3 && raw === 0,
+    `${guarded} guarded saves, ${raw} unguarded accounting writes left`];
+});
+
+await check('Edit forms carry a fingerprint so a stale save is refused', () => {
+  const src = readFileSync('admin/server.js', 'utf8');
+  return [src.includes('name="__fp"') && src.includes('ConflictError') && src.includes('conflictView'),
+    'fingerprint on the form, conflict page on mismatch'];
+});
+
+await check('Calendar dates use the company timezone, not UTC', async () => {
+  const clock = await import('../admin/clock.js').then((m) => m.default ?? m);
+  // 31 Aug 21:00 UTC is already 1 September in Dhaka — the month-boundary case.
+  const dhaka = clock.todayIn('Asia/Dhaka', new Date('2026-08-31T21:00:00Z'));
+  return [dhaka === '2026-09-01', `31 Aug 21:00 UTC reads as ${dhaka} in Dhaka; UTC would say 2026-08-31`];
+});
+
+await check('The two clock implementations agree', async () => {
+  const clock = await import('../admin/clock.js').then((m) => m.default ?? m);
+  const at = new Date('2026-03-14T22:15:00Z');
+  const expected = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Dhaka', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).format(at);
+  return [clock.todayIn('Asia/Dhaka', at) === expected, `both return ${expected}`];
+});
+
+await check('No UTC date stamps left in the write paths', () => {
+  const files = ['lib/crm.ts', 'admin/server.js', 'admin/crm-fields.js', 'app/api/crm/export/route.ts'];
+  const bad = files.filter((f) => readFileSync(f, 'utf8').includes('new Date().toISOString().slice(0, 10)'));
+  return [bad.length === 0, bad.length ? `still UTC: ${bad.join(', ')}` : `${files.length} files clean`];
+});
+
+await check('A rep cannot edit a lead belonging to another rep', async () => {
+  const R = (await import('../admin/roles.js')).default;
+  return [!R.canEditAnyLead('sales_exec') && R.canEditAnyLead('manager') && R.canEditAnyLead('super_admin'),
+    'sales_exec scoped to its own leads; manager and super admin are not'];
+});
+
+await check('Lead ownership is enforced on the write, not just described', () => {
+  const src = readFileSync('admin/server.js', 'utf8');
+  const onLead = src.includes('const scope = leadScope(session, leads[idx])');
+  const onActivity = src.includes('const scope = leadScope(session, actLead)');
+  return [onLead && onActivity && src.includes('function crmIdentity('),
+    `lead form: ${onLead}, call logging: ${onActivity}`];
+});
+
+await check('The journal is built once per request, not five times', () => {
+  const src = readFileSync('lib/accounting.ts', 'utf8');
+  return [src.includes('journalCache') && src.includes('WeakMap<Book, JournalLine[]>'),
+    'memoised on the book object, so a new request still re-derives'];
+});
+
+await check('The accounting derivations are not what makes a page slow', async () => {
+  /**
+   * Measured as a DELTA against a page that touches no accounting at all.
+   *
+   * The first version of this check just asserted the page loaded in under a
+   * second, which folded ~600ms of Next dev-server overhead into a claim about
+   * this codebase — /portal/about, which derives nothing, takes about that long
+   * on its own. A threshold that a framework upgrade can move is not measuring
+   * anything about the accounting layer.
+   */
+  const timed = async (p) => {
+    const t = Date.now();
+    await fetch(APP + p);
+    return Date.now() - t;
+  };
+  // warm both routes so on-demand compilation is not in the numbers
+  await timed('/portal/about');
+  await timed('/accounts/financials');
+
+  const best = async (p) => Math.min(await timed(p), await timed(p), await timed(p));
+  const baseline = await best('/portal/about');
+  const heavy = await best('/accounts/financials');
+  const delta = heavy - baseline;
+
+  // Balance sheet + cash flow + P&L + two trial balances + reconciliation, over
+  // every voucher in the book. Before the journal was memoised this was ~1600ms.
+  return [delta < 600, `financials ${heavy}ms vs a derivation-free page at ${baseline}ms — the accounting adds ${delta}ms over ${
+    ['invoices','receipts','bills','payments','expenses','creditNotes','supplierCreditNotes','transfers','supplierDeposits']
+      .reduce((t, k) => t + (book[k] ?? []).length, 0)} vouchers`];
+});
+
+await check('A corrupt book fails with an actionable message', () => {
+  const src = readFileSync('lib/accounting.ts', 'utf8');
+  const store = readFileSync('lib/jsonStore.ts', 'utf8');
+  return [src.includes('readJsonRequired') && store.includes('is not valid JSON') && store.includes('pre-restore-backup'),
+    'names the file, says nothing was changed, points at the backup'];
+});
+
+await check('Large JSON files are not re-parsed on every request', () => {
+  const crm = readFileSync('lib/crm.ts', 'utf8');
+  const store = readFileSync('lib/jsonStore.ts', 'utf8');
+  return [crm.includes('readJsonCached') && store.includes('mtimeMs'),
+    'cache key is mtime and size, so an admin write still shows on the next load'];
+});
+
+await check('Sales-by-service rounds the same way as the invoice', () => {
+  // Recompute both ways and compare rather than trusting that they agree.
+  let worst = 0;
+  for (const inv of book.invoices) {
+    if (inv.status === 'draft' || inv.status === 'cancelled') continue;
+    const fx = inv.fxRate && inv.fxRate > 0 ? inv.fxRate : 1;
+    const perService = new Map();
+    for (const l of inv.lines) perService.set(l.serviceId, (perService.get(l.serviceId) ?? 0) + l.qty * l.unitPrice);
+    const grouped = [...perService.values()].reduce((t, v) => t + Math.round(v * fx), 0);
+    const whole = Math.round(inv.lines.reduce((t, l) => t + l.qty * l.unitPrice, 0) * fx);
+    worst = Math.max(worst, Math.abs(grouped - whole));
+  }
+  return [worst === 0, `worst gap between the report and the invoices behind it: ${worst}`];
+});
+
+await check('The mega menu is labelled rather than faking ARIA state', () => {
+  const raw = readFileSync('components/portal/Header.tsx', 'utf8');
+  // Strip comments before looking: the comment explaining why aria-expanded is
+  // absent contains the word, which made the first version of this check fail
+  // on the very thing it was verifying.
+  const src = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  return [src.includes('aria-label="Main menu"') && src.includes('role="group"') && !src.includes('aria-expanded'),
+    'named groups, and no hard-coded aria-expanded that a CSS panel could never update'];
+});
+
+await check('Compose shares the OTAPlatform network and binds loopback', () => {
+  const yml = readFileSync('docker-compose.yml', 'utf8');
+  return [yml.includes('otaplatform_net') && !yml.includes('#   - otaplatform_net') && yml.includes('127.0.0.1:3000:3000'),
+    'shared network enabled, port published on loopback only'];
 });
 
 /* --------------------------------------------------------------------- report */

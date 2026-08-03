@@ -23,6 +23,7 @@
 const http = require('node:http');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const clock = require('./clock.js');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 
@@ -154,6 +155,115 @@ function diffSummary(before, after) {
     if (a !== b) changed.push(k);
   }
   return changed.length ? changed.join(', ') : 'no field changed';
+}
+
+/**
+ * One write at a time, per file.
+ *
+ * `writeJsonAtomic` makes the file REPLACEMENT atomic, which is not the same
+ * thing as making the change safe. Every handler does read → mutate its own
+ * copy → write, and two handlers overlapping means the second write replaces
+ * the first wholesale. Proven before this existed: two edits a moment apart,
+ * and the first one vanished with nothing logged and no error shown.
+ *
+ * Six roles share this portal, so that was a live data-loss path, not a
+ * theoretical one. Everything that mutates a content file now goes through
+ * `guardedSave`, which re-reads inside the lock so the mutation is applied to
+ * what is actually on disk rather than to a stale copy.
+ */
+const writeChains = new Map();
+
+function serialise(file, task) {
+  const prev = writeChains.get(file) ?? Promise.resolve();
+  // Swallow the previous failure so one bad save cannot wedge the queue.
+  const next = prev.catch(() => {}).then(task);
+  writeChains.set(file, next.catch(() => {}));
+  return next;
+}
+
+/**
+ * A short fingerprint of one record, so two people editing DIFFERENT records
+ * never collide while two editing the SAME record are told.
+ *
+ * A whole-file revision counter would be simpler and would reject far too much:
+ * with six people working, an accountant saving a receipt would block a
+ * colleague saving an unrelated supplier. The unit of conflict is the record.
+ */
+function fingerprint(value) {
+  return crypto.createHash('sha256').update(JSON.stringify(value ?? null)).digest('hex').slice(0, 12);
+}
+
+/**
+ * Re-read, check nobody else moved first, mutate, write.
+ *
+ * `mutate` receives the FRESH object and returns false to abort. A thrown
+ * `ConflictError` reaches the handler, which turns it into a page the person
+ * can act on rather than a silent overwrite.
+ */
+class ConflictError extends Error {
+  constructor(detail) {
+    super('conflict');
+    this.detail = detail;
+  }
+}
+
+function guardedSave(file, session, mutate, { expectFingerprint, locate } = {}) {
+  return serialise(file, async () => {
+    const fresh = readJson(file, {});
+
+    if (expectFingerprint !== undefined && typeof locate === 'function') {
+      const current = locate(fresh);
+      const now = fingerprint(current);
+      // No fingerprint at all means the form was not rendered by this server —
+      // an old cached page, or something posting directly. Refused either way,
+      // but say which it is rather than blaming a colleague who did nothing.
+      if (!expectFingerprint) {
+        throw new ConflictError({ stale: true, by: 'unknown', at: 'unknown', missing: false });
+      }
+      if (now !== expectFingerprint) {
+        throw new ConflictError({
+          expected: expectFingerprint,
+          found: now,
+          missing: current === undefined || current === null,
+          by: (fresh._meta && fresh._meta.lastEditedBy) || 'someone else',
+          at: (fresh._meta && fresh._meta.lastEditedAt) || 'a moment ago'
+        });
+      }
+    }
+
+    if (mutate(fresh) === false) return null;
+    stampMeta(fresh, session);
+    await writeJsonAtomic(file, fresh);
+    return fresh;
+  });
+}
+
+/** The page shown when two people edited the same record. */
+function conflictView(session, spec, id, detail) {
+  return page({
+    title: 'Someone else saved first',
+    session,
+    active: 'books',
+    body: `
+      <h1>Someone else saved first</h1>
+      <div class="flash warn">
+        <strong>Nothing was written.</strong>
+        ${detail.stale
+          ? `<p style="margin:6px 0 0">This form did not carry a version marker, so there is no way to tell whether <span class="tnum">${esc(id)}</span> has changed since it was opened. That happens with a page restored from browser cache. Open the record again.</p>`
+          : detail.missing
+            ? `<p style="margin:6px 0 0">The record <span class="tnum">${esc(id)}</span> is no longer in ${esc(spec.label)} — it looks like it was deleted while this form was open.</p>`
+            : `<p style="margin:6px 0 0">${esc(detail.by)} changed <span class="tnum">${esc(id)}</span> at ${esc(detail.at)}, after this form was opened. Saving now would silently undo their edit.</p>`}
+      </div>
+      <p class="sub">
+        Open the record again to see the current values, then re-apply your change on top of theirs.
+        Your form has not been discarded — use the browser Back button if you need to copy anything out of it first.
+      </p>
+      <div class="bar">
+        <a class="primary" href="/books/edit?col=${esc(spec.key)}&id=${encodeURIComponent(id)}"
+           style="text-decoration:none;display:inline-block;padding:9px 18px;border-radius:8px">Reload the record</a>
+        <a class="secondary" href="/books/list?col=${esc(spec.key)}">Back to ${esc(spec.label)}</a>
+      </div>`
+  });
 }
 
 async function writeJsonAtomic(file, value) {
@@ -1258,6 +1368,10 @@ function bookEditView(session, book, spec, rec, flash, errors) {
         <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
         <input type="hidden" name="__bools" value="${esc(boolPaths.join('|'))}">
         <input type="hidden" name="__nums" value="${esc(numPaths.join('|'))}">
+        <!-- Version marker: a fingerprint of this record as it was rendered.
+             The save is refused if it no longer matches, so two people editing
+             the same voucher cannot silently overwrite each other. -->
+        <input type="hidden" name="__fp" value="${esc(fingerprint((book[spec.key] || []).find((r) => r.id === rec.id) ?? null))}">
         <div class="card">${fields}</div>
         <div class="bar">
           <button class="primary" type="submit" name="save" value="1">Save</button>
@@ -1560,6 +1674,78 @@ function validateDepositDrawdown(rec, bookArg) {
   }
   if (rec.bankId) errors.push('A payment drawn from a deposit does not come out of a bank account — clear the bank field.');
   return errors;
+}
+
+/**
+ * Which CRM rep is signed in, matched on the email on their admin account.
+ *
+ * Returns null when the account is not linked to a rep. That is deliberately
+ * not treated as "can see everything": an unlinked account with only `crm_write`
+ * is refused, because the safe direction for a missing link is no access rather
+ * than everyone's access.
+ */
+function crmIdentity(session) {
+  const email = String(session.email || '').toLowerCase();
+  return crmUsers().find((u) => String(u.email || '').toLowerCase() === email && u.email) || null;
+}
+
+/**
+ * May this session write to this lead?
+ *
+ * `crm_all` — Manager, Super Admin — passes everything. Anyone else must be
+ * linked to the rep the lead is assigned to.
+ */
+function leadScope(session, lead) {
+  if (RBAC.canEditAnyLead(session.role)) return { ok: true, reason: 'crm_all' };
+
+  const me = crmIdentity(session);
+  if (!me) {
+    return {
+      ok: false,
+      kind: 'unlinked',
+      message: 'This admin account is not linked to a CRM rep, so it cannot edit leads.'
+    };
+  }
+  if (!lead.assigned_to) {
+    return {
+      ok: false,
+      kind: 'unassigned',
+      me,
+      message: 'This lead is not assigned to anyone yet. A manager has to assign it before it can be worked.'
+    };
+  }
+  if (lead.assigned_to !== me.id) {
+    return {
+      ok: false,
+      kind: 'other_rep',
+      me,
+      owner: crmUsers().find((u) => u.id === lead.assigned_to) || { name: lead.assigned_to },
+      message: 'This lead belongs to another rep.'
+    };
+  }
+  return { ok: true, reason: 'owner', me };
+}
+
+function leadScopeView(session, lead, scope) {
+  const owner = scope.owner ? scope.owner.name : null;
+  return page({
+    title: 'Not your lead',
+    session,
+    active: 'crm',
+    body: `
+      <h1>Nothing was saved</h1>
+      <div class="flash warn">
+        <p style="margin:0">${esc(scope.message)}</p>
+        ${owner ? `<p style="margin:6px 0 0"><span class="tnum">${esc(lead.lead_id)}</span> ${esc(lead.company)} is assigned to <strong>${esc(owner)}</strong>${scope.me ? `, and you are signed in as ${esc(scope.me.name)}` : ''}.</p>` : ''}
+        ${scope.kind === 'unlinked'
+          ? '<p style="margin:6px 0 0">A Super Admin can link it by putting this account&rsquo;s email address on the rep in <code>content/crm-users.json</code>.</p>'
+          : '<p style="margin:6px 0 0">Two people rewriting the same call notes is how a pipeline stops meaning anything. Ask a manager to reassign it if it should be yours.</p>'}
+      </div>
+      <div class="bar">
+        <a class="secondary" href="/crm/lead?id=${encodeURIComponent(lead.lead_id)}">View the lead</a>
+        <a class="secondary" href="/crm">Back to the list</a>
+      </div>`
+  });
 }
 
 /* ------------------------------------------------------ design / theme views */
@@ -1923,7 +2109,23 @@ function integrationsView(session, flash, testResult) {
 /* --------------------------------------------------------------- CRM views */
 
 const APP_EXPORT = (qs) => `${APP_URL}/api/crm/export?${qs}`;
-const todayISO = () => new Date().toISOString().slice(0, 10);
+/**
+ * The zone every calendar date in the book is stamped in.
+ *
+ * Read from the book rather than hard-coded so an agency in another country can
+ * change it in one place. Falls back to Dhaka, which is who this is for.
+ */
+function bookTimezone() {
+  try {
+    const c = bookFile().company;
+    return (c && c.timezone) || clock.DEFAULT_ZONE;
+  } catch {
+    return clock.DEFAULT_ZONE;
+  }
+}
+
+/** Dhaka's calendar date, not the server's. See admin/clock.js. */
+const todayISO = () => clock.todayIn(bookTimezone());
 
 const crmLeads = () => readJson(CRM_LEADS_FILE, []);
 const crmUsers = () => readJson(CRM_USERS_FILE, []);
@@ -2889,8 +3091,9 @@ const server = http.createServer(async (req, res) => {
       const form = parseForm(await readBody(req));
       if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
 
+      const recId = url.searchParams.get('id');
       const book = bookFile();
-      const idx = (book[spec.key] || []).findIndex((r) => r.id === url.searchParams.get('id'));
+      const idx = (book[spec.key] || []).findIndex((r) => r.id === recId);
       if (idx < 0) return send(res, 404, page({ title: 'Not found', session, body: '<h1>No record with that id</h1>' }));
 
       // reuse the storefront content editor's form engine on a single record
@@ -2901,9 +3104,27 @@ const server = http.createServer(async (req, res) => {
       const errors = validateBookRecord(spec, next);
       if (errors.length) return send(res, 422, bookEditView(session, book, spec, next, null, errors));
 
-      const before = book[spec.key][idx];
-      book[spec.key][idx] = next;
-      await writeJsonAtomic(path.join(CONTENT_DIR, 'accounting.json'), book);
+      let before = null;
+      try {
+        await guardedSave(
+          path.join(CONTENT_DIR, 'accounting.json'),
+          session,
+          (fresh) => {
+            const i = (fresh[spec.key] || []).findIndex((r) => r.id === recId);
+            if (i < 0) return false;
+            before = fresh[spec.key][i];
+            fresh[spec.key][i] = next;
+          },
+          {
+            expectFingerprint: String(form.__fp || ''),
+            locate: (fresh) => (fresh[spec.key] || []).find((r) => r.id === recId) ?? null
+          }
+        );
+      } catch (err) {
+        if (err instanceof ConflictError) return send(res, 409, conflictView(session, spec, recId, err.detail));
+        throw err;
+      }
+
       await audit(session, 'update', {
         collection: spec.key, id: next.id,
         label: spec.title.map((f) => next[f]).find(Boolean) || next.id,
@@ -2919,20 +3140,24 @@ const server = http.createServer(async (req, res) => {
       const form = parseForm(await readBody(req));
       if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
 
-      const book = bookFile();
-      const rows = book[spec.key] || (book[spec.key] = []);
-      // A collection that is still empty has no row to copy the shape from, so
-      // the spec carries a template. Without it the first credit note anyone
-      // creates is a form with two boxes on it.
-      const rec = withOptionalFields(spec, rows.length ? blankLike(rows[rows.length - 1]) : blankLike(spec.template || { id: '', date: '' }));
-      if (spec.template) for (const [k, v] of Object.entries(spec.template)) if (v !== '' && v !== 0) rec[k] = v;
-      rec.id = nextBookId(rows, spec.idPrefix);
-      if ('no' in rec && spec.noPrefix && book.company) {
-        rec.no = `${book.company[spec.noPrefix] || ''}${String(rows.length + 1).padStart(4, '0')}`;
-      }
-      if ('date' in rec) rec.date = new Date().toISOString().slice(0, 10);
-      rows.push(rec);
-      await writeJsonAtomic(path.join(CONTENT_DIR, 'accounting.json'), book);
+      // Built inside the lock: `nextBookId` reads the collection to pick the
+      // next number, so two people clicking New at the same moment would
+      // otherwise both be handed the same id and one record would be lost.
+      let rec = null;
+      await guardedSave(path.join(CONTENT_DIR, 'accounting.json'), session, (book) => {
+        const rows = book[spec.key] || (book[spec.key] = []);
+        // A collection that is still empty has no row to copy the shape from, so
+        // the spec carries a template. Without it the first credit note anyone
+        // creates is a form with two boxes on it.
+        rec = withOptionalFields(spec, rows.length ? blankLike(rows[rows.length - 1]) : blankLike(spec.template || { id: '', date: '' }));
+        if (spec.template) for (const [k, v] of Object.entries(spec.template)) if (v !== '' && v !== 0) rec[k] = v;
+        rec.id = nextBookId(rows, spec.idPrefix);
+        if ('no' in rec && spec.noPrefix && book.company) {
+          rec.no = `${book.company[spec.noPrefix] || ''}${String(rows.length + 1).padStart(4, '0')}`;
+        }
+        if ('date' in rec) rec.date = todayISO();
+        rows.push(rec);
+      });
       await audit(session, 'create', {
         collection: spec.key, id: rec.id, label: rec.no || rec.id,
         summary: `Created a blank ${spec.label.toLowerCase().replace(/s$/, '')}`,
@@ -2948,10 +3173,11 @@ const server = http.createServer(async (req, res) => {
       if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
       const remove = new Set([].concat(form.remove ?? []));
       if (remove.size) {
-        const book = bookFile();
-        const gone = (book[spec.key] || []).filter((r) => remove.has(r.id));
-        book[spec.key] = (book[spec.key] || []).filter((r) => !remove.has(r.id));
-        await writeJsonAtomic(path.join(CONTENT_DIR, 'accounting.json'), book);
+        let gone = [];
+        await guardedSave(path.join(CONTENT_DIR, 'accounting.json'), session, (book) => {
+          gone = (book[spec.key] || []).filter((r) => remove.has(r.id));
+          book[spec.key] = (book[spec.key] || []).filter((r) => !remove.has(r.id));
+        });
         for (const rec of gone) {
           // Deletions are logged one per record with the whole record kept, so
           // a voucher removed by mistake can be typed back in from the log.
@@ -3111,7 +3337,7 @@ const server = http.createServer(async (req, res) => {
         if (fs.existsSync(full)) payload.files[f] = readJson(full, null);
       }
       const body = JSON.stringify(payload, null, 2);
-      const name = `otaplatform-backup-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}.json`;
+      const name = `otaplatform-backup-${todayISO().replace(/-/g, '')}.json`;
       res.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
         'content-disposition': `attachment; filename="${name}"`,
@@ -3292,6 +3518,9 @@ const server = http.createServer(async (req, res) => {
       const idx = leads.findIndex((l) => l.lead_id === url.searchParams.get('id'));
       if (idx < 0) return send(res, 404, page({ title: 'Not found', session, body: '<h1>No lead with that id</h1>' }));
 
+      const scope = leadScope(session, leads[idx]);
+      if (!scope.ok) return send(res, 403, leadScopeView(session, leads[idx], scope));
+
       const result = await applyCrmForm(leads, idx, form, session);
       if (result.errors.length) {
         const acts = crmActivities().filter((a) => a.lead_id === leads[idx].lead_id)
@@ -3305,6 +3534,12 @@ const server = http.createServer(async (req, res) => {
       const form = parseForm(await readBody(req));
       if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
       const id = url.searchParams.get('id');
+      // Logging a call is a write about that lead, so it is scoped the same way.
+      const actLead = crmLeads().find((l) => l.lead_id === id);
+      if (actLead) {
+        const scope = leadScope(session, actLead);
+        if (!scope.ok) return send(res, 403, leadScopeView(session, actLead, scope));
+      }
       const acts = crmActivities();
       acts.push({
         id: 'ACT-' + Math.random().toString(36).slice(2, 10),
@@ -3541,7 +3776,7 @@ function stampMeta(content, session) {
   content._meta = content._meta || {};
   content._meta.revision = Number(content._meta.revision || 0) + 1;
   content._meta.lastEditedBy = session.email;
-  content._meta.lastEditedAt = new Date().toISOString().slice(0, 19).replace('T', ' ');
+  content._meta.lastEditedAt = clock.stampIn(bookTimezone());
 }
 
 /**

@@ -47,7 +47,7 @@ export function Header({ c }: { c: SiteContent }) {
             </span>
           </Link>
 
-          <nav className="hidden flex-1 items-center gap-1 lg:flex">
+          <nav aria-label="Main menu" className="hidden flex-1 items-center gap-1 lg:flex">
             {nav.map((n) => (
               <div key={n.href + n.label} className="group relative">
                 <Link
@@ -62,6 +62,14 @@ export function Header({ c }: { c: SiteContent }) {
                   )}
                 </Link>
 
+                {/*
+                  Deliberately no aria-expanded. The panel opens on :hover and
+                  :focus-within with no JavaScript, so nothing could ever update
+                  the attribute — a hard-coded aria-expanded="false" on a panel
+                  that is open would actively mislead a screen reader. What is
+                  offered instead is honest structure: a named group per column,
+                  and every child a real link that Tab reaches in order.
+                */}
                 {n.groups && (
                   <div className="invisible absolute left-0 top-full z-50 pt-2 opacity-0 transition-opacity duration-150 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100">
                     <div className="rounded-xl2 border border-hair bg-white p-5 shadow-[0_18px_50px_-20px_rgba(19,41,75,0.45)]">
@@ -70,7 +78,7 @@ export function Header({ c }: { c: SiteContent }) {
                         style={{ gridTemplateColumns: `repeat(${n.groups.length}, minmax(190px, 1fr))` }}
                       >
                         {n.groups.map((g) => (
-                          <div key={g.title}>
+                          <div key={g.title} role="group" aria-label={`${n.label} — ${g.title}`}>
                             <p className="mb-2 text-[10.5px] font-bold uppercase tracking-[0.14em] text-muted">
                               {g.title}
                             </p>
@@ -113,7 +121,7 @@ export function Header({ c }: { c: SiteContent }) {
         {/* Mobile: one scrolling strip. A mega panel has nowhere to open on a
             390px screen, so its children are flattened in behind their parent
             rather than being quietly unreachable on a phone. */}
-        <nav className="flex gap-1 overflow-x-auto border-t border-hair px-5 py-2 lg:hidden">
+        <nav aria-label="Main menu, mobile" className="flex gap-1 overflow-x-auto border-t border-hair px-5 py-2 lg:hidden">
           {nav.flatMap((n) => [
             <Link
               key={'m' + n.href + n.label}

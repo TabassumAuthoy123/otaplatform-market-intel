@@ -7,6 +7,11 @@
 #  Start:   docker compose up -d --build
 #  Open:    http://localhost:3000
 #  Stop:    docker compose down
+#
+#  The shared network with OTAPlatform is ENABLED below, so this container can
+#  reach the OTAPlatform MySQL by its container name. It used to be commented
+#  out, which meant the "runs alongside" promise needed a manual edit nobody
+#  would find. Verified name: `docker network ls` shows otaplatform_otaplatform.
 # ============================================================================
 
 services:
@@ -16,15 +21,20 @@ services:
       dockerfile: Dockerfile
     container_name: ota_market_intel
     restart: unless-stopped
+    # Loopback only. The data routes under /api serve the whole accounting book
+    # and the 400-lead CRM, and there is no authenticated session in front of
+    # them yet — publishing on 0.0.0.0 put both on the office wifi.
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       NODE_ENV: production
       NEXT_PUBLIC_APP_NAME: "OTA Platform — Market Intelligence"
       # Only needed once you switch from the static dataset to a live DB.
       # 'otaplatform_mysql' is the OTAPlatform MySQL container name — reachable
       # by that name ONLY if the shared network below is enabled.
-      # DATABASE_URL: "mysql://root:root@otaplatform_mysql:3306/ota_market_intel"
+      DATABASE_URL: "mysql://root:root@otaplatform_mysql:3306/ota_market_intel"
+      # Set this to reach the data routes from another machine on purpose.
+      APP_ACCESS_KEY: "${APP_ACCESS_KEY:-}"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/api/agencies?stats=1"]
       interval: 30s
@@ -32,16 +42,15 @@ services:
       retries: 3
       start_period: 20s
 
-    # ---- to reach OTAPlatform's MySQL, uncomment this block AND the
-    # ---- top-level networks block at the bottom of this file.
-    # networks:
-    #   - default
-    #   - otaplatform_net
+    networks:
+      - default
+      - otaplatform_net
 
-# networks:
-#   otaplatform_net:
-#     external: true
-#     # Verified on this machine with `docker network ls` — OTAPlatform's compose
-#     # declares a network literally named 'otaplatform', so Docker prefixes the
-#     # project name and the real network is 'otaplatform_otaplatform'.
-#     name: otaplatform_otaplatform
+networks:
+  otaplatform_net:
+    external: true
+    # Verified with `docker network ls` on this machine. OTAPlatform's compose
+    # declares a network called 'otaplatform', and Docker prefixes it with the
+    # project directory name, giving 'otaplatform_otaplatform'. If OTAPlatform
+    # is checked out under a different folder name, this is the line to change.
+    name: otaplatform_otaplatform

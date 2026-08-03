@@ -95,7 +95,8 @@ const SAVED_VIEWS = [
  */
 function validateLead(next, today) {
   const errors = [];
-  const t = today || new Date().toISOString().slice(0, 10);
+  // Dhaka's date — a call logged at 1am must not validate against yesterday.
+  const t = today || require('./clock.js').todayIn();
 
   if (next.disposition && (!next.next_action || !next.next_action_date)) {
     errors.push('A disposition is set, so “next action” and “next action date” are both required.');

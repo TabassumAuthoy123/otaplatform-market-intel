@@ -26,6 +26,7 @@ const CAPS = {
   crm_read: 'View the prospect list and lead detail',
   crm_write: 'Log calls and update lead fields',
   crm_assign: 'Assign and reassign leads between reps',
+  crm_all: 'Edit any lead, not only the ones assigned to you',
   agencies_read: 'View the researched agency dataset',
   agencies_write: 'Edit the researched agency dataset',
   books_read: 'View accounting records and reports',
@@ -69,7 +70,7 @@ const ROLES = {
   manager: {
     label: 'Manager',
     summary: 'Read everything, reassign leads, approve cancellations',
-    caps: ['crm_read', 'crm_assign', 'books_read', 'books_credit', 'leads_read', 'agencies_read', 'integrations', 'audit']
+    caps: ['crm_read', 'crm_assign', 'crm_all', 'books_read', 'books_credit', 'leads_read', 'agencies_read', 'integrations', 'audit']
   },
   read_only: {
     label: 'Read Only',
@@ -190,6 +191,17 @@ function check(role, pathname, method, col) {
 }
 
 /** Sidebar entries this role should see at all. */
+/**
+ * May this role edit a lead it does not own?
+ *
+ * The data dictionary and the CRM spec both say a rep may only mutate rows
+ * where `assigned_to` is their own id, and until now nothing enforced it — a
+ * Sales Executive could rewrite another rep's disposition and next action.
+ */
+function canEditAnyLead(role) {
+  return can(role, 'crm_all');
+}
+
 function visible(role) {
   return {
     design: can(role, 'design'),
@@ -210,6 +222,7 @@ const canWriteBooks = (role) =>
   ['books_sales', 'books_purchase', 'books_masters', 'books_delete'].some((c) => can(role, c));
 
 module.exports = {
+  canEditAnyLead,
   CAPS, ROLES, normaliseRole, capsOf, can, requiredCap, check, visible, canWriteBooks,
   SALES_COLLECTIONS, PURCHASE_COLLECTIONS, MASTER_COLLECTIONS
 };

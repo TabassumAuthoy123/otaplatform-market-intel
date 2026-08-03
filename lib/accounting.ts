@@ -1,5 +1,6 @@
-import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import { todayIn } from '@/lib/clock';
+import { readJsonRequired } from '@/lib/jsonStore';
 
 /**
  * The accounting book. content/accounting.json is authoritative and the admin
@@ -192,6 +193,8 @@ export type Book = {
     invoicePrefix: string; receiptPrefix: string; billPrefix: string;
     paymentPrefix: string; expensePrefix: string;
     openingCash: number; financialYearStart: string;
+    /** IANA zone every calendar date in this book is stamped in. */
+    timezone: string;
     creditNotePrefix: string; transferPrefix: string; supplierCreditPrefix: string;
     vat: { enabled: number; defaultRate: number; registrationNo: string; note: string };
     currencySettings: { baseCurrency: string; symbol: string; decimals: number; note: string };
@@ -227,8 +230,16 @@ export type Book = {
 
 const BOOK_FILE = path.join(process.cwd(), 'content', 'accounting.json');
 
+/**
+ * The book, or a clear error.
+ *
+ * This used to be a bare JSON.parse: a truncated file gave a raw parse error
+ * with a stack trace and no hint at what to do about it. There is deliberately
+ * no empty-book fallback — a dashboard of zeroes reads as "no trading yet",
+ * which is the most misleading thing a set of accounts can say.
+ */
 export async function getBook(): Promise<Book> {
-  return JSON.parse(await readFile(BOOK_FILE, 'utf8')) as Book;
+  return readJsonRequired<Book>(BOOK_FILE, 'The accounting book');
 }
 
 /* --------------------------------------------------------------- formatting */
@@ -412,6 +423,11 @@ export const isTrading = (i: Invoice, notes: CreditNote[]) =>
   isLive(i) && !invoiceTotals(i, [], notes).cancelled;
 
 export function summarise(book: Book, from?: string, to?: string) {
+  if (!from && !to) return oncePerBook(book, 'summarise', () => summariseRange(book));
+  return summariseRange(book, from, to);
+}
+
+function summariseRange(book: Book, from?: string, to?: string) {
   const inRange = (d: string) => (!from || d >= from) && (!to || d <= to);
 
   const invoices = book.invoices.filter((i) => isLive(i) && inRange(i.date));
@@ -466,6 +482,10 @@ export function summarise(book: Book, from?: string, to?: string) {
 
 /** Money customers still owe us, across the whole book. */
 export function receivables(book: Book) {
+  return oncePerBook(book, 'receivables', () => receivablesNow(book));
+}
+
+function receivablesNow(book: Book) {
   const rows = book.invoices
     .filter((i) => i.status !== 'draft')
     .map((i) => ({ inv: i, t: invoiceTotals(i, book.receipts, book.creditNotes ?? []) }))
@@ -475,6 +495,10 @@ export function receivables(book: Book) {
 
 /** Money we still owe suppliers. */
 export function payables(book: Book) {
+  return oncePerBook(book, 'payables', () => payablesNow(book));
+}
+
+function payablesNow(book: Book) {
   const notes = book.creditNotes ?? [];
   const supplierNotes = book.supplierCreditNotes ?? [];
   const rows = book.bills
@@ -491,6 +515,11 @@ export function payables(book: Book) {
 
 /** Opening + receipts − payments = closing, for cash only. */
 export function cashBook(book: Book, from?: string, to?: string) {
+  if (!from && !to) return oncePerBook(book, 'cashBook', () => cashBookRange(book));
+  return cashBookRange(book, from, to);
+}
+
+function cashBookRange(book: Book, from?: string, to?: string) {
   const before = (d: string) => (from ? d < from : false);
   const inRange = (d: string) => (!from || d >= from) && (!to || d <= to);
 
@@ -610,8 +639,11 @@ export function bankBook(book: Book, bankId: string, from?: string, to?: string)
 
 /** Every bank's closing balance, plus the combined figure. */
 export function allBankBalances(book: Book, to?: string) {
-  const rows = book.banks.map((b) => ({ bank: b, closing: bankBook(book, b.id, undefined, to).closing }));
-  return { rows, total: rows.reduce((t, r) => t + r.closing, 0) };
+  const build = () => {
+    const rows = book.banks.map((b) => ({ bank: b, closing: bankBook(book, b.id, undefined, to).closing }));
+    return { rows, total: rows.reduce((t, r) => t + r.closing, 0) };
+  };
+  return to ? build() : oncePerBook(book, 'allBankBalances', build);
 }
 
 export function expensesByCategory(book: Book, from?: string, to?: string) {
@@ -631,13 +663,29 @@ export function salesByService(book: Book, from?: string, to?: string) {
   const m = new Map<string, { sales: number; cost: number; count: number }>();
   const notes = book.creditNotes ?? [];
   for (const inv of book.invoices.filter((i) => isTrading(i, notes) && inRange(i.date))) {
+    /**
+     * Convert once per invoice per service, not once per line.
+     *
+     * invoiceTotals rounds the CONVERTED total, so rounding each line
+     * separately here would let this report drift a rupee or two away from the
+     * invoice it came from — two screens quoting different numbers for the same
+     * sale, which is the kind of discrepancy nobody can explain later.
+     */
     const fx = fxOf(inv);
+    const perService = new Map<string, { salesDoc: number; costDoc: number; lines: number }>();
     for (const l of inv.lines) {
-      const cur = m.get(l.serviceId) ?? { sales: 0, cost: 0, count: 0 };
-      cur.sales += Math.round(l.qty * l.unitPrice * fx);
-      cur.cost += Math.round(l.qty * l.supplierCost * fx);
-      cur.count += 1;
-      m.set(l.serviceId, cur);
+      const cur = perService.get(l.serviceId) ?? { salesDoc: 0, costDoc: 0, lines: 0 };
+      cur.salesDoc += l.qty * l.unitPrice;
+      cur.costDoc += l.qty * l.supplierCost;
+      cur.lines += 1;
+      perService.set(l.serviceId, cur);
+    }
+    for (const [serviceId, v] of perService) {
+      const cur = m.get(serviceId) ?? { sales: 0, cost: 0, count: 0 };
+      cur.sales += Math.round(v.salesDoc * fx);
+      cur.cost += Math.round(v.costDoc * fx);
+      cur.count += v.lines;
+      m.set(serviceId, cur);
     }
   }
   return book.services
@@ -910,7 +958,8 @@ export function creditNoteReport(book: Book) {
 
 export const todayISO = (book: Book) => {
   const all = book.invoices.map((i) => i.date).concat(book.receipts.map((r) => r.date)).sort();
-  return all[all.length - 1] ?? new Date().toISOString().slice(0, 10);
+  // Falls back to the calendar date in Dhaka, not UTC — see lib/clock.ts.
+  return all[all.length - 1] ?? todayIn(book.company.timezone);
 };
 
 /* ------------------------------------------- supplier deposits & inventory */
@@ -975,7 +1024,8 @@ export function supplierDeposits(book: Book) {
  * Unsold units are cash sitting on a shelf with an expiry date on it, which is
  * the whole reason a travel agency needs stock control at all.
  */
-export function inventory(book: Book, today = new Date().toISOString().slice(0, 10)) {
+export function inventory(book: Book, today?: string) {
+  today = today ?? todayIn(book.company.timezone);
   const items = (book as unknown as { inventory?: InventoryItem[] }).inventory ?? [];
 
   const rows = items.map((i) => {
@@ -1062,6 +1112,14 @@ export const AC = {
 
 /** The chart of accounts, built from the book so it always matches the data. */
 export function chartOfAccounts(book: Book): Account[] {
+  const hit = chartCache.get(book);
+  if (hit) return hit;
+  const built = buildChart(book);
+  chartCache.set(book, built);
+  return built;
+}
+
+function buildChart(book: Book): Account[] {
   return [
     { code: AC.CASH, name: 'Cash in hand', group: 'asset' },
     ...book.banks.map((b): Account => ({ code: AC.bank(b.id), name: b.name, group: 'asset' })),
@@ -1097,7 +1155,59 @@ function fundsAccount(method: string, bankId: string | null): string {
   return bankId ? AC.bank(bankId) : AC.CASH;
 }
 
+/**
+ * One journal per book object, not per call.
+ *
+ * `journal()` walks every voucher in the book. The financials page alone used to
+ * trigger it five times — balanceSheet, cashFlow, journalTrialBalance and
+ * reconciliation each reach it through generalLedger — which put the accounting
+ * pages at 2 to 4.3 seconds on 613 vouchers. A year of real trading is roughly
+ * twelve times that.
+ *
+ * Keyed on the book OBJECT in a WeakMap, so there is no staleness to reason
+ * about: `getBook()` re-reads and re-parses the file on every request, giving a
+ * fresh object each time, and the cache only ever collapses repeated work
+ * inside a single request. Nothing has to be invalidated when the file changes,
+ * because the object that changed is already gone.
+ */
+const journalCache = new WeakMap<Book, JournalLine[]>();
+const chartCache = new WeakMap<Book, Account[]>();
+
+/**
+ * The control-account derivations, cached the same way.
+ *
+ * Memoising the journal alone left the financials page at 1.1 seconds, because
+ * `reconciliation()` also pulls the OTHER derivation — and `allBankBalances`
+ * runs a full scan of every voucher once per bank account. Between them a single
+ * page render walked the book more than a dozen times.
+ *
+ * Only the WHOLE-BOOK forms are cached. Anything with a date range is left
+ * alone: caching those would need the range in the key and they are called once
+ * or twice per page, so there is nothing to win and a stale-key bug to lose.
+ */
+const wholeBookCache = new WeakMap<Book, Map<string, unknown>>();
+
+function oncePerBook<T>(book: Book, key: string, compute: () => T): T {
+  let slot = wholeBookCache.get(book);
+  if (!slot) {
+    slot = new Map();
+    wholeBookCache.set(book, slot);
+  }
+  if (slot.has(key)) return slot.get(key) as T;
+  const value = compute();
+  slot.set(key, value);
+  return value;
+}
+
 export function journal(book: Book): JournalLine[] {
+  const hit = journalCache.get(book);
+  if (hit) return hit;
+  const built = buildJournal(book);
+  journalCache.set(book, built);
+  return built;
+}
+
+function buildJournal(book: Book): JournalLine[] {
   const lines: JournalLine[] = [];
   const cust = (id: string) => book.customers.find((c) => c.id === id)?.name ?? id;
   const sup = (id: string) => book.suppliers.find((s) => s.id === id)?.name ?? id;
@@ -1218,37 +1328,81 @@ export function generalLedger(book: Book, account?: string, from?: string, to?: 
   const all = journal(book);
   const inRange = (d: string) => (!from || d >= from) && (!to || d <= to);
 
-  const balances = new Map<string, { debit: number; credit: number }>();
-  for (const l of all.filter((x) => inRange(x.date))) {
+  // The whole-book summary is asked for by four different callers on one page.
+  const summaryKey = `glSummary:${from ?? ''}:${to ?? ''}`;
+  const balances = oncePerBook(book, summaryKey, () => buildBalances(all, inRange));
+
+  if (!account) {
+    const summary = summariseBalances(chart, balances);
+    return { chart, summary, rows: [], opening: 0, closing: 0, account: null };
+  }
+  return ledgerCard(book, chart, all, balances, account, from, to);
+}
+
+type Balances = Map<string, { debit: number; credit: number }>;
+
+/** Debit-natured groups carry a positive balance on the debit side. */
+const naturalSign = (g: AccountGroup) => (g === 'asset' || g === 'expense' ? 1 : -1);
+
+/** One pass over the postings, totalled per account. */
+function buildBalances(all: JournalLine[], inRange: (d: string) => boolean): Balances {
+  const balances: Balances = new Map();
+  for (const l of all) {
+    if (!inRange(l.date)) continue;
     const cur = balances.get(l.account) ?? { debit: 0, credit: 0 };
     cur.debit += l.debit;
     cur.credit += l.credit;
     balances.set(l.account, cur);
   }
+  return balances;
+}
 
-  /** Debit-natured groups carry a positive balance on the debit side. */
-  const natural = (g: AccountGroup) => (g === 'asset' || g === 'expense' ? 1 : -1);
-
-  const summary = chart
+/** Accounts that actually moved, signed by their natural side. */
+function summariseBalances(chart: Account[], balances: Balances) {
+  return chart
     .map((a) => {
       const b = balances.get(a.code) ?? { debit: 0, credit: 0 };
-      return { account: a, debit: b.debit, credit: b.credit, balance: (b.debit - b.credit) * natural(a.group) };
+      return {
+        account: a,
+        debit: b.debit,
+        credit: b.credit,
+        balance: (b.debit - b.credit) * naturalSign(a.group)
+      };
     })
     .filter((r) => r.debit !== 0 || r.credit !== 0);
+}
 
-  if (!account) return { chart, summary, rows: [], opening: 0, closing: 0, account: null };
+/** The running-balance view of one account, the way a ledger card reads. */
+function ledgerCard(
+  book: Book,
+  chart: Account[],
+  all: JournalLine[],
+  balances: Balances,
+  account: string,
+  from?: string,
+  to?: string
+) {
+  const inRange = (d: string) => (!from || d >= from) && (!to || d <= to);
+  const sign = naturalSign(accountGroup(account, chart));
 
-  const sign = natural(accountGroup(account, chart));
-  const opening = all
-    .filter((l) => l.account === account && (from ? l.date < from : false))
+  const mine = all.filter((l) => l.account === account);
+  const opening = mine
+    .filter((l) => (from ? l.date < from : false))
     .reduce((t, l) => t + (l.debit - l.credit) * sign, 0);
 
   let running = opening;
-  const rows = all
-    .filter((l) => l.account === account && inRange(l.date))
+  const rows = mine
+    .filter((l) => inRange(l.date))
     .map((l) => ({ ...l, balance: (running += (l.debit - l.credit) * sign) }));
 
-  return { chart, summary, rows, opening, closing: running, account: chart.find((a) => a.code === account) ?? null };
+  return {
+    chart,
+    summary: summariseBalances(chart, balances),
+    rows,
+    opening,
+    closing: running,
+    account: chart.find((a) => a.code === account) ?? null
+  };
 }
 
 /**

@@ -88,6 +88,19 @@ function fieldsFrom(html) {
 }
 const hidden = (html, name) => new RegExp(`name="${name}" value="([^"]*)"`).exec(html)?.[1] ?? '';
 
+/**
+ * Every hidden input the form renders.
+ *
+ * Naming them one by one meant that adding `__fp` — the version marker that
+ * stops one person's save wiping another's — broke this test, because it kept
+ * posting the two hidden fields it knew about. A browser sends all of them.
+ */
+function hiddensFrom(html) {
+  const out = {};
+  for (const m of html.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)"/g)) out[m[1]] = m[2];
+  return out;
+}
+
 /* ------------------------------------------------------------------ log in */
 {
   const r = await req('/login', { method: 'POST', form: { email: EMAIL, password: PASS } });
@@ -136,9 +149,8 @@ const pair = await (async () => {
     method: 'POST',
     form: {
       ...f,
+      ...hiddensFrom(form.text),
       csrf: csrfFrom(form.text),
-      __bools: hidden(form.text, '__bools'),
-      __nums: hidden(form.text, '__nums'),
       'rec.supplierId': pair.supplierId,
       'rec.billId': pair.billId,
       'rec.amount': '99999999',       // far more than the bill is worth
@@ -159,9 +171,8 @@ const pair = await (async () => {
     method: 'POST',
     form: {
       ...f,
+      ...hiddensFrom(form.text),
       csrf: csrfFrom(form.text),
-      __bools: hidden(form.text, '__bools'),
-      __nums: hidden(form.text, '__nums'),
       'rec.date': '2026-07-30',
       'rec.supplierId': pair.supplierId,
       'rec.billId': pair.billId,
@@ -285,6 +296,86 @@ const pair = await (async () => {
   const book = JSON.parse(fs.readFileSync('content/accounting.json', 'utf8'));
   const gone = !(book.supplierCreditNotes || []).some((x) => x.id === newId);
   ok('Delete removes the record', r.status === 302 && gone, gone ? `${newId} removed` : 'still present');
+}
+
+/* ------------------------------------- every content editor page renders */
+{
+  /**
+   * All twenty storefront sections, not a sample.
+   *
+   * This suite used to check /design, /books and /crm and stop. That gap let a
+   * hidden field land in the WRONG form during the concurrency work and take
+   * every one of these pages to HTTP 500 — "spec is not defined" — with nothing
+   * failing to show it. Twenty cheap GETs is the price of not shipping that.
+   */
+  const sections = [...(await req('/dashboard')).text.matchAll(/href="\/edit\/([a-zA-Z]+)"/g)]
+    .map((m) => m[1]);
+  const unique = [...new Set(sections)];
+  const bad = [];
+  for (const key of unique) {
+    const r = await req(`/edit/${key}`);
+    if (r.status !== 200) bad.push(`${key}:${r.status}`);
+  }
+  ok('Every storefront content editor page renders',
+    unique.length >= 15 && bad.length === 0,
+    bad.length ? `broken: ${bad.join(', ')}` : `${unique.length} sections, all HTTP 200`);
+}
+
+/* ------------------------------------------ two people, one record */
+{
+  /**
+   * The lost update this replaced was silent: two saves a moment apart and the
+   * first one gone, with no error and nothing in the log. Here the second save
+   * carries a fingerprint from before the first, which is exactly what a stale
+   * browser tab sends.
+   */
+  const form = await req(`/books/edit?col=customers&id=CUS-001`);
+  const staleFp = hiddensFrom(form.text).__fp;
+  const f = fieldsFrom(form.text);
+  ok('The record form carries a version marker', Boolean(staleFp), `__fp = ${staleFp || 'MISSING'}`);
+
+  const post = (extra, fp) =>
+    req(`/books/edit?col=customers&id=CUS-001`, {
+      method: 'POST',
+      form: { ...f, ...hiddensFrom(form.text), csrf: csrfFrom(form.text), __fp: fp, ...extra, save: '1' }
+    });
+
+  const first = await post({ 'rec.phone': '01700-000001' }, staleFp);
+  ok('First save goes through', first.status === 302, `HTTP ${first.status}`);
+
+  const second = await post({ 'rec.phone': '01700-000002' }, staleFp);
+  const refused = second.status === 409 && /saved first/i.test(second.text);
+  const stored = JSON.parse(readFileSync('content/accounting.json', 'utf8'))
+    .customers.find((c) => c.id === 'CUS-001').phone;
+  ok('A second save from a stale form is refused, not silently applied',
+    refused && stored === '01700-000001',
+    `HTTP ${second.status}, phone still ${stored}`);
+
+  // and the honest case: reload, then save on top of the current value
+  const fresh = await req(`/books/edit?col=customers&id=CUS-001`);
+  const third = await req(`/books/edit?col=customers&id=CUS-001`, {
+    method: 'POST',
+    form: {
+      ...fieldsFrom(fresh.text), ...hiddensFrom(fresh.text), csrf: csrfFrom(fresh.text),
+      'rec.phone': '01700-000003', save: '1'
+    }
+  });
+  const after = JSON.parse(readFileSync('content/accounting.json', 'utf8'))
+    .customers.find((c) => c.id === 'CUS-001').phone;
+  ok('Reloading and re-saving works', third.status === 302 && after === '01700-000003', `phone now ${after}`);
+
+  // put the original number back
+  const restore = await req(`/books/edit?col=customers&id=CUS-001`);
+  await req(`/books/edit?col=customers&id=CUS-001`, {
+    method: 'POST',
+    form: {
+      ...fieldsFrom(restore.text), ...hiddensFrom(restore.text), csrf: csrfFrom(restore.text),
+      'rec.phone': f['rec.phone'], save: '1'
+    }
+  });
+  const back = JSON.parse(readFileSync('content/accounting.json', 'utf8'))
+    .customers.find((c) => c.id === 'CUS-001').phone;
+  ok('Customer phone restored', back === f['rec.phone'], `back to ${back}`);
 }
 
 /* --------------------------------------------- leave nothing behind */

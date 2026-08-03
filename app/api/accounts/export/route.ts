@@ -5,6 +5,7 @@ import {
   payables, profitAndLoss, receivables, reconciliation, salesByService, summarise, supplierDeposits,
   trialBalance, type Book
 } from '@/lib/accounting';
+import { todayIn } from '@/lib/clock';
 
 /**
  * Downloadable exports of the accounting book.
@@ -30,7 +31,7 @@ export const dynamic = 'force-dynamic';
 type Row = (string | number)[];
 type Sheet = { name: string; title: string; head: string[]; widths: number[]; rows: Row[]; note?: string };
 
-const stamp = () => new Date().toISOString().slice(0, 10).replace(/-/g, '');
+const stamp = (book?: Book) => todayIn(book?.company.timezone).replace(/-/g, '');
 const n0 = (v: number) => Math.round(v);
 const pct = (v: number) => `${v.toFixed(1)}%`;
 
@@ -269,7 +270,7 @@ function buildSheets(book: Book, from?: string, to?: string): Sheet[] {
       .sort((a, b) => a.inv.date.localeCompare(b.inv.date))
       .map(({ inv, t }): Row => [
         inv.no, inv.date, cust(inv.customerId), n0(t.total), n0(t.credited), n0(t.paid), n0(t.due),
-        Math.round((Date.parse(new Date().toISOString().slice(0, 10)) - Date.parse(inv.date)) / 86400000)
+        Math.round((Date.parse(todayIn(book.company.timezone)) - Date.parse(inv.date)) / 86400000)
       ])
   });
 
@@ -539,7 +540,7 @@ export async function GET(req: Request) {
     );
   }
 
-  const filename = `softifybd-accounts-${want || 'full'}-${stamp()}`;
+  const filename = `softifybd-accounts-${want || 'full'}-${stamp(book)}`;
   const period = from || to ? `${from || 'start'} to ${to || 'today'}` : 'whole book';
 
   if (format === 'csv') return csv(sheets, filename);
@@ -580,7 +581,7 @@ function markdown(book: Book, sheets: Sheet[], period: string, filename: string)
   out.push('');
   out.push(`**${book.company.tradingAs}** · BIN/VAT ${book.company.binVat} · ${book.company.address}`);
   out.push('');
-  out.push(`Period: **${period}** · generated ${new Date().toISOString().slice(0, 10)} · all figures in ${book.company.currency}`);
+  out.push(`Period: **${period}** · generated ${todayIn(book.company.timezone)} · all figures in ${book.company.currency}`);
   out.push('');
   out.push('> Derived from the vouchers at the moment of download, not from stored totals, so these');
   out.push('> figures cannot disagree with the screens they came from. Balance-sheet items are as at');

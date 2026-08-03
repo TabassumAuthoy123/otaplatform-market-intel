@@ -1,5 +1,6 @@
-import { readFile } from 'node:fs/promises';
+import { readJsonCached } from '@/lib/jsonStore';
 import path from 'node:path';
+import { todayIn } from '@/lib/clock';
 
 /**
  * Sales CRM over the 400 researched prospects.
@@ -124,13 +125,14 @@ export type Activity = {
 
 /* --------------------------------------------------------------- loaders */
 
-async function readJson<T>(file: string, fallback: T): Promise<T> {
-  try {
-    return JSON.parse(await readFile(file, 'utf8')) as T;
-  } catch {
-    return fallback;
-  }
-}
+/**
+ * Parsed once per file version rather than once per request.
+ *
+ * crm-leads.json is 421 KB for 400 leads and the spec asks for 5,800. The cache
+ * key is the file's mtime and size, so an admin write still shows on the very
+ * next page load — the freshness rule is unchanged, only the waste is gone.
+ */
+const readJson = readJsonCached;
 
 export const getLeads = () => readJson<Lead[]>(LEADS_FILE, []);
 export const getUsers = () => readJson<CrmUser[]>(USERS_FILE, []);
@@ -142,7 +144,7 @@ export function filterLeads(
   leads: Lead[],
   q: { q?: string; priority?: string; tier?: string; city?: string; status?: string;
        disposition?: string; assigned?: string; hasWebsite?: string; hasMobile?: string; view?: string },
-  today = new Date().toISOString().slice(0, 10)
+  today = todayIn()
 ): Lead[] {
   let rows = leads;
 
@@ -188,7 +190,7 @@ export function filterLeads(
 }
 
 /** Queue order for Call Mode: priority, then anything overdue, then untouched. */
-export function queueOrder(rows: Lead[], today = new Date().toISOString().slice(0, 10)): Lead[] {
+export function queueOrder(rows: Lead[], today = todayIn()): Lead[] {
   const rank = (l: Lead) => {
     const p = Number(l.priority.replace('P', '')) || 9;
     const due = l.next_action_date && l.next_action_date <= today ? 0 : 1;
@@ -198,7 +200,7 @@ export function queueOrder(rows: Lead[], today = new Date().toISOString().slice(
   return [...rows].filter((l) => !CLOSED.has(l.call_status)).sort((a, b) => rank(a) - rank(b) || a.lead_id.localeCompare(b.lead_id));
 }
 
-export function dashboard(leads: Lead[], users: CrmUser[], activities: Activity[], today = new Date().toISOString().slice(0, 10)) {
+export function dashboard(leads: Lead[], users: CrmUser[], activities: Activity[], today = todayIn()) {
   const total = leads.length;
   const touched = leads.filter((l) => l.call_status !== 'not_started').length;
   const contacted = leads.filter((l) => CONTACTED.has(l.call_status)).length;
@@ -285,7 +287,7 @@ export function vocab(leads: Lead[]) {
  * Server-side validation, straight from 05_DATA_DICTIONARY.md section
  * "Validation rules to enforce in software". Returns human-readable errors.
  */
-export function validateLead(next: Partial<Lead>, today = new Date().toISOString().slice(0, 10)): string[] {
+export function validateLead(next: Partial<Lead>, today = todayIn()): string[] {
   const errors: string[] = [];
 
   if (next.disposition && (!next.next_action || !next.next_action_date)) {

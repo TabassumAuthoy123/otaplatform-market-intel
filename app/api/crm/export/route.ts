@@ -3,6 +3,7 @@ import {
   CALL_STATUS, DISPOSITION, INTEREST, PRIORITY_HINT,
   dashboard, filterLeads, getActivities, getLeads, getUsers, userName, type Lead
 } from '@/lib/crm';
+import { todayIn } from '@/lib/clock';
 
 /**
  * Downloadable exports of the prospect database.
@@ -56,7 +57,7 @@ const CRM_COLUMNS: { key: keyof Lead; header: string; width: number }[] = [
   { key: 'notes', header: 'Notes', width: 44 }
 ];
 
-const today = () => new Date().toISOString().slice(0, 10);
+const today = () => todayIn();
 const stamp = () => today().replace(/-/g, '');
 
 function pretty(lead: Lead, key: keyof Lead, users: { id: string; name: string }[]): string {

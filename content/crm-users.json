@@ -3,24 +3,28 @@
     "id": "U1",
     "name": "Tabassum Authoy",
     "role": "bd_manager",
-    "active": true
+    "active": true,
+    "email": "admin@softifybd.com"
   },
   {
     "id": "U2",
     "name": "Sales Rep 2",
     "role": "sales_rep",
-    "active": true
+    "active": true,
+    "email": ""
   },
   {
     "id": "U3",
     "name": "Sales Rep 3",
     "role": "sales_rep",
-    "active": true
+    "active": true,
+    "email": ""
   },
   {
     "id": "U4",
     "name": "Sales Rep 4",
     "role": "sales_rep",
-    "active": true
+    "active": true,
+    "email": ""
   }
 ]
