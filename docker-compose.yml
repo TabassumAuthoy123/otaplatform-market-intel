@@ -2,10 +2,16 @@
 #  OTA Platform — Market Intelligence
 #  Runs ALONGSIDE the existing OTAPlatform stack. No port collisions:
 #    OTAPlatform : 8080 nginx · 8081 phpMyAdmin · 3307 mysql · 6379 redis
-#    This app    : 3000
+#    This app    : 3003 in Docker, 3002 with `npm run dev:alt`
+#
+#  3000 is deliberately avoided. An unrelated process on this machine holds
+#  0.0.0.0:3000, and publishing there worked only because Docker took
+#  127.0.0.1:3000 while the other process had the wildcard — which of the two
+#  answers a loopback request is up to the OS, and that is not something to rely
+#  on for the container serving the accounts.
 #
 #  Start:   docker compose up -d --build
-#  Open:    http://localhost:3000
+#  Open:    http://localhost:3003
 #  Stop:    docker compose down
 #
 #  The shared network with OTAPlatform is ENABLED below, so this container can
@@ -25,7 +31,7 @@ services:
     # and the 400-lead CRM, and there is no authenticated session in front of
     # them yet — publishing on 0.0.0.0 put both on the office wifi.
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:3003:3000"
     environment:
       NODE_ENV: production
       NEXT_PUBLIC_APP_NAME: "OTA Platform — Market Intelligence"
@@ -35,6 +41,13 @@ services:
       DATABASE_URL: "mysql://root:root@otaplatform_mysql:3306/ota_market_intel"
       # Set this to reach the data routes from another machine on purpose.
       APP_ACCESS_KEY: "${APP_ACCESS_KEY:-}"
+    # The JSON store, shared with the admin portal running on the host.
+    #
+    # Not copied into the image on purpose: the portal on :4001 writes these same
+    # files, so a baked-in copy would mean the container served one version of
+    # the book while the portal edited another, with nothing to reveal it.
+    volumes:
+      - ./content:/app/content
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/api/agencies?stats=1"]
       interval: 30s

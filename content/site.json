@@ -1,15 +1,15 @@
 {
   "_meta": {
     "note": "Every string on the B2C portal comes from this file. Edit it through the admin portal (http://localhost:4001) — do not hand-edit unless the admin server is stopped.",
-    "revision": 25,
+    "revision": 27,
     "lastEditedBy": "verify-probe@local",
-    "lastEditedAt": "2026-08-03 11:34:06"
+    "lastEditedAt": "2026-08-03 13:03:39"
   },
   "brand": {
     "name": "OTA Platform",
     "company": "Softifybd Limited",
     "logoMark": "OTA",
-    "tagline": "Start your online travel agency journey",
+    "tagline": "Bangladesh’s trusted travel partner",
     "hotline": "096-12345-100",
     "email": "info@softifybd.com",
     "address": "Tower of Aakash, Level 18, 54 Gulshan Avenue, Dhaka 1212",

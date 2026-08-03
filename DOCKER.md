@@ -1,12 +1,31 @@
 # Setup Guide — Windows + Docker Desktop + VS Code
 
+> **Verified end to end on 3 August 2026**, not just documented. The image had
+> never actually built before that: the Dockerfile carried
+> `COPY --from=builder /app/public ./public` and this project has no `public/`
+> directory, so `docker compose up --build` failed two steps after a successful
+> compile — which is why nothing short of running it found the problem.
+>
+> Two things go with that fix. `content/` is a **bind mount**, not baked into the
+> image: every loader resolves it from `process.cwd()`, a standalone build does
+> not carry data directories, and the admin portal writes those same files from
+> the host — a copy inside the image would have drifted silently. And the port is
+> published on **127.0.0.1 only**, because the routes under `/api` serve the whole
+> accounting book and the 400-lead CRM with no session in front of them.
+>
+> Confirmed after the fix: container healthy, `/accounts`, `/portal`,
+> `/accounts/ledger`, `/accounts/financials` and `/agencies` all 200, both trial
+> balances zero from inside the container, `otaplatform_mysql:3306` reachable by
+> container name over the shared network, a host edit to `content/site.json`
+> visible in the container on the next request, and the port refused from the LAN.
+
 Running this **alongside** the existing OTAPlatform stack. Nothing here touches
 OTAPlatform. No port collisions.
 
 | Stack | Ports on the Windows host |
 |---|---|
 | OTAPlatform (already running) | `8080` nginx · `8081` phpMyAdmin · `3307` MySQL · `6379` Redis |
-| Market Intelligence (this app) | `3000` |
+| Market Intelligence (this app) | `3003` in Docker, `3002` with `npm run dev:alt` |
 
 MySQL is published on **3307** on the host (`3307:3306` in OTAPlatform's compose file).
 Inside Docker it is still `3306`. Root password is `root`, and there is also
@@ -51,7 +70,7 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:3000**
+Open **http://localhost:3003**
 
 > Shortcut: in File Explorer, open the project folder, click the address bar, type
 > `cmd`, press Enter. The prompt opens already in the right folder.
@@ -69,12 +88,12 @@ cd /d D:\projects\otaplatform-market-intel
 npm run dev
 ```
 
-OTAPlatform keeps running in Docker on `8080`. This runs natively on `3000`. Both up at
+OTAPlatform keeps running in Docker on `8080`. This runs on `3003`. Both up at
 the same time, zero configuration, instant hot reload.
 
 - OTAPlatform → http://localhost:8080
 - phpMyAdmin → http://localhost:8081
-- Market Intel → http://localhost:3000
+- Market Intel → http://localhost:3003
 
 Requires Node.js 18.17+ (`node -v` to check). If Node is missing, install the LTS from
 nodejs.org, then reopen the terminal.
@@ -98,10 +117,10 @@ Docker Desktop → **Containers** → you will now see two entries:
 ```
 otaplatform          (your existing stack)
 otaplatform-market-intel
-  └─ ota_market_intel   ...   0.0.0.0:3000->3000/tcp
+  └─ ota_market_intel   ...   127.0.0.1:3003->3000/tcp
 ```
 
-Open **http://localhost:3000**
+Open **http://localhost:3003**
 
 ```cmd
 docker compose logs -f market_intel    :: watch logs
@@ -139,7 +158,7 @@ existing indentation exactly:
     container_name: ota_market_intel
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3003:3000"
     environment:
       NODE_ENV: production
 ```
@@ -255,8 +274,8 @@ and `db/schema.sql` are mirrors of it. Change the TypeScript first, then mirror.
 |---|---|---|
 | `Could not read package.json` | Wrong folder | `cd` into the project, `dir package.json` to confirm |
 | `npm run dev` says *Missing script: dev* | Wrong folder, or a nested extract | Check `dir` output; `cd` one level deeper |
-| `port 3000 is already allocated` | Something else on 3000 | `docker compose down`, or change to `"3001:3000"` in the compose file |
-| `EADDRINUSE :3000` with npm | Old dev server still alive | `npx kill-port 3000`, or close the other terminal |
+| `port 3003 is already allocated` | Something else on 3003 | `docker compose down`, or change the published port in `docker-compose.yml` |
+| `EADDRINUSE :3002` with npm | Old dev server still alive | `npx kill-port 3002`, or close the other terminal |
 | Docker build fails on `npm ci` | `package-lock.json` missing from the extract | Re-extract the zip; the lockfile must be present |
 | Page loads but styling is broken | Stale `.next` cache | Delete the `.next` folder, run `npm run dev` again |
 | `unknown flag: --build` | Old Docker Compose v1 | Use `docker-compose up -d --build` (with the hyphen) or update Docker Desktop |
@@ -270,7 +289,7 @@ and `db/schema.sql` are mirrors of it. Change the TypeScript first, then mirror.
 ## Health check
 
 ```cmd
-curl http://localhost:3000/api/agencies?stats=1
+curl http://localhost:3003/api/agencies?stats=1
 ```
 
 Expected:

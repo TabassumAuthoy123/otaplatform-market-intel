@@ -602,6 +602,26 @@ docker compose exec -T mysql mysql -uroot -proot < db/schema.sql
 This creates a separate `ota_market_intel` database and leaves `otaplatform`
 untouched. Verified: 10 tables and 3 views.
 
+---
+
+## Docker
+
+```bash
+docker compose up -d --build
+```
+
+Open **http://localhost:3003**. Runs alongside the OTAPlatform stack with no port
+collision, and reaches `otaplatform_mysql:3306` by container name over the shared
+network.
+
+**This had never built until 3 August 2026.** The Dockerfile copied a `public/`
+directory that does not exist in this project, so the build failed two steps
+after a successful compile — `docker compose up --build` was documented in two
+places as the way to run this and had never once worked. See DOCKER.md for what
+else that fix needed: `content/` is a bind mount rather than baked into the image,
+because the admin portal writes those same files from the host, and the port is
+published on loopback only.
+
 Three reporting views ship with the DDL:
 
 - `v_credential_summary` — the headline dashboard numbers in one row
