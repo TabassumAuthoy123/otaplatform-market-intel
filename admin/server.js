@@ -321,9 +321,23 @@ function sign(value) {
   return crypto.createHmac('sha256', SECRET).update(value).digest('base64url');
 }
 
-function makeSession(email) {
-  const expires = Date.now() + SESSION_HOURS * 3600 * 1000;
-  const payload = `${Buffer.from(email).toString('base64url')}.${expires}`;
+/**
+ * A signed cookie carrying who, until when, and which generation of credentials.
+ *
+ * `iat` is the moment of issue. The CSRF token is derived from it, so every login
+ * gets a different one — previously `csrfFor` was HMAC over the email alone,
+ * which meant one token stayed valid for that person for as long as the server
+ * secret lived. A token caught in a screenshot or a shared URL never expired.
+ *
+ * `ver` is the user's tokenVersion. Bumping it on the user record invalidates
+ * every cookie already issued to them, which is what makes a password change
+ * actually end other sessions. Without it a stateless signed cookie survives
+ * until its own expiry no matter what the account does.
+ */
+function makeSession(email, tokenVersion) {
+  const now = Date.now();
+  const expires = now + SESSION_HOURS * 3600 * 1000;
+  const payload = [Buffer.from(email).toString('base64url'), expires, now, Number(tokenVersion || 0)].join('.');
   return `${payload}.${sign(payload)}`;
 }
 
@@ -336,15 +350,31 @@ function readSession(cookieHeader) {
   const sig = raw.slice(i + 1);
   const expected = sign(payload);
   if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
-  const [emailB64, expires] = payload.split('.');
+  const [emailB64, expires, iat, ver] = payload.split('.');
   if (!emailB64 || !expires || Number(expires) < Date.now()) return null;
   const email = Buffer.from(emailB64, 'base64url').toString('utf8');
   const user = findUser(email);
-  return user ? { email: user.email, name: user.name, role: user.role } : null;
+  if (!user) return null;
+
+  // A cookie from before the account's current credential generation is dead,
+  // however valid its signature. This is what a password change relies on.
+  if (Number(ver || 0) !== Number(user.tokenVersion || 0)) return null;
+
+  return { email: user.email, name: user.name, role: user.role, iat: Number(iat || 0) };
 }
 
+/**
+ * Bound to this session, not just to the person.
+ *
+ * Including `iat` means the token changes on every login and dies with the
+ * session. The previous version hashed the email alone, so one leaked token was
+ * good forever.
+ */
 function csrfFor(session) {
-  return crypto.createHmac('sha256', SECRET).update(`csrf:${session.email}`).digest('base64url');
+  return crypto
+    .createHmac('sha256', SECRET)
+    .update(`csrf:${session.email}:${session.iat || 0}`)
+    .digest('base64url');
 }
 
 function parseCookies(header) {
@@ -354,6 +384,24 @@ function parseCookies(header) {
     if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
   }
   return out;
+}
+
+/**
+ * `Secure` only when the request actually arrived over TLS.
+ *
+ * Setting it unconditionally would break the portal entirely on http://localhost,
+ * which is how it is used — the browser would refuse to store the cookie and
+ * every login would appear to succeed and then bounce straight back to the login
+ * screen. Conditional means it is correct in both places rather than in neither.
+ */
+function secureFlag(req) {
+  const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim();
+  const isTls = Boolean(req.socket && req.socket.encrypted) || proto === 'https';
+  return isTls ? '; Secure' : '';
+}
+
+function sessionCookie(req, value) {
+  return `ota_admin=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_HOURS * 3600}${secureFlag(req)}`;
 }
 
 // crude brute-force brake, per remote address
@@ -614,6 +662,9 @@ function page({ title, session, body, active = '' }) {
         ${vis.backup ? `<a href="/backup" class="${active === 'backup' ? 'on' : ''}">Backup &amp; restore</a>` : ''}
         ${vis.raw ? `<a href="/raw" class="${active === 'raw' ? 'on' : ''}">Raw JSON</a>` : ''}
       </nav>
+      <div style="padding:0 8px 6px">
+        <a href="/account" class="${active === 'account' ? 'on' : ''}">Your account</a>
+      </div>
       <form method="post" action="/logout" class="out">
         <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
         <div class="who">${esc(session.email)}<br><span style="color:var(--teal4)">${esc(roleLabel)}</span></div>
@@ -947,12 +998,36 @@ function usersView(session, users, flash, errors, seededPassword) {
         </table>
       </div>
 
+      <form method="post" action="/users/reset">
+        <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+        <div class="card">
+          <h2 style="margin:0 0 6px;font-size:14px;color:var(--navy)">Reset someone else's password</h2>
+          <p style="margin:0 0 14px;font-size:12.5px;color:var(--muted);line-height:1.7">
+            For somebody who has forgotten theirs or has left. No current password is asked for — the point is that
+            nobody has it. Their existing sessions are ended immediately, and the new value is shown once here and
+            nowhere else. To change <strong>your own</strong>, use <a href="/account">your account</a>, which asks for
+            the current one on purpose.
+          </p>
+          <label class="row"><span class="lab">Account</span>
+            <select name="email">
+              ${users.filter((u) => u.email !== session.email).map((u) => `<option value="${esc(u.email)}">${esc(u.email)} — ${esc((RBAC.ROLES[RBAC.normaliseRole(u.role)] || {}).label || u.role)}</option>`).join('')}
+            </select></label>
+          <label class="row"><span class="lab">New password <em>leave blank to generate one</em></span>
+            <input type="text" name="password" autocomplete="off" placeholder="at least 12 characters"></label>
+          <div class="bar"><button class="primary" type="submit">Reset password</button></div>
+        </div>
+      </form>
+
       <div class="card">
         <h2 style="margin:0 0 10px;font-size:14px;color:var(--navy)">Password handling</h2>
-        <p style="margin:0;font-size:12.5px;color:var(--muted)">
-          Passwords are hashed with scrypt and a per-user salt. The plaintext is shown once at creation and never
-          again — there is no "view password" because the value is not kept. To reset one, remove the user and add
-          them again.
+        <p style="margin:0;font-size:12.5px;color:var(--muted);line-height:1.8">
+          Hashed with scrypt and a per-user salt. The plaintext is shown once and never again, because it is not
+          kept — there is nothing to "view".
+          <br><br>
+          A password change bumps that account's token version, and every session cookie carries the version it was
+          issued under. That is what ends other sessions: the cookie is still correctly signed, and it is still
+          refused. Without it a stolen cookie would outlive the password it was obtained with, all the way to its own
+          expiry.
         </p>
       </div>`
   });
@@ -1745,6 +1820,56 @@ function leadScopeView(session, lead, scope) {
         <a class="secondary" href="/crm/lead?id=${encodeURIComponent(lead.lead_id)}">View the lead</a>
         <a class="secondary" href="/crm">Back to the list</a>
       </div>`
+  });
+}
+
+/**
+ * Your own account: who the portal thinks you are, what that lets you do, and
+ * the one form every role needs and none of them had.
+ */
+function accountView(session, flash, errors) {
+  const roleKey = RBAC.normaliseRole(session.role);
+  const def = RBAC.ROLES[roleKey] || { label: session.role, summary: '', caps: [] };
+
+  return page({
+    title: 'Your account',
+    session,
+    active: 'account',
+    body: `
+      <h1>Your account</h1>
+      <p class="sub">Signed in as <strong>${esc(session.email)}</strong> — ${esc(def.label)}. ${esc(def.summary)}</p>
+      ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
+      ${errors && errors.length ? `<div class="flash warn"><strong>Not changed:</strong><ul style="margin:6px 0 0 16px">${errors.map((e) => `<li>${esc(e)}</li>`).join('')}</ul></div>` : ''}
+
+      <div class="card">
+        <h2 style="margin:0 0 10px;font-size:13.5px;color:var(--navy)">What this role can do</h2>
+        <div style="font-size:12.5px;line-height:1.9;color:var(--muted)">
+          ${def.caps.map((c) => `<div><span style="color:var(--teal)">✓</span> ${esc(RBAC.CAPS[c] || c)}</div>`).join('')}
+        </div>
+        <p style="margin:12px 0 0;font-size:12px;color:var(--muted)">
+          These are checked on every request before any handler runs, so a screen you cannot see is also a URL you
+          cannot post to.
+        </p>
+      </div>
+
+      <form method="post" action="/account/password">
+        <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+        <div class="card">
+          <h2 style="margin:0 0 6px;font-size:13.5px;color:var(--navy)">Change your password</h2>
+          <p style="margin:0 0 14px;font-size:12.5px;color:var(--muted);line-height:1.7">
+            The current password is asked for even though you are already signed in — that is what stops somebody
+            who found an unlocked laptop from taking the account over. Saving will
+            <strong>end every other session signed in as you</strong>, including one left open on another machine.
+          </p>
+          <label class="row"><span class="lab">Current password</span>
+            <input type="password" name="current" autocomplete="current-password" required></label>
+          <label class="row"><span class="lab">New password <em>at least 12 characters</em></span>
+            <input type="password" name="next" autocomplete="new-password" minlength="12" required></label>
+          <label class="row"><span class="lab">New password again</span>
+            <input type="password" name="again" autocomplete="new-password" minlength="12" required></label>
+          <div class="bar"><button class="primary" type="submit">Change password</button></div>
+        </div>
+      </form>`
   });
 }
 
@@ -2954,7 +3079,7 @@ const server = http.createServer(async (req, res) => {
       return redirect(
         res,
         '/dashboard',
-        `ota_admin=${makeSession(user.email)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_HOURS * 3600}`
+        sessionCookie(req, makeSession(user.email, user.tokenVersion))
       );
     }
 
@@ -2987,7 +3112,7 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/logout' && req.method === 'POST') {
       const form = parseForm(await readBody(req));
       if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
-      return redirect(res, '/login', 'ota_admin=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+      return redirect(res, '/login', `ota_admin=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secureFlag(req)}`);
     }
 
     if (pathname === '/leads' && req.method === 'GET') {
@@ -3027,6 +3152,94 @@ const server = http.createServer(async (req, res) => {
       return redirect(res, '/users?saved=1');
     }
 
+    /**
+     * Change your own password.
+     *
+     * There was no way to do this at all. The users screen said "to reset one,
+     * remove the user and add them again" — which the last Super Admin cannot
+     * do, because deleting them is refused so the portal can never lock everyone
+     * out. So the one account that must be able to rotate its password was the
+     * one account that could not.
+     *
+     * The current password is required even though the session already proves
+     * who this is: it is what stops someone who walked up to an unlocked laptop
+     * from taking the account over. Every other session for this user dies,
+     * which is the point of a password change and is why tokenVersion exists.
+     */
+    if (pathname === '/account' && req.method === 'GET') {
+      return send(res, 200, accountView(session, url.searchParams.get('pw') ? 'Password changed. Any other session signed in as you has been ended.' : null, null));
+    }
+
+    if (pathname === '/account/password' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+
+      const db = readJson(USERS_FILE, { users: [] });
+      const me = db.users.find((u) => u.email === session.email);
+      if (!me) return send(res, 404, page({ title: 'Not found', session, body: '<h1>Your account no longer exists</h1>' }));
+      if (!me.email) return send(res, 500, page({ title: 'Error', session, body: '<h1>Account record is malformed</h1>' }));
+
+      const current = String(form.current || '');
+      const next = String(form.next || '');
+      const again = String(form.again || '');
+      const errors = [];
+
+      if (!verifyPassword(current, me.salt, me.hash)) errors.push('That is not your current password.');
+      if (next.length < 12) errors.push('A new password needs at least 12 characters. This account can move money.');
+      if (next !== again) errors.push('The two new passwords do not match.');
+      if (next && next === current) errors.push('The new password is the same as the old one.');
+      if (errors.length) return send(res, 422, accountView(session, null, errors));
+
+      const seeded = hashPassword(next);
+      me.salt = seeded.salt;
+      me.hash = seeded.hash;
+      me.tokenVersion = Number(me.tokenVersion || 0) + 1;
+      await writeJsonAtomic(USERS_FILE, db);
+      await audit(session, 'update', {
+        collection: 'users', id: me.email,
+        summary: 'Changed their own password; every other session for this account was ended'
+      });
+
+      // This session has to be re-issued or the cookie we just invalidated
+      // would log the person out of the change they just made.
+      return redirect(res, '/account?pw=1', sessionCookie(req, makeSession(me.email, me.tokenVersion)));
+    }
+
+    /**
+     * A Super Admin resetting somebody else's password.
+     *
+     * No current password, because the point is that nobody has it — someone has
+     * left, or forgotten it. The new value is shown once and never stored in
+     * readable form, and their existing sessions are ended immediately.
+     */
+    if (pathname === '/users/reset' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+
+      const db = readJson(USERS_FILE, { users: [] });
+      const target = db.users.find((u) => u.email === String(form.email || '').trim().toLowerCase());
+      if (!target) return send(res, 422, usersView(session, db.users, null, ['No account with that email address.'], null));
+      if (target.email === session.email) {
+        return send(res, 422, usersView(session, db.users, null,
+          ['Use the change-password form for your own account — it asks for the current one on purpose.'], null));
+      }
+
+      const plain = String(form.password || '').trim() || crypto.randomBytes(12).toString('base64url');
+      if (plain.length < 12) {
+        return send(res, 422, usersView(session, db.users, null, ['A password needs at least 12 characters.'], null));
+      }
+      const seeded = hashPassword(plain);
+      target.salt = seeded.salt;
+      target.hash = seeded.hash;
+      target.tokenVersion = Number(target.tokenVersion || 0) + 1;
+      await writeJsonAtomic(USERS_FILE, db);
+      await audit(session, 'update', {
+        collection: 'users', id: target.email,
+        summary: `Reset the password for ${target.email}; their existing sessions were ended`
+      });
+      return send(res, 200, usersView(session, db.users, `Password reset for ${target.email}. Give them this value now — it is not stored anywhere readable.`, null, plain));
+    }
+
     if (pathname === '/users/new' && req.method === 'POST') {
       const form = parseForm(await readBody(req));
       if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
@@ -3041,7 +3254,7 @@ const server = http.createServer(async (req, res) => {
 
       const plain = String(form.password || '').trim() || crypto.randomBytes(9).toString('base64url');
       const seeded = hashPassword(plain);
-      db.users.push({ email, name: String(form.name || '').trim() || email, role, salt: seeded.salt, hash: seeded.hash });
+      db.users.push({ email, name: String(form.name || '').trim() || email, role, salt: seeded.salt, hash: seeded.hash, tokenVersion: 0 });
       await writeJsonAtomic(USERS_FILE, db);
       return send(res, 200, usersView(session, db.users, 'User created.', null, plain));
     }

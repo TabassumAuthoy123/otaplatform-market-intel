@@ -378,6 +378,107 @@ const pair = await (async () => {
   ok('Customer phone restored', back === f['rec.phone'], `back to ${back}`);
 }
 
+/* -------------------------------------------- your own account and password */
+{
+  /**
+   * There was no way to change a password at all. The users screen said to
+   * delete the account and recreate it, which the last Super Admin cannot do
+   * because deleting them is refused — so the one account that had to be able to
+   * rotate its password was the one that could not.
+   */
+  const acct = await req('/account');
+  ok('Every signed-in role can reach its own account page',
+    acct.status === 200 && acct.text.includes('Change your password'),
+    `HTTP ${acct.status}`);
+
+  const csrfA = csrfFrom(acct.text);
+
+  const wrongCurrent = await req('/account/password', {
+    method: 'POST',
+    form: { csrf: csrfA, current: 'not-the-password', next: 'Correct-Horse-Battery-9', again: 'Correct-Horse-Battery-9' }
+  });
+  ok('A password change needs the current password',
+    wrongCurrent.status === 422 && /not your current password/i.test(wrongCurrent.text),
+    `HTTP ${wrongCurrent.status}`);
+
+  const tooShort = await req('/account/password', {
+    method: 'POST',
+    form: { csrf: csrfA, current: PASS, next: 'short', again: 'short' }
+  });
+  ok('A short password is refused', tooShort.status === 422 && /12 characters/.test(tooShort.text), `HTTP ${tooShort.status}`);
+
+  const mismatch = await req('/account/password', {
+    method: 'POST',
+    form: { csrf: csrfA, current: PASS, next: 'Correct-Horse-Battery-9', again: 'Correct-Horse-Battery-X' }
+  });
+  ok('Mismatched confirmation is refused', mismatch.status === 422 && /do not match/.test(mismatch.text), `HTTP ${mismatch.status}`);
+
+  // Keep a copy of this session's cookie so we can prove it survives, and take a
+  // second one to prove OTHER sessions do not.
+  const myCookie = cookie;
+  const second = await (async () => {
+    const saved = cookie;
+    cookie = '';
+    await req('/login', { method: 'POST', form: { email: EMAIL, password: PASS } });
+    const other = cookie;
+    cookie = saved;
+    return other;
+  })();
+  const asOther = async (path) => {
+    const saved = cookie;
+    cookie = second;
+    const r = await req(path);
+    cookie = saved;
+    return r;
+  };
+  ok('A second session for the same account works before the change',
+    (await asOther('/dashboard')).status === 200, 'second cookie is live');
+
+  const NEWPASS = 'Rotated-' + Math.random().toString(36).slice(2, 10) + '-2026';
+  cookie = myCookie;
+  const changed = await req('/account/password', {
+    method: 'POST',
+    form: { csrf: csrfFrom((await req('/account')).text), current: PASS, next: NEWPASS, again: NEWPASS }
+  });
+  ok('A valid password change goes through', changed.status === 302, `HTTP ${changed.status}`);
+
+  ok('The session that made the change stays signed in',
+    (await req('/dashboard')).status === 200,
+    'cookie was re-issued, so the change does not log you out of itself');
+
+  const otherAfter = await asOther('/dashboard');
+  ok('Every OTHER session for that account is ended',
+    otherAfter.status === 302,
+    `second cookie now HTTP ${otherAfter.status} — tokenVersion moved, so the signature alone is not enough`);
+
+  const oldPw = await (async () => {
+    const saved = cookie;
+    cookie = '';
+    const r = await req('/login', { method: 'POST', form: { email: EMAIL, password: PASS } });
+    cookie = saved;
+    return r;
+  })();
+  ok('The old password no longer works', oldPw.status !== 302, `login with the old password -> HTTP ${oldPw.status}`);
+
+  const newPw = await (async () => {
+    const saved = cookie;
+    cookie = '';
+    const r = await req('/login', { method: 'POST', form: { email: EMAIL, password: NEWPASS } });
+    const c = cookie;
+    cookie = saved;
+    return { status: r.status, c };
+  })();
+  ok('The new password works', newPw.status === 302, `HTTP ${newPw.status}`);
+
+  const csrfBefore = csrfFrom((await req('/account')).text);
+  cookie = newPw.c;
+  const csrfAfter = csrfFrom((await req('/account')).text);
+  ok('The CSRF token is different in a different session',
+    csrfBefore !== csrfAfter,
+    'derived from the session issue time, so a leaked token dies with its session');
+  cookie = myCookie;
+}
+
 /* --------------------------------------------- leave nothing behind */
 removeProbeAccount();
 ok('The probe account is gone and users.json is unchanged',

@@ -131,6 +131,17 @@ function requiredCap(pathname, method, col) {
 
   if (pathname.startsWith('/design')) return 'design';
   if (pathname.startsWith('/integrations')) return 'integrations';
+  /**
+   * Your own account is not an administrative privilege.
+   *
+   * Folding this under the `users` capability would have recreated exactly the
+   * problem the password form was added to solve: an Accountant or a Sales
+   * Executive would be unable to rotate their own password, and only a Super
+   * Admin could. Changing your own credentials, having proved you know the
+   * current ones, needs no capability at all.
+   */
+  if (pathname === '/account' || pathname === '/account/password') return null;
+
   if (pathname.startsWith('/users')) return 'users';
   if (pathname === '/raw') return 'settings';
   if (pathname === '/audit') return 'audit';

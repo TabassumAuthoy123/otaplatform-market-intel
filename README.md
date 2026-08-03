@@ -263,6 +263,10 @@ earlier pass. Each item is now covered by a regression check in
 | `salesByService` rounded per line while `invoiceTotals` rounded the total — no drift yet, but guaranteed once more foreign-currency invoices exist. | Both convert once per invoice. Checked by recomputing both ways and comparing. |
 | The shared Docker network to OTAPlatform's MySQL was commented out, so "runs alongside" needed an edit nobody would find. | Enabled and named, port published on loopback only. |
 | One aria attribute on the whole storefront. | Named menus and a labelled group per mega column — and deliberately no `aria-expanded`, because a CSS-only panel could never update it truthfully. |
+| **No way to change a password.** The users screen said to delete the account and add it again — impossible for the last Super Admin, whose deletion is refused so the portal can never lock everyone out. So the one account that had to be able to rotate its password was the one that could not. | `/account`, reachable by every role, asks for the current password and ends every other session for that account. A Super Admin can reset somebody else's. |
+| **One CSRF token per person, valid for the life of the server secret.** A token caught in a screenshot never expired. | Derived from the session's issue time, so it changes on every login and dies with the session. |
+| **A stateless signed cookie outlived the password it was obtained with**, all the way to its own expiry. | Every cookie carries the account's `tokenVersion`. Bumping it on a password change makes correctly-signed cookies refuse. Verified: a second live session is dead the moment the password changes. |
+| `Secure` was never set on the session cookie. | Set when the request arrived over TLS, and not on plain `http://localhost` — where setting it unconditionally would break every login instead of securing anything. |
 
 **Three findings were my own tests being wrong and the app being right**, and are
 recorded because a false alarm costs real time: outstanding is not the same as
@@ -323,8 +327,8 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 88 checks — the specification, plus hardening
-node scripts/verify-admin.mjs    # 23 checks — the admin portal, signed in
+node scripts/verify-srs.mjs      # 89 checks — the specification, plus hardening
+node scripts/verify-admin.mjs    # 34 checks — the admin portal, signed in
 ```
 
 Run it with the app on :3002 and the admin on :4001. **Do not run `next build`
@@ -385,6 +389,12 @@ direction for a mistake to fall.
 **A Sales Executive can raise an invoice but cannot reverse one.** Credit notes
 are a separate capability held by Accountant, Manager and Super Admin, because
 the person who made the sale should not be the person who cancels it.
+
+**Your own account is not an administrative privilege.** `/account` needs no
+capability at all: any signed-in person can change their own password, having
+proved they know the current one. Putting it behind the `users` capability would
+have recreated the exact bug it was added to fix — an Accountant unable to rotate
+their own credentials, and only a Super Admin able to.
 
 **Only a Super Admin can restore a backup.** Restoring overwrites the whole
 book, so it is its own capability rather than being folded in with settings. A
