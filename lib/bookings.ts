@@ -41,6 +41,15 @@ export type Booking = {
   fare: {
     currency: string; total: number; base: string; taxes: string;
     cabin: string; bookingCode: string; platingCarrier: string; refundable: boolean;
+    /**
+     * The supplier's ticketing deadline, as it was quoted.
+     *
+     * This was shown on the fare card and then thrown away when the booking was
+     * written. A held booking therefore lost the one date that decides whether
+     * it is still worth anything: past this, the fare is gone and the hold is
+     * an empty record. Stored so something can act on it.
+     */
+    latestTicketing: string;
   };
   /** What the agency charged on top of the GDS fare. */
   serviceCharge: number;
@@ -198,7 +207,8 @@ export async function createBooking(input: {
       cabin: input.offer.cabin,
       bookingCode: input.offer.bookingCode,
       platingCarrier: input.offer.platingCarrier,
-      refundable: input.offer.refundable
+      refundable: input.offer.refundable,
+      latestTicketing: input.offer.latestTicketing || ''
     },
     serviceCharge: input.serviceCharge,
     grandTotal: input.offer.amount * Math.max(1, input.passengers.length) + input.serviceCharge,
@@ -213,6 +223,50 @@ export async function createBooking(input: {
   existing.unshift(booking);
   await writeAtomic(BOOKINGS_FILE, existing);
   return booking;
+}
+
+/**
+ * How urgent a held booking is, as at `today`.
+ *
+ * Derived rather than stored: a stored status would be wrong the next morning
+ * and nobody would notice. `unknown` is its own state and is not treated as
+ * safe — a supplier that quoted no deadline is a booking somebody still has to
+ * look at, not one that is fine forever.
+ */
+export type BookingUrgency = {
+  state: 'ticketed' | 'cancelled' | 'expired' | 'due_today' | 'due_soon' | 'ok' | 'unknown';
+  deadline: string | null;
+  daysLeft: number | null;
+  note: string;
+};
+
+export function bookingUrgency(b: Booking, today: string): BookingUrgency {
+  if (b.status === 'cancelled') return { state: 'cancelled', deadline: null, daysLeft: null, note: 'Cancelled.' };
+  if (b.ticketed) return { state: 'ticketed', deadline: null, daysLeft: null, note: 'Ticketed.' };
+
+  const raw = b.fare.latestTicketing || '';
+  const deadline = raw ? raw.slice(0, 10) : null;
+  if (!deadline) {
+    return {
+      state: 'unknown',
+      deadline: null,
+      daysLeft: null,
+      note: 'The supplier quoted no ticketing deadline. Check the fare before promising it.'
+    };
+  }
+
+  const days = Math.round((Date.parse(deadline) - Date.parse(today)) / 86400000);
+  if (days < 0) {
+    return {
+      state: 'expired',
+      deadline,
+      daysLeft: days,
+      note: `Ticketing deadline passed ${Math.abs(days)} day(s) ago. The fare is gone — re-price before quoting it again.`
+    };
+  }
+  if (days === 0) return { state: 'due_today', deadline, daysLeft: 0, note: 'Ticketing deadline is today.' };
+  if (days <= 2) return { state: 'due_soon', deadline, daysLeft: days, note: `Ticketing deadline in ${days} day(s).` };
+  return { state: 'ok', deadline, daysLeft: days, note: `Ticketing deadline in ${days} days.` };
 }
 
 export async function findBooking(ref: string): Promise<Booking | null> {

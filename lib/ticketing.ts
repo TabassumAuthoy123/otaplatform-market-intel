@@ -750,7 +750,9 @@ export async function probeTicketing(): Promise<TicketResult[]> {
     ],
     fare: {
       currency: 'BDT', total: 0, base: 'BDT0', taxes: 'BDT0',
-      cabin: 'Economy', bookingCode: 'Y', platingCarrier: 'EK', refundable: false
+      cabin: 'Economy', bookingCode: 'Y', platingCarrier: 'EK', refundable: false,
+      // The probe never becomes a real hold, so it carries no deadline.
+      latestTicketing: ''
     },
     serviceCharge: 0,
     grandTotal: 0,

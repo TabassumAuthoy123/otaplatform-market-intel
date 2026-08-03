@@ -38,3 +38,9 @@ content/pre-restore-backup.json
 # The pre-rotation copy of .env, written by scripts/rotate-gds-password.mjs.
 # Holds the OLD supplier password until it is deleted — never commit it.
 .env.before-rotation
+
+# Scheduler output. alerts.json names invoices, customers and suppliers;
+# scheduler-state.json and backups/ are operational and machine-specific.
+content/alerts.json
+content/scheduler-state.json
+content/backups/

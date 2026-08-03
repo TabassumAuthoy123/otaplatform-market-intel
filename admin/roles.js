@@ -38,6 +38,8 @@ const CAPS = {
   leads_read: 'View demo requests from the storefront',
   users: 'Add, edit and remove admin users',
   audit: 'Read the audit log — who changed what',
+  alerts: 'See what the scheduled checks have found',
+  alerts_ack: 'Acknowledge an alert, and run the checks on demand',
   backup: 'Download a backup and restore the book from one',
   settings: 'Company settings and raw JSON editing'
 };
@@ -55,27 +57,27 @@ const ROLES = {
   accountant: {
     label: 'Accountant',
     summary: 'All vouchers, reports and statements. No settings, no user management',
-    caps: ['books_read', 'books_sales', 'books_purchase', 'books_masters', 'books_credit', 'books_delete', 'leads_read', 'agencies_read', 'audit']
+    caps: ['books_read', 'books_sales', 'books_purchase', 'books_masters', 'books_credit', 'books_delete', 'leads_read', 'agencies_read', 'audit', 'alerts', 'alerts_ack']
   },
   sales_exec: {
     label: 'Sales Executive',
     summary: 'The prospect queue, quotations, invoices and customer receipts',
-    caps: ['crm_read', 'crm_write', 'books_read', 'books_sales', 'leads_read', 'agencies_read']
+    caps: ['crm_read', 'crm_write', 'books_read', 'books_sales', 'leads_read', 'agencies_read', 'alerts']
   },
   operations: {
     label: 'Operations Staff',
     summary: 'Supplier bookings, bills, payments and stock only',
-    caps: ['books_read', 'books_purchase', 'agencies_read']
+    caps: ['books_read', 'books_purchase', 'agencies_read', 'alerts']
   },
   manager: {
     label: 'Manager',
     summary: 'Read everything, reassign leads, approve cancellations',
-    caps: ['crm_read', 'crm_assign', 'crm_all', 'books_read', 'books_credit', 'leads_read', 'agencies_read', 'integrations', 'audit']
+    caps: ['crm_read', 'crm_assign', 'crm_all', 'books_read', 'books_credit', 'leads_read', 'agencies_read', 'integrations', 'audit', 'alerts', 'alerts_ack']
   },
   read_only: {
     label: 'Read Only',
     summary: 'Reports and statements. Nothing editable anywhere',
-    caps: ['books_read', 'crm_read', 'agencies_read', 'leads_read']
+    caps: ['books_read', 'crm_read', 'agencies_read', 'leads_read', 'alerts']
   }
 };
 
@@ -145,6 +147,11 @@ function requiredCap(pathname, method, col) {
   if (pathname.startsWith('/users')) return 'users';
   if (pathname === '/raw') return 'settings';
   if (pathname === '/audit') return 'audit';
+  // Seeing a problem and doing something about it are different privileges:
+  // Read Only should know the book stopped balancing and must not be able to
+  // sign the alert off.
+  if (pathname === '/alerts') return 'alerts';
+  if (pathname.startsWith('/alerts/')) return 'alerts_ack';
   // Restoring overwrites the whole book, so it sits behind its own capability
   // rather than being folded into settings.
   if (pathname.startsWith('/backup')) return 'backup';
@@ -223,6 +230,8 @@ function visible(role) {
     leads: can(role, 'leads_read'),
     users: can(role, 'users'),
     audit: can(role, 'audit'),
+    alerts: can(role, 'alerts'),
+    alertsAck: can(role, 'alerts_ack'),
     backup: can(role, 'backup'),
     raw: can(role, 'settings')
   };

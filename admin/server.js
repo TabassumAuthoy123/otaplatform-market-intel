@@ -24,6 +24,7 @@ const http = require('node:http');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const clock = require('./clock.js');
+const { createScheduler } = require('./scheduler.js');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
 
@@ -94,6 +95,21 @@ const BACKUP_WHAT = {
 };
 
 const AUDIT_FILE = () => path.join(CONTENT_DIR, 'audit-log.json');
+
+/**
+ * The scheduled checks.
+ *
+ * Started at the bottom of this file, after the server is listening, so a check
+ * that asks the app a question is not racing the boot it depends on.
+ */
+const scheduler = createScheduler({
+  contentDir: CONTENT_DIR,
+  readJson,
+  writeJsonAtomic,
+  appUrl: APP_URL,
+  backupSet: BACKUP_SET,
+  onAudit: (entry) => audit({ email: 'scheduler', role: 'system' }, entry.action, entry)
+});
 
 /**
  * Who changed what, and what it looked like before.
@@ -630,6 +646,25 @@ function itemTitle(item, i) {
 
 /* -------------------------------------------------------------------- layout */
 
+/**
+ * The count next to the sidebar link.
+ *
+ * Read from the alerts file rather than by asking the scheduler, so rendering a
+ * page can never trigger a check. A sidebar that does work is a sidebar that
+ * makes every page slow.
+ */
+function alertBadge() {
+  try {
+    const store = readJson(path.join(CONTENT_DIR, 'alerts.json'), { open: [], acknowledged: {} });
+    const acked = store.acknowledged || {};
+    const n = (store.open || []).filter((a) => !acked[a.id] && a.severity !== 'info').length;
+    if (!n) return '';
+    return ` <span style="display:inline-block;min-width:18px;padding:0 5px;border-radius:9px;background:var(--amber);color:#fff;font-size:10.5px;font-weight:700;text-align:center">${n}</span>`;
+  } catch {
+    return '';
+  }
+}
+
 function page({ title, session, body, active = '' }) {
   const vis = session ? RBAC.visible(session.role) : {};
   const roleLabel = session ? ((RBAC.ROLES[RBAC.normaliseRole(session.role)] || {}).label || session.role) : '';
@@ -658,6 +693,7 @@ function page({ title, session, body, active = '' }) {
         ${vis.users ? `<div class="sep">Administration</div>
         <a href="/users" class="${active === 'users' ? 'on' : ''}">Users &amp; roles</a>
 ` : ''}
+        ${vis.alerts ? `<a href="/alerts" class="${active === 'alerts' ? 'on' : ''}">Alerts${alertBadge()}</a>` : ''}
         ${vis.audit ? `<a href="/audit" class="${active === 'audit' ? 'on' : ''}">Audit log</a>` : ''}
         ${vis.backup ? `<a href="/backup" class="${active === 'backup' ? 'on' : ''}">Backup &amp; restore</a>` : ''}
         ${vis.raw ? `<a href="/raw" class="${active === 'raw' ? 'on' : ''}">Raw JSON</a>` : ''}
@@ -1819,6 +1855,135 @@ function leadScopeView(session, lead, scope) {
       <div class="bar">
         <a class="secondary" href="/crm/lead?id=${encodeURIComponent(lead.lead_id)}">View the lead</a>
         <a class="secondary" href="/crm">Back to the list</a>
+      </div>`
+  });
+}
+
+/**
+ * What the scheduled checks have found, and — just as important — whether they
+ * are still running.
+ *
+ * The job table is not decoration. A scheduler that has quietly stopped shows an
+ * empty alert list, which is indistinguishable from a healthy book unless
+ * something says when each check last completed. `overdue` is that something.
+ */
+function alertsView(session, st, msg) {
+  const can = RBAC.can(session.role, 'alerts_ack');
+  const sev = (s) => {
+    const c = s === 'critical' ? 'var(--amber)' : s === 'warning' ? '#8a6d0b' : 'var(--muted)';
+    const bg = s === 'critical' ? 'rgba(154,91,0,.10)' : s === 'warning' ? 'rgba(138,109,11,.10)' : 'var(--panel)';
+    return `<span style="display:inline-block;padding:2px 9px;border-radius:999px;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:${c};background:${bg}">${esc(s)}</span>`;
+  };
+  const ago = (iso) => {
+    if (!iso) return 'never';
+    const mins = Math.round((Date.now() - Date.parse(iso)) / 60000);
+    if (mins < 1) return 'just now';
+    if (mins < 60) return `${mins} min ago`;
+    const h = Math.round(mins / 60);
+    return h < 48 ? `${h} h ago` : `${Math.round(h / 24)} d ago`;
+  };
+
+  const stopped = st.jobs.filter((j) => j.overdue || j.neverRun);
+  const open = st.alerts.filter((a) => !a.ack);
+  const acked = st.alerts.filter((a) => a.ack);
+
+  const row = (a) => `
+    <tr${a.ack ? ' style="opacity:.6"' : ''}>
+      <td style="white-space:nowrap">${sev(a.severity)}</td>
+      <td>
+        <div style="font-size:13px;font-weight:600;color:var(--navy)">${esc(a.title)}</div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-top:2px">${esc(a.detail)}</div>
+        ${a.ack ? `<div style="font-size:11.5px;color:var(--teal);margin-top:4px">Acknowledged by ${esc(a.ack.by)} at ${esc(a.ack.at)}${a.ack.note ? ` — ${esc(a.ack.note)}` : ''}</div>` : ''}
+      </td>
+      <td style="font-size:11.5px;color:var(--muted);white-space:nowrap">${esc(a.jobLabel)}<br>first seen ${esc(ago(a.firstSeen))}</td>
+      <td style="white-space:nowrap">
+        ${a.where ? `<a href="${esc(a.where.startsWith('/accounts') || a.where.startsWith('/portal') ? APP_URL + a.where : a.where)}" ${a.where.startsWith('/accounts') || a.where.startsWith('/portal') ? 'target="_blank" rel="noreferrer"' : ''} style="font-size:12.5px">Open →</a>` : ''}
+        ${can ? `
+          <form method="post" action="/alerts/ack" style="display:inline;margin-left:8px">
+            <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+            <input type="hidden" name="id" value="${esc(a.id)}">
+            ${a.ack ? '<input type="hidden" name="undo" value="1">' : ''}
+            <button type="submit" class="secondary" style="font-size:12px;padding:4px 10px">${a.ack ? 'Re-open' : 'Acknowledge'}</button>
+          </form>` : ''}
+      </td>
+    </tr>`;
+
+  return page({
+    title: 'Alerts',
+    session,
+    active: 'alerts',
+    body: `
+      <h1>Alerts</h1>
+      <p class="sub">
+        Six checks run on their own schedule so a problem reaches you instead of waiting to be found.
+        ${st.running ? 'The scheduler is running in this process.' : 'The scheduler is NOT running in this process.'}
+        Last pass ${esc(ago(st.lastTickAt))}.
+      </p>
+      ${msg ? `<div class="flash">${esc(msg)}</div>` : ''}
+
+      ${stopped.length ? `
+        <div class="flash warn">
+          <strong>${stopped.length} check(s) are not running on time.</strong>
+          <p style="margin:6px 0 0;font-size:12.5px;line-height:1.7">
+            An empty alert list looks exactly like a healthy book, so a stopped check is the one failure that hides
+            itself. ${esc(stopped.map((j) => j.label + (j.neverRun ? ' (never run)' : ` (${j.overdueBy} min late)`)).join(', '))}.
+          </p>
+        </div>` : ''}
+
+      <div class="card"><div class="grid">
+        <div class="tile"><strong>${st.counts.critical}</strong><span>Critical</span></div>
+        <div class="tile"><strong>${st.counts.warning}</strong><span>Warnings</span></div>
+        <div class="tile"><strong>${st.counts.info}</strong><span>For information</span></div>
+        <div class="tile"><strong>${st.counts.acknowledged}</strong><span>Acknowledged</span></div>
+      </div></div>
+
+      ${can ? `
+        <form method="post" action="/alerts/run" class="bar" style="margin-bottom:16px">
+          <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+          <button class="primary" type="submit">Run every check now</button>
+          <span style="font-size:12.5px;color:var(--muted)">Takes a few seconds — the supplier check makes a real search.</span>
+        </form>` : ''}
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <table>
+          <thead><tr><th>Severity</th><th>What</th><th>Check</th><th></th></tr></thead>
+          <tbody>
+            ${open.length === 0
+              ? `<tr><td colspan="4" style="padding:26px;text-align:center;color:var(--muted)">
+                   Nothing open.${stopped.length ? ' Note the warning above — some checks are not running, so this may not mean much.' : ' Every check has run recently and found nothing.'}
+                 </td></tr>`
+              : open.map(row).join('')}
+            ${acked.length ? `<tr><td colspan="4" style="padding:10px 14px;background:var(--panel);font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted)">Acknowledged</td></tr>${acked.map(row).join('')}` : ''}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card" style="padding:0;overflow:hidden">
+        <div style="padding:14px 18px;border-bottom:1px solid var(--hair)">
+          <h2 style="margin:0;font-size:13.5px;color:var(--navy)">The checks</h2>
+          <p style="margin:3px 0 0;font-size:12px;color:var(--muted)">Each one says why it exists. A job two intervals late is not slow, it is stopped.</p>
+        </div>
+        <table>
+          <thead><tr><th>Check</th><th>Every</th><th>Last completed</th><th>Found</th><th>State</th></tr></thead>
+          <tbody>
+            ${st.jobs.map((j) => `
+              <tr>
+                <td>
+                  <div style="font-size:13px;font-weight:600;color:var(--navy)">${esc(j.label)}</div>
+                  <div style="font-size:11.5px;color:var(--muted);line-height:1.6;max-width:520px">${esc(j.why)}</div>
+                </td>
+                <td class="tnum" style="white-space:nowrap">${j.everyMinutes < 60 ? `${j.everyMinutes} min` : `${Math.round(j.everyMinutes / 60)} h`}</td>
+                <td class="tnum" style="white-space:nowrap;font-size:12px">${esc(ago(j.lastRunAt))}${j.elapsedMs !== null ? `<div style="color:var(--muted)">${j.elapsedMs} ms</div>` : ''}</td>
+                <td class="tnum">${j.raised === null ? '—' : j.raised}</td>
+                <td style="white-space:nowrap">${
+                  j.neverRun ? '<span style="color:var(--amber);font-weight:600">never run</span>'
+                  : j.error ? `<span style="color:var(--amber);font-weight:600">failed</span><div style="font-size:11px;color:var(--muted);max-width:280px">${esc(String(j.error).slice(0, 120))}</div>`
+                  : j.overdue ? `<span style="color:var(--amber);font-weight:600">${j.overdueBy} min late</span>`
+                  : '<span style="color:var(--teal);font-weight:600">on time</span>'
+                }</td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
       </div>`
   });
 }
@@ -3475,6 +3640,36 @@ const server = http.createServer(async (req, res) => {
       }));
     }
 
+    if (pathname === '/alerts' && req.method === 'GET') {
+      return send(res, 200, alertsView(session, scheduler.status(), url.searchParams.get('msg')));
+    }
+
+    if (pathname === '/alerts/run' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const r = await scheduler.runAll(`manual by ${session.email}`);
+      const msg = r.skipped
+        ? `Not started — ${r.skipped}.`
+        : `Ran ${r.ran.length} check(s). ${r.ran.filter((x) => x.error).length} could not complete.`;
+      return redirect(res, `/alerts?msg=${encodeURIComponent(msg)}`);
+    }
+
+    if (pathname === '/alerts/ack' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const id = String(form.id || '');
+      const done = form.undo
+        ? await scheduler.unacknowledge(id)
+        : await scheduler.acknowledge(id, session.email, form.note);
+      if (done) {
+        await audit(session, 'update', {
+          collection: 'alerts', id,
+          summary: form.undo ? 'Re-opened an alert' : `Acknowledged an alert${form.note ? `: ${String(form.note).slice(0, 120)}` : ''}`
+        });
+      }
+      return redirect(res, `/alerts?msg=${encodeURIComponent(done ? (form.undo ? 'Re-opened.' : 'Acknowledged.') : 'That alert is no longer open.')}`);
+    }
+
     /* ---- backup & restore ---- */
 
     if (pathname === '/backup' && req.method === 'GET') {
@@ -4059,6 +4254,10 @@ function applyForm(content, form) {
 }
 
 server.listen(PORT, HOST, () => {
+  // Started here, not at import time: the checks that ask the app a question
+  // need something listening, and a failure at boot would raise an alert about
+  // the boot rather than about the book.
+  scheduler.start();
   console.log('');
   console.log('  OTA Platform — Admin content portal');
   console.log(`  http://localhost:${PORT}`);

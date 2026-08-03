@@ -334,6 +334,57 @@ editor pages to HTTP 500. Nothing failed, because the suite checked `/design`,
 
 ---
 
+## Scheduled checks
+
+Nothing in this platform used to run on a timer. Every figure is derived at
+request time, which is the right design for correctness and a poor one for
+noticing — if the trial balance broke at 2am, or a supplier credential stopped
+working, or an inventory block expired with stock on it, the first anybody knew
+was the next time a human opened the right screen.
+
+Six checks now run inside the admin portal, each on its own interval:
+
+| Check | Every | Why it exists |
+|---|---|---|
+| Book integrity | 30 min | Two independent derivations of the same vouchers must agree. Verified by breaking it on purpose: a receipt pointing at an invoice that is not in the book made the control accounts and the journal differ by ৳12,345, and both were reported as critical within one pass. |
+| Held bookings past ticketing | 1 h | A hold is only worth something until the supplier deadline — see the bug below. |
+| Overdue receivables | 12 h | The chase list only existed while somebody had the page open. |
+| Inventory expiry | 12 h | Unsold stock with an expiry date is cash on a shelf. It was displayed and never warned about. |
+| Supplier connections | 1 h | A dead GDS credential looks exactly like a route with no inventory — the storefront just shows fewer fares. |
+| Daily backup | 24 h | The only backup was a button somebody had to press. Fourteen dated copies are kept in `content/backups/`. |
+
+Three properties matter more than the checks themselves.
+
+**Alerts are derived, not accumulated.** Each pass replaces that job's alerts
+wholesale, so a problem that gets fixed disappears without anybody closing it —
+confirmed by restoring the book and watching both critical alerts close on the
+next pass. Only `firstSeen` and an acknowledgement persist, because "how long has
+this been wrong" cannot be recovered from a book that is already correct again.
+
+**A check that throws becomes an alert about itself.** A silent check is worse
+than no check, because the screen looks calm either way.
+
+**A stopped scheduler is made visible.** This is the failure that hides itself:
+an empty alert list and a dead runner are indistinguishable. Every job records
+when it last completed, a job two intervals late is reported as stopped rather
+than slow, and `/accounts` says so in red at the top rather than showing a
+reassuring blank.
+
+Seeing an alert and signing it off are separate capabilities. Read Only is told
+the book stopped balancing and cannot acknowledge it away.
+
+### A bug this work found
+
+The fare card showed `ticket by …` and the booking record threw it away —
+`latestTicketing` was never stored. A held booking therefore lost the one date
+that decides whether it is still worth anything, and would have sat there
+quietly past its deadline describing a fare that no longer existed. It is stored
+now, urgency is derived per day rather than frozen at write time, and a supplier
+that quoted no deadline is its own state — `unknown`, which needs a human — not
+treated as fine.
+
+---
+
 ## How the accounting stays honest
 
 Three properties, each of which has caught a real bug in this codebase.
@@ -379,7 +430,7 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 89 checks — the specification, plus hardening
+node scripts/verify-srs.mjs      # 103 checks — the specification, hardening and automation
 node scripts/verify-admin.mjs    # 34 checks — the admin portal, signed in
 node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```

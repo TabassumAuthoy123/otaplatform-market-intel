@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { AlertBanner } from '@/components/accounts/AlertBanner';
 import { Bar, PageHead, Panel, Table, Td, Tile } from '@/components/accounts/ui';
 import {
   allBankBalances, cashBook, dailyRollup, expensesByCategory, getBook, inventory, money, moneyShort,
@@ -49,6 +50,8 @@ export default async function AccountsDashboard() {
         title="Today at a glance"
         sub={`Book covers ${book.invoices.length} invoices. "Today" is the newest date in the book — ${today}.`}
       />
+
+      <AlertBanner />
 
       {/* -------------------------------------------------- the seven tiles */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

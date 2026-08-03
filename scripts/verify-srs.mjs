@@ -12,7 +12,7 @@
  */
 
 import http from 'node:http';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
 const APP = process.env.APP_URL || 'http://127.0.0.1:3002';
 const ADMIN = process.env.ADMIN_URL || 'http://127.0.0.1:4001';
@@ -560,6 +560,85 @@ await check('A malformed request is told apart from an entitlement refusal', () 
   // deliberately broken one: 1201. Ours: 8236.
   return [src.includes("code === '8236'") && src.includes("code === '1005'"),
     'schema faults, our own payload mistakes and entitlement are separate branches'];
+});
+
+
+/* -------------------------------------------------- scheduled checks */
+section('Automation');
+
+await check('Something actually runs on a timer', () => {
+  const src = readFileSync('admin/scheduler.js', 'utf8');
+  const wired = readFileSync('admin/server.js', 'utf8');
+  return [src.includes('setInterval') && wired.includes('scheduler.start()'),
+    'the admin portal hosts the runner, so there is no second service to forget to start'];
+});
+
+await check('Every check has run and none of them failed', async () => {
+  const r = await fetch(`${APP}/api/alerts`);
+  const d = await r.json();
+  const state = JSON.parse(readFileSync('content/scheduler-state.json', 'utf8'));
+  const jobs = Object.entries(state.jobs ?? {});
+  const failed = jobs.filter(([, j]) => !j.ok);
+  return [jobs.length >= 6 && failed.length === 0,
+    `${jobs.length} checks recorded, ${failed.length} failed, ${d.counts.critical} critical open`];
+});
+
+await check('A stopped scheduler is visible, not silent', async () => {
+  const r = await fetch(`${APP}/api/alerts`);
+  const d = await r.json();
+  const banner = readFileSync('components/accounts/AlertBanner.tsx', 'utf8');
+  // An empty alert list and a dead scheduler look identical unless staleness is
+  // reported. This is the one failure that hides itself.
+  return [typeof d.staleMinutes === 'number' && 'schedulerLooksStopped' in d && banner.includes('are not running'),
+    `staleMinutes reported (${d.staleMinutes}), dashboard says so when it stops`];
+});
+
+await check('Alerts are derived, so a fixed problem closes itself', () => {
+  const src = readFileSync('admin/scheduler.js', 'utf8');
+  const replaces = src.includes("(store.open ?? []).filter((a) => a.job !== def.key)");
+  const keepsAge = src.includes('firstSeen: previous.get(a.id)?.firstSeen ?? now');
+  return [replaces && keepsAge,
+    'each pass replaces that job\'s alerts; only firstSeen and the acknowledgement persist'];
+});
+
+await check('A check that throws becomes an alert about itself', () => {
+  const src = readFileSync('admin/scheduler.js', 'utf8');
+  return [src.includes('job_failed:') && src.includes('could not run'),
+    'a silent check is worse than none, so its failure is reported like any other problem'];
+});
+
+await check('Two passes cannot run at once', () => {
+  const src = readFileSync('admin/scheduler.js', 'utf8');
+  return [src.includes("if (running) return { skipped:"),
+    'a slow supplier check cannot have a second pass start underneath it'];
+});
+
+await check('The daily backup is written, not just offered as a button', () => {
+  const dir = 'content/backups';
+  if (!existsSync(dir)) return [false, 'no backups directory — the job has not written one'];
+  const files = readdirSync(dir).filter((f) => /^book-\d{4}-\d{2}-\d{2}\.json$/.test(f));
+  if (files.length === 0) return [false, 'directory exists but holds no dated backup'];
+  const newest = JSON.parse(readFileSync(`${dir}/${files.sort().at(-1)}`, 'utf8'));
+  return [Object.keys(newest.files ?? {}).length >= 5,
+    `${files.length} dated backup(s), newest holds ${Object.keys(newest.files).length} files, taken by ${newest.takenBy}`];
+});
+
+await check('Seeing an alert and signing it off are different privileges', async () => {
+  const R = (await import('../admin/roles.js')).default;
+  const readOnlySees = R.check('read_only', '/alerts', 'GET').ok;
+  const readOnlyActs = R.check('read_only', '/alerts/ack', 'POST').ok;
+  const managerActs = R.check('manager', '/alerts/ack', 'POST').ok;
+  return [readOnlySees && !readOnlyActs && managerActs,
+    'read_only is told the book stopped balancing and cannot sign it off'];
+});
+
+await check('A held booking keeps its ticketing deadline', () => {
+  const src = readFileSync('lib/bookings.ts', 'utf8');
+  const stored = src.includes('latestTicketing: input.offer.latestTicketing');
+  const derived = src.includes('export function bookingUrgency');
+  const unknownIsNotSafe = src.includes("state: 'unknown'");
+  return [stored && derived && unknownIsNotSafe,
+    'stored on the record, urgency derived per day, and a missing deadline is its own state rather than "fine"'];
 });
 
 /* --------------------------------------------------------------------- report */
