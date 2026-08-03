@@ -19,7 +19,13 @@
  *   POST /v2/auth/token                 token          works
  *   POST /v5/offers/shop                BFM search     works
  *   POST /v5/shop/flights/revalidate    revalidate     works
- *   POST /v2.5.0/passenger/records      create PNR     ERR.2SG.SEC.NOT_AUTHORIZED
+ *   POST /v1/trip/orders/createBooking  create PNR     UNAUTHORIZED_ACCESS on PassengerDetailsRQ
+ *
+ *   /v2.5.0/passenger/records is NOT a path on this host — it answers 404, and
+ *   so does /v2.4.0. Only /v2.3.0 exists, and that one answers 403. This file
+ *   claimed the 2.5.0 path was refused on entitlement for weeks; it was never
+ *   reached at all. The endpoint above was found by enumerating the host, and
+ *   its refusal arrives inside an HTTP 200 with an `errors` array.
  *
  * Booking is not entitled on this account, so create/ticket/void are not wired.
  * That is a Sabre-side entitlement, not a payload problem — the same is true of

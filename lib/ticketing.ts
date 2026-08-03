@@ -108,6 +108,19 @@ export function ticketingStatus(): TicketingStatus[] {
  * own tells nobody anything. Everything else is reported as-is rather than
  * guessed at — a wrong diagnosis is worse than none.
  */
+/**
+ * Sabre says "not entitled" in several different vocabularies depending on which
+ * service refused. All of them mean the same thing to whoever has to send the
+ * email, so all of them are recognised.
+ */
+const SABRE_ENTITLEMENT_MARKERS = [
+  'ERR.2SG.SEC.NOT_AUTHORIZED',
+  'UNAUTHORIZED_ACCESS',
+  'no access privileges',
+  'authorization failure',
+  'authorization failed'
+];
+
 function diagnose(supplier: Supplier, code: string | undefined, message: string | undefined, httpStatus?: number): {
   entitlementBlocked: boolean;
   diagnosis: string;
@@ -143,14 +156,27 @@ function diagnose(supplier: Supplier, code: string | undefined, message: string 
     };
   }
 
-  if (supplier === 'sabre' && (text.includes('NOT_AUTHORIZED') || text.includes('NOT AUTHORIZED') || httpStatus === 403)) {
+  /**
+   * Sabre words the same refusal several ways depending on which internal
+   * service turned it down, and `createBooking` refuses inside an HTTP 200. The
+   * marker list is what stops one of those phrasings being read as a success.
+   */
+  if (
+    supplier === 'sabre' &&
+    (SABRE_ENTITLEMENT_MARKERS.some((mk) => text.includes(mk.toUpperCase())) || httpStatus === 403)
+  ) {
+    // createBooking orchestrates PassengerDetailsRQ, and that is the service
+    // name Sabre's own answer gives — so it is the one to quote to them. "Booking
+    // does not work" is not something an account manager can act on.
+    const service = text.includes('PASSENGERDETAILSRQ') ? 'PassengerDetailsRQ' : null;
     return {
       entitlementBlocked: true,
       diagnosis:
-        `Sabre ERR.2SG.SEC.NOT_AUTHORIZED — the credentials authenticate but are not entitled to this service. ` +
-        `Sabre must enable booking and ticketing on PCC ${pccSb}: /v2.5.0/passenger/records, /v1.3.0/air/ticket and ` +
-        `the /v1/trip/orders family. Search and revalidate already work on the same credentials, which is what shows ` +
-        `this is entitlement and not authentication.`
+        `Sabre refused on entitlement${service ? ` — the service it named is ${service}` : ''}. The credentials ` +
+        `authenticate and search works on them all day, so this is not authentication. Sabre must enable, on PCC ` +
+        `${pccSb}: ${service ?? 'PassengerDetailsRQ'} (which /v1/trip/orders/createBooking calls internally), and ` +
+        `/v1.3.0/air/ticket for issue. Both of those paths EXIST on this host — they answer 403, not 404 — so the ` +
+        `integration is correct and only the account has to change.`
     };
   }
 
@@ -451,22 +477,57 @@ async function sabreCallOnce(action: TicketAction, path: string, payload: unknow
       // Sabre returns HTML on some gateway errors; the raw text is still useful
     }
 
-    const errs = (json.errors ?? json.Errors) as { code?: string; message?: string }[] | undefined;
+    /**
+     * SABRE RETURNS HTTP 200 WITH THE ERRORS INSIDE THE BODY.
+     *
+     * Offers and Orders answers 200 and puts the problem in an `errors` array
+     * whose entries are shaped { category, type, description, fieldName } — not
+     * { code, message }, which is what the older services use and what this
+     * code read. `code` therefore came back undefined, `ok = res.ok && !code`
+     * evaluated to TRUE, and a request Sabre had refused outright was reported
+     * as "Sabre accepted the create pnr" with the verdict "ticketing entitlement
+     * has been granted".
+     *
+     * That is the worst failure this file could have: a platform telling an
+     * agency a booking exists when the supplier said no. Both error shapes are
+     * read now, and a booking is only ok when the body carries no errors AND a
+     * confirmation actually came back.
+     */
+    const errs = (json.errors ?? json.Errors) as
+      | { code?: string; message?: string; category?: string; type?: string; description?: string; fieldName?: string }[]
+      | undefined;
+    const firstErr = errs?.[0];
+
     const code =
-      (errs?.[0]?.code as string | undefined) ??
+      (firstErr?.code as string | undefined) ??
+      (firstErr?.type as string | undefined) ??
+      (firstErr?.category as string | undefined) ??
       (json.errorCode as string | undefined) ??
       ((json.status === 'NotProcessed' ? 'NotProcessed' : undefined) as string | undefined);
+
     const message =
-      (errs?.[0]?.message as string | undefined) ??
+      (firstErr?.message as string | undefined) ??
+      (firstErr?.description as string | undefined) ??
       (json.message as string | undefined) ??
       (json.error_description as string | undefined);
 
     const locator =
       ((json.confirmationId ?? json.ConfirmationID) as string | undefined) ??
+      ((json.booking as Record<string, unknown>)?.confirmationId as string | undefined) ??
       (((json.CreatePassengerNameRecordRS as Record<string, unknown>)?.ItineraryRef as Record<string, unknown>)?.ID as string | undefined);
     const ticketNumbers = [...text.matchAll(/"ticketNumber"\s*:\s*"([^"]+)"/gi)].map((m) => m[1]);
 
-    const ok = res.ok && !code;
+    /**
+     * A create-PNR with no confirmation id is not a success, whatever the status
+     * line says. Nothing downstream may treat a booking as real without the
+     * locator it would need to retrieve, change or cancel it.
+     */
+    const hasErrors = Array.isArray(errs) && errs.length > 0;
+    const ok =
+      res.ok &&
+      !hasErrors &&
+      !code &&
+      (action === 'create_pnr' ? Boolean(locator) : true);
     const d = diagnose('sabre', code, message ?? (res.ok ? undefined : text.slice(0, 200)), res.status);
 
     return {
@@ -474,7 +535,11 @@ async function sabreCallOnce(action: TicketAction, path: string, payload: unknow
       entitlementBlocked: d.entitlementBlocked,
       httpStatus: res.status, elapsedMs: Date.now() - started, endpointHost: hostOf(url),
       code, supplierMessage: message,
-      diagnosis: ok ? `Sabre accepted the ${action.replace('_', ' ')}.` : d.diagnosis,
+      diagnosis: ok
+        ? `Sabre accepted the ${action.replace('_', ' ')}${locator ? ` — confirmation ${locator}` : ''}.`
+        : hasErrors && !d.entitlementBlocked && res.ok
+          ? `Sabre answered HTTP 200 and refused in the body: ${errs.map((e) => `${e.type ?? e.category ?? e.code ?? ''} ${e.description ?? e.message ?? ''}${e.fieldName ? ` (${e.fieldName})` : ''}`.trim()).slice(0, 3).join(' | ')}`
+          : d.diagnosis,
       locator, ticketNumbers: ticketNumbers.length ? ticketNumbers : undefined,
       raw: clip(text)
     };
@@ -490,47 +555,102 @@ async function sabreCallOnce(action: TicketAction, path: string, payload: unknow
   }
 }
 
+/**
+ * Create a Sabre booking through Offers and Orders.
+ *
+ * THIS WAS POINTED AT AN ENDPOINT THAT DOES NOT EXIST.
+ *
+ * The previous version posted CreatePassengerNameRecordRQ to
+ * `/v2.5.0/passenger/records`, which answers **404** on
+ * api.cert.platform.sabre.com — the path is simply not there. `/v2.3.0` is, and
+ * `/v2.4.0` and `/v2.5.0` are not. A 404 was being reported as an entitlement
+ * refusal for weeks, which is a different problem with a different fix, and it
+ * sent the wrong request to Sabre's support desk.
+ *
+ * Enumerating the host settled it: `POST /v1/trip/orders/createBooking` exists
+ * and is reachable on these credentials. The payload below was built by posting
+ * to it and reading the validation errors back one at a time — the API names the
+ * field it wants, so guessing was never necessary:
+ *
+ *   destination/origin        ->  toAirportCode / fromAirportCode
+ *   departureTime "22:40:00+06:00"  ->  must match ^([0-1]\d|2[0-3]):[0-5]\d$
+ *   flightStatusCode          ->  required, "NN" for a new sell
+ *   contactInfo.phones[]      ->  plain strings, not { number, label }
+ *   agency.address            ->  requires stateProvince as well as countryCode
+ *
+ * With every one of those fixed the request validates and Sabre answers:
+ *
+ *   UNAUTHORIZED_ACCESS — The service PassengerDetailsRQ returned an
+ *   authorization failure. Please verify the used credentials with your account
+ *   manager.
+ *
+ * That is the real block, and it is worth having precisely: `createBooking`
+ * orchestrates PassengerDetailsRQ internally, so PassengerDetailsRQ is the
+ * service name to put in the email to Sabre. "Booking does not work" would not
+ * have been actionable.
+ */
 async function sabreCreatePnr(b: Booking): Promise<TicketResult> {
   const pcc = process.env.SABRE_PCC ?? '';
-  const payload = {
-    CreatePassengerNameRecordRQ: {
-      version: '2.5.0',
-      targetCity: pcc,
-      haltOnAirPriceError: true,
-      TravelItineraryAddInfo: {
-        AgencyInfo: { Address: { AddressLine: 'Softifybd Limited, Gulshan-1, Dhaka', CityName: 'DHAKA', CountryCode: 'BD', PostalCode: '1212', StreetNmbr: '54 Gulshan Avenue' } },
-        CustomerInfo: {
-          ContactNumbers: { ContactNumber: [{ NameNumber: '1.1', Phone: b.contact.phone, PhoneUseType: 'H' }] },
-          PersonName: b.passengers.map((p, i) => ({
-            NameNumber: `${i + 1}.1`,
-            PassengerType: 'ADT',
-            GivenName: p.firstName,
-            Surname: p.lastName
-          }))
-        }
-      },
-      AirBook: {
-        OriginDestinationInformation: {
-          FlightSegment: b.itinerary.map((s, i) => ({
-            ArrivalDateTime: s.arrival,
-            DepartureDateTime: s.departure,
-            FlightNumber: s.flightNumber,
-            NumberInParty: String(b.passengers.length || 1),
-            ResBookDesigCode: b.fare.bookingCode || 'Y',
-            Status: 'NN',
-            DestinationLocation: { LocationCode: s.destination },
-            MarketingAirline: { Code: s.carrier, FlightNumber: s.flightNumber },
-            OriginLocation: { LocationCode: s.origin },
-            SegmentNumber: String(i + 1)
-          }))
-        }
-      },
-      PostProcessing: { EndTransaction: { Source: { ReceivedFrom: 'OTA PLATFORM' } } }
-    }
+
+  /** Sabre wants HH:MM. Our itinerary carries a full offset timestamp. */
+  const hhmm = (iso: string) => {
+    const m = /T(\d{2}:\d{2})/.exec(iso) ?? /^(\d{2}:\d{2})/.exec(iso);
+    return m ? m[1] : '00:00';
   };
-  return sabreCall('create_pnr', process.env.SABRE_BOOK_PATH ?? '/v2.5.0/passenger/records', payload);
+  const dateOf = (iso: string) => (iso.includes('T') ? iso.slice(0, 10) : iso);
+
+  const payload = {
+    flightDetails: {
+      flights: b.itinerary.map((s) => ({
+        flightNumber: Number(String(s.flightNumber).replace(/\D/g, '')) || 0,
+        airlineCode: s.carrier,
+        fromAirportCode: s.origin,
+        toAirportCode: s.destination,
+        departureDate: dateOf(s.departure),
+        departureTime: hhmm(s.departure),
+        arrivalTime: hhmm(s.arrival),
+        bookingClass: b.fare.bookingCode || 'Y',
+        // NN is "need, sell requested" — the status a new booking asks for.
+        flightStatusCode: 'NN',
+        quantity: Math.max(1, b.passengers.length)
+      }))
+    },
+    travelers: b.passengers.map((p) => ({
+      givenName: p.firstName,
+      surname: p.lastName,
+      passengerCode: 'ADT'
+    })),
+    agency: {
+      address: {
+        name: 'SOFTIFYBD LIMITED',
+        street: '54 Gulshan Avenue, Tower of Aakash, Level 18',
+        city: 'DHAKA',
+        // Bangladesh has no states; Sabre validates the field's presence, not
+        // its meaning, and rejects the address without it.
+        stateProvince: 'BD',
+        postalCode: '1212',
+        countryCode: 'BD'
+      }
+    },
+    contactInfo: {
+      phones: [String(b.contact.phone || '').replace(/\D/g, '')].filter(Boolean),
+      emails: [b.contact.email].filter(Boolean)
+    },
+    receivedFrom: 'SOFTIFYBD OTA PLATFORM',
+    targetCity: pcc,
+    retrieveBooking: true
+  };
+
+  return sabreCall('create_pnr', process.env.SABRE_BOOK_PATH ?? '/v1/trip/orders/createBooking', payload);
 }
 
+/**
+ * Issue the ticket.
+ *
+ * `/v1.3.0/air/ticket` exists — it answers 403 ERR.2SG.SEC.NOT_AUTHORIZED rather
+ * than 404, which is the difference between a wrong path and an unentitled one.
+ * So this endpoint is correct and stays; only the account has to change.
+ */
 async function sabreIssue(locator: string): Promise<TicketResult> {
   const payload = {
     AirTicketRQ: {

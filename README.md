@@ -165,15 +165,42 @@ Both suppliers refuse, and the refusals are the point:
 | | Call | Answer |
 |---|---|---|
 | Travelport | `AirCreateReservationReq` on `/uAPI/AirService` | uAPI **8236** — *"No provider/supplier is configured for this user for the requested transaction"* |
-| Sabre | `POST /v2.5.0/passenger/records` | HTTP 403 **ERR.2SG.SEC.NOT_AUTHORIZED** — *"Authorization failed due to no access privileges"* |
+| Sabre | `POST /v1/trip/orders/createBooking` | HTTP 200 with **UNAUTHORIZED_ACCESS** in the body — *"the service PassengerDetailsRQ returned an authorization failure"* |
 
-8236 is the useful one: it can only be reached by a request that has already
-parsed, routed and validated. The payload is right; the account has no booking
-provider. Sabre's 403 comes back on the same credentials search uses all day,
-which is what makes it entitlement rather than authentication.
+8236 is the useful one, and it is now proven rather than assumed: a deliberately
+broken request gets **1201**, a marshalling exception, and so does an empty
+skeleton. 8236 is only reachable by a request that has already parsed, routed and
+validated. The payload is right; the account has no booking provider.
+
+**The Sabre row was wrong until 3 August 2026.** It read
+`POST /v2.5.0/passenger/records → 403`. That path **does not exist on this host**
+— it answers 404, as does `/v2.4.0`; only `/v2.3.0` is there. A 404 was being
+reported as an entitlement refusal, which is a different problem with a different
+fix and would have sent the wrong request to Sabre's support desk. Enumerating the
+host found the live endpoint, and the payload was then built by posting to it and
+reading the validation errors back one field at a time — wrong field names
+(`toAirportCode`, not `destination`), times that had to be `HH:MM`, a required
+`flightStatusCode`, phones as plain strings, and an address that needs
+`stateProvince` even for a country that has none.
+
+Only with all of that correct does the real refusal appear, and it is worth
+having precisely: `createBooking` calls **PassengerDetailsRQ** internally, so
+that is the service name to put in the email.
+
+**The fix briefly made things worse, which is the part worth reading.** Sabre's
+Offers and Orders endpoints refuse **inside an HTTP 200**, with errors shaped
+`{ category, type, description }` rather than the `{ code, message }` the older
+services use. Reading only the old shape left `ok` evaluating to true, and the
+probe announced *"Sabre accepted the create pnr — ticketing entitlement has been
+granted."* A platform telling an agency a booking exists when the supplier said no
+is the worst failure available here, so a create-PNR now needs an empty `errors`
+array **and** a confirmation id before it counts.
 
 To unblock: **Travelport** must enable a booking provider for PCC `3BX8` on
-branch `P7251392`; **Sabre** must enable booking and ticketing on PCC `S00L`.
+branch `P7251392`; **Sabre** must enable `PassengerDetailsRQ` and
+`/v1.3.0/air/ticket` on PCC `S00L`. Both of those Sabre paths already exist on the
+host — they answer 403, not 404 — so the integration is correct and only the
+account has to change.
 Both are still certification credentials — production credentials are empty in
 both database tables.
 
