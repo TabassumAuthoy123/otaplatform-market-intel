@@ -34,3 +34,7 @@ content/bookings.json
 # about named employees, and this repository is public.
 content/audit-log.json
 content/pre-restore-backup.json
+
+# The pre-rotation copy of .env, written by scripts/rotate-gds-password.mjs.
+# Holds the OLD supplier password until it is deleted — never commit it.
+.env.before-rotation

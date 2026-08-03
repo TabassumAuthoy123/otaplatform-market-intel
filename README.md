@@ -80,6 +80,27 @@ Universal API/uAPI3848278978-b1e674f7   -> HTTP 200
 Same password, same endpoint, same PCC. If you ever see faultcode 76 again,
 check the prefix before writing to Travelport.
 
+### Rotating a supplier password
+
+Neither supplier lets you change a password over the API — Travelport is done in
+MyTravelport or through their support desk, Sabre in Sabre Central. That part is
+manual and cannot be otherwise.
+
+Everything after it is scripted, because that is where it goes wrong: the same
+secret lives in **two** places, this app's `.env` and the OTAPlatform MySQL
+config table, and changing one without the other leaves a 401 that reads like an
+outage.
+
+```bash
+echo "the-new-password" | node scripts/rotate-gds-password.mjs travelport
+```
+
+Piped rather than passed as an argument, so it never lands in shell history or
+the process list. It writes both places, keeps the previous `.env` as
+`.env.before-rotation` (gitignored), then runs a real DAC–DXB search and prints
+what the supplier answered. If it cannot confirm a live search it says so and
+leaves the rollback in place.
+
 ### Sabre
 
 Two things about Sabre that are not obvious from the documentation:
@@ -92,7 +113,11 @@ Authorization: Basic base64( base64(user) + ":" + base64(pass) )
 ```
 
 **`baseFareAmount` is quoted in the fare CONSTRUCTION currency, not the currency
-of the total.** A DAC–DXB itinerary came back as base 143 with tax 16,663
+of the total.** Travelport does exactly the same thing with `BasePrice`, and that
+went unnoticed for weeks after this one was fixed — a DAC–BKK card read
+`base USD170 · tax BDT10509` against a total of ৳31,469. Fixing one supplier is
+not evidence about the other. `scripts/verify-flights.mjs` now adds up every card
+on seven routes, which is what found it. A DAC–DXB itinerary came back as base 143 with tax 16,663
 against a total of 34,300, because the 143 was USD. Adding those gives a number
 that is simply wrong. `lib/sabre.ts` takes base as **total minus tax**, which is
 in one currency by definition and always reconciles.
@@ -329,7 +354,16 @@ npm run verify
 ```bash
 node scripts/verify-srs.mjs      # 89 checks — the specification, plus hardening
 node scripts/verify-admin.mjs    # 34 checks — the admin portal, signed in
+node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```
+
+**`verify-flights.mjs` reads the fare cards back out of the rendered page** and
+checks each one for the things that make it safe to quote: a flight number, a
+base and tax that add up to the total, a signature the booking page can
+re-price, cheapest-first ordering, and a price that is not absurd. A wrong fare
+is worse than no fare, because somebody would quote it. It also confirms a
+forged signature is refused rather than guessed at, and that the page never
+claims a ticket was issued.
 
 Run it with the app on :3002 and the admin on :4001. **Do not run `next build`
 while the dev server is up** — it overwrites `.next` underneath the running

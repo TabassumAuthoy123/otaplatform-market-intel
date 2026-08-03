@@ -258,6 +258,12 @@ export type FareOffer = {
   totalPrice: string;
   basePrice: string;
   taxes: string;
+  /**
+   * BasePrice exactly as Travelport sent it, which may be in a different
+   * currency from the total. `basePrice` above is the figure that is safe to
+   * show; this one is for diagnosing why they differ.
+   */
+  quotedBasePrice?: string;
   currency: string;
   amount: number;
   refundable: boolean;
@@ -325,6 +331,31 @@ export function parseLowFareSearch(xml: unknown): FareOffer[] {
     const infoBody = pi[2];
     const totalHere = attr(infoTag, 'TotalPrice') || total;
     const amount = Number(totalHere.slice(3)) || 0;
+
+    /**
+     * Travelport quotes BasePrice in the fare CONSTRUCTION currency, which is
+     * often not the currency of TotalPrice.
+     *
+     * A real DAC–BKK card read `base USD170 · tax BDT10509` against a total of
+     * BDT31,469. Those three numbers cannot be added, and the pair shown to a
+     * customer was meaningless — 170 dollars is roughly 20,800 taka, so the
+     * "base" looked like a fifth of the real fare.
+     *
+     * Sabre had the identical problem and was fixed by taking base as total
+     * minus tax. Travelport was never checked, because fixing one supplier is
+     * not evidence about the other. Same fix, and only when the currencies
+     * actually differ — Travelport does sometimes quote both in the requested
+     * currency, and in that case its own figures are the ones to show.
+     */
+    const rawBase = attr(infoTag, 'BasePrice') || attr(head, 'BasePrice');
+    const rawTaxes = attr(infoTag, 'Taxes') || attr(head, 'Taxes');
+    const totalCcy = totalHere.slice(0, 3);
+    const taxNum = Number(rawTaxes.slice(3)) || 0;
+    const baseMismatched = Boolean(rawBase) && rawBase.slice(0, 3) !== totalCcy;
+    const basePrice = baseMismatched
+      ? `${totalCcy}${Math.max(0, Math.round(amount - taxNum))}`
+      : rawBase;
+    const taxes = rawTaxes.slice(0, 3) === totalCcy ? rawTaxes : `${totalCcy}${Math.round(taxNum)}`;
     const bookings = Array.from(infoBody.matchAll(/<air:BookingInfo\b([^>]*)\/>/g)).map((b) => b[1]);
 
     const segs = bookings
@@ -354,8 +385,10 @@ export function parseLowFareSearch(xml: unknown): FareOffer[] {
         key: attr(infoTag, 'Key') || attr(head, 'Key'),
         sig: Buffer.from(sig).toString('base64url'),
         totalPrice: totalHere,
-        basePrice: attr(infoTag, 'BasePrice') || attr(head, 'BasePrice'),
-        taxes: attr(infoTag, 'Taxes') || attr(head, 'Taxes'),
+        basePrice,
+        taxes,
+        /** What the supplier actually sent, kept so a mismatch can be traced. */
+        quotedBasePrice: rawBase,
         currency,
         amount,
         refundable: attr(infoTag, 'Refundable') === 'true',
