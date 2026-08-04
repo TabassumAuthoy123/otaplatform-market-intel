@@ -1,20 +1,23 @@
+import { CredentialsPanel } from '@/components/accounts/CredentialsPanel';
 import { PnrCheck } from '@/components/accounts/PnrCheck';
 import { TicketingPanel } from '@/components/accounts/TicketingPanel';
 import { PageHead, Panel } from '@/components/accounts/ui';
 import { getBook } from '@/lib/accounting';
+import { missingRequired } from '@/lib/credentials';
 
 export const dynamic = 'force-dynamic';
 
-const ENV_VARS = [
-  ['GDS_BASE_URL', 'Host only, e.g. https://api.pp.travelport.com', true],
-  ['GDS_PNR_PATH', 'Path template with {locator}, e.g. /v1/reservation/{locator}', true],
-  ['GDS_USERNAME', 'Your Travelport login ID', true],
-  ['GDS_PASSWORD', 'Your Travelport password', true],
-  ['GDS_ACCEPT', 'Accept header, defaults to application/json', false],
-  ['GDS_EXTRA_HEADERS', 'JSON object of extra headers, if your product needs them', false],
-  ['GDS_TIMEOUT_MS', 'Request timeout, defaults to 15000', false]
-] as const;
-
+/**
+ * The variable list used to be a seven-entry array right here, and it had drifted:
+ * it claimed GDS_TIMEOUT_MS defaults to 15000 (it is 20000), listed two Travelport
+ * paths that are optional as required, mentioned no Sabre variable at all, and
+ * omitted GDS_TARGET_BRANCH — the one whose absence made every booking answer uAPI
+ * 8236 and get reported as an entitlement block for weeks. Somebody setting this
+ * up from that table would have hit exactly that wall.
+ *
+ * It now comes from lib/credentials.ts, which is also what the checks read, so the
+ * table cannot describe an environment the code does not have.
+ */
 export default async function GdsPage() {
   const book = await getBook();
 
@@ -23,7 +26,10 @@ export default async function GdsPage() {
     new Set(book.invoices.flatMap((i) => i.lines.map((l) => l.pnr)).filter(Boolean))
   ).slice(0, 6);
 
-  const configured = Boolean(process.env.GDS_BASE_URL && process.env.GDS_USERNAME && process.env.GDS_PASSWORD && process.env.GDS_PNR_PATH);
+  // Derived from the same declaration the table below renders, so the banner and
+  // the table can never disagree about whether the environment is complete.
+  const missing = missingRequired();
+  const configured = missing.length === 0;
 
   return (
     <div className="space-y-7">
@@ -41,7 +47,9 @@ export default async function GdsPage() {
         }`}
       >
         <p className="text-[13px] font-semibold text-navy-900">
-          {configured ? 'GDS environment is configured — live calls will be attempted.' : 'GDS environment is not configured — only the local half will answer.'}
+          {configured
+            ? 'GDS environment is configured — live calls will be attempted.'
+            : `GDS environment is incomplete — missing ${missing.join(', ')}. Only the local half will answer.`}
         </p>
         <p className="mt-1 text-[12.5px] leading-relaxed text-muted">
           Credentials live in <code className="rounded bg-panel px-1.5 py-0.5">.env</code>, which is gitignored. They are
@@ -51,28 +59,7 @@ export default async function GdsPage() {
 
       <PnrCheck samplePnrs={pnrs} />
 
-      <Panel title="What to put in .env" sub="Copy .env.example, fill these in, restart the app">
-        <table className="w-full min-w-[560px] text-left">
-          <thead>
-            <tr className="border-b border-hair bg-panel">
-              <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wide text-muted">Variable</th>
-              <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wide text-muted">Meaning</th>
-              <th className="px-4 py-2.5 text-[11px] font-bold uppercase tracking-wide text-muted">Required</th>
-            </tr>
-          </thead>
-          <tbody>
-            {ENV_VARS.map(([name, meaning, req]) => (
-              <tr key={name}>
-                <td className="tnum border-b border-hair px-4 py-2.5 text-[13px] font-semibold text-navy-900">{name}</td>
-                <td className="border-b border-hair px-4 py-2.5 text-[13px] text-ink">{meaning}</td>
-                <td className="border-b border-hair px-4 py-2.5 text-[13px]">
-                  {req ? <span className="font-semibold text-amber-700">Yes</span> : <span className="text-muted">Optional</span>}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </Panel>
+      <CredentialsPanel />
 
       <Panel title="Why the request shape is configurable" sub="Read this before wiring Travelport">
         <div className="space-y-3 px-5 py-5 text-[13px] leading-relaxed text-ink">

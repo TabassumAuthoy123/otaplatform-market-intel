@@ -73,12 +73,83 @@ The one thing that cost days: **the Basic Auth username needs the service
 prefix.**
 
 ```
-uAPI3848278978-b1e674f7                 -> HTTP 401, SOAP faultcode 76
-Universal API/uAPI3848278978-b1e674f7   -> HTTP 200
+uAPI1234567890-a1b2c3d4                 -> HTTP 401, SOAP faultcode 76
+Universal API/uAPI1234567890-a1b2c3d4   -> HTTP 200
 ```
 
 Same password, same endpoint, same PCC. If you ever see faultcode 76 again,
 check the prefix before writing to Travelport.
+
+The account id above is a made-up example. **The real one used to be printed here**,
+in a file in a public repository, which made it half of a working credential pair
+alongside a password that had already been exposed in a screenshot. The lesson is
+not "be careful with passwords" — everyone already believes that. It is that a
+username does not feel like a secret while you are pasting a debugging note, and a
+README is the file people copy into issues. `.env` is the only place either half
+belongs, and `/accounts/gds` is where you check them.
+
+### Credentials — where they are, and how to check one without printing it
+
+**The values are not in this file and will not be.** This repository is public. A
+credential committed to it is published the moment it is pushed, and stays
+reachable through the commit history after the line is deleted — the Travelport
+password has already been exposed that way once and still needs rotating. A
+README is the *worst* place for one, because it is the file people paste into
+issues and chats.
+
+Everything you actually need in order to verify a credential is available without
+its value, and it is more reliable than reading one off a screen. Open
+**`/accounts/gds`**. It reads `process.env` in the running process — not a copy of
+`.env` — and prints, for every variable below:
+
+- whether it is **set**
+- for identifiers (host, PCC, branch, provider, paths, timeouts): **the value**,
+  because a PCC is not a secret and hiding it is part of what made the 8236
+  diagnosis take weeks
+- for secrets: **length and the first 12 hex of sha256**, never the value
+
+To confirm a password matches what you have:
+
+```bash
+printf %s 'the-value-you-think-it-is' | sha256sum
+```
+
+The first 12 characters must equal the fingerprint on the page. This catches
+things eyeballing cannot: a trailing space, a smart quote pasted from an email, a
+truncated copy. `lib/credentials.ts` is the single declaration; the page and the
+checks both read it, and a check fails if the code reads a supplier variable the
+declaration does not list — which is how a table came to omit `GDS_TARGET_BRANCH`
+and send somebody into a fake entitlement wall.
+
+| Variable | What it is | Required |
+|---|---|---|
+| `GDS_BASE_URL` | uAPI host | yes |
+| `GDS_USERNAME` | uAPI user — needs the `Universal API/` prefix, or every call 401s like a bad password | yes, secret |
+| `GDS_PASSWORD` | uAPI password, sent as HTTP Basic | yes, secret |
+| `GDS_TARGET_BRANCH` | Branch every booking is made against. **Absent = uAPI 8236, which reads as an entitlement refusal and is not one** | yes |
+| `GDS_SEARCH_BODY` | LowFareSearch SOAP body, `{from}` `{to}` `{date}` | yes |
+| `GDS_PROVIDER_CODE` | Host to book through; `1G` is Galileo | no — 1G |
+| `GDS_PCC` | Pseudo city code. Quote it to Travelport support | no |
+| `GDS_IS_PRODUCTION` | Set only for production credentials; guards the booking probe | no |
+| `GDS_TIMEOUT_MS` | Deadline for a **whole** Travelport attempt | no — 20000 |
+| `GDS_SEARCH_PATH` `GDS_PNR_PATH` `GDS_PNR_BODY` `GDS_BOOK_PATH` `GDS_TICKET_PATH` `GDS_CANCEL_PATH` | Per-call overrides for a different Travelport product | no |
+| `GDS_CACHE_TTL_MS` | How long a merged fare list may be reused | no — 90000 |
+| `GDS_DEBUG_DUMP` | `1` writes every request and response to `content/gds-debug/`. Off by default — the bodies carry passenger names | no |
+| `SABRE_BASE_URL` | Sabre host | yes |
+| `SABRE_USER_ID` | Sabre user id | yes, secret |
+| `SABRE_PASSWORD` | Sabre password. Header is `base64(base64(user):base64(pass))` — the single-base64 form fails as INVALID_CREDENTIALS | yes, secret |
+| `SABRE_PCC` | Sabre PCC | no |
+| `SABRE_TIMEOUT_MS` | Deadline for a **whole** Sabre attempt — token and call share it | no — 30000 |
+| `SABRE_IS_PRODUCTION` `SABRE_BOOK_PATH` `SABRE_TICKET_PATH` `SABRE_VOID_PATH` `SABRE_REFUND_PATH` | Environment flag and per-call overrides | no |
+| `APP_URL` | Where the storefront answers; the scheduler calls itself here | no |
+| `APP_ACCESS_KEY` | Needed to reach `/api/accounts`, `/api/crm`, `/api/agencies`, `/api/gds`, `/api/sabre`, `/api/ticketing` from a non-loopback Host. Unset = those routes are loopback-only | no, secret |
+| `TICKETING_PROBE_ON_PRODUCTION` | `1` lets the booking probe run on production credentials. Off by default: the probe creates a real PNR, and on a production PCC that is inventory held by a page refresh | no |
+| `FX_MAX_AGE_DAYS` | How stale a hand-typed rate may get before it raises an alert | no — 7 |
+| `ADMIN_PORT` `ADMIN_URL` | Where the admin portal listens and answers | no |
+| `ADMIN_EMAIL` `ADMIN_PASSWORD` | Seed the first Super Admin on an empty users file; ignored once a user exists. Stored scrypt-hashed | no, secret |
+
+`.env.example` carries the same list with blank values — copy it, fill it in,
+restart. `.env` is gitignored and verified absent from GitHub after every push.
 
 ### Rotating a supplier password
 
@@ -329,6 +400,59 @@ is missing, **config only** means the settings exist but nothing sends.
 | + | **Payment reminders** | built, but nothing is sent | `/accounts/reminders` |
 | + | **Document attachments** | built as links, not uploads | see below |
 | + | **PDF & Excel export** | built | every screen; Excel has 25 sheets |
+
+### Putting a real agency on it
+
+Every row above was true and the module still could not be handed to an agency,
+which is a distinction worth stating plainly rather than leaving in a gap between
+"built" and "usable".
+
+`content/accounting.json` holds a 45-day demo — 118 invoices, 163 bills, 150
+payments, about ৳2.7 crore of turnover that belongs to nobody. An agency starting
+on that issues its first invoice as `SFT-INV-119` into a ledger it did not write,
+and its opening trial balance is a stranger's. There was no way to clear it.
+
+```bash
+node scripts/new-book.mjs                      # report only, writes nothing
+node scripts/new-book.mjs --confirm NEW-BOOK   # actually do it
+```
+
+It removes every voucher and movement — invoices, receipts, bills, payments,
+expenses, both kinds of credit note, supplier deposits, transfers — and keeps the
+setup that is the same for any agency in this market: chart of accounts, 9
+currencies, 12 airlines, 9 hotels, 10 visa types, 12 countries, 8 services, 8
+expense categories, 3 bank accounts, 6 roles, the voucher prefixes, VAT and the
+company record. Stock lines survive as products with `purchased` and `sold` reset
+to zero, because a Hajj seat block is a product, not a movement.
+
+| Flag | Effect |
+|---|---|
+| *(none)* | Report what would change. Writes nothing. |
+| `--confirm NEW-BOOK` | Do it. The phrase is required — this cannot be reached by clicking. |
+| `--keep-parties` | Keep customers and suppliers, with opening balances zeroed |
+| `--keep-openings` | Keep opening cash and bank balances instead of zeroing them |
+| `--company "Name"` | Set the company name in the same pass |
+
+Opening balances are zeroed by default. A fresh book with bank balances and no
+equity behind them does not balance, and a trial balance that is out on day one
+teaches the operator to ignore it — enter real opening balances through Masters
+and Settings, where the equity side is handled.
+
+It backs the book up to `content/backups/` before writing, writes atomically, then
+asks the running app for the reconciliation and prints it. Verified on a copy: all
+six control accounts and both trial balances come back at zero with zero
+difference, and `/accounts/financials` and `/accounts/invoices` both render. If it
+cannot reach the app it says it could not verify rather than implying it did.
+
+`_meta.note` is rewritten too. It currently reads *"Demo figures — generated by
+scripts/seed-accounting.mjs"*, and that line is load-bearing: it is what tells the
+next person the numbers are not real. A live book that still announces itself as a
+demo is its own kind of lie.
+
+**This is not wired to a button and nothing runs it automatically.** Clearing a
+book is the one operation here that cannot be undone from inside the app, and the
+demo data is also a sales asset — the screens are only persuasive because there is
+plausible trading in them. Run it when you onboard an agency, not before.
 
 ### The three that are deliberately less than they sound
 

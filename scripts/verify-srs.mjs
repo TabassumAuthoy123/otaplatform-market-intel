@@ -584,6 +584,144 @@ await check('Travelport booking still carries the branch and the provider code',
     : `branch throw ${throwsOnMissingBranch}, seg ${providerOnSegment}, action ${providerOnAction}, mobile ${mobilePhone}, no TAW ${noTaw}`];
 });
 
+await check('A real agency can be started on this book', async () => {
+  /**
+   * Every SRS row above passed while the module was still unusable by an agency:
+   * the book holds a 45-day demo and there was no way to clear it, so a real
+   * first invoice would have been SFT-INV-119 in a stranger's ledger. "Complete
+   * against the spec" and "ready to use" are different claims.
+   *
+   * Run in report mode, which must change nothing — that property is the whole
+   * safety of the tool, so it is asserted rather than trusted.
+   */
+  const { execFileSync } = await import('node:child_process');
+  const before = readFileSync('content/accounting.json', 'utf8');
+  const out = execFileSync(process.execPath, ['scripts/new-book.mjs'], { encoding: 'utf8' });
+  const after = readFileSync('content/accounting.json', 'utf8');
+  const untouched = before === after;
+  const reports = /will be cleared/.test(out) && /kept/.test(out) && /nothing was written/i.test(out);
+  const guarded = /--confirm NEW-BOOK/.test(out);
+  return [untouched && reports && guarded,
+    `report mode left the book byte-identical: ${untouched}, lists both sides: ${reports}, requires a typed phrase: ${guarded}`];
+});
+
+await check('Clearing the book is not reachable by clicking', () => {
+  /**
+   * Deliberately checked, because the obvious next step for anybody reading the
+   * script is to put a button on it. There is no undo from inside the app, and
+   * the demo data is a sales asset.
+   */
+  const srv = readFileSync('admin/server.js', 'utf8');
+  const wired = /new-book/.test(srv);
+  const src = readFileSync('scripts/new-book.mjs', 'utf8');
+  const needsPhrase = /arg\('--confirm'\) === CONFIRM_PHRASE/.test(src);
+  const backsUp = /accounting-before-new-book-/.test(src);
+  return [!wired && needsPhrase && backsUp,
+    `no admin route: ${!wired}, typed phrase required: ${needsPhrase}, backs up first: ${backsUp}`];
+});
+
+await check('No secret value appears in any file git tracks', async () => {
+  /**
+   * This check found a real leak the moment it was written: the Travelport uAPI
+   * username was printed in README.md, in the block explaining that the Basic Auth
+   * username needs the "Universal API/" prefix. It had been pushed to a public
+   * repository, and the password had already been exposed in a screenshot, so the
+   * pair was complete and public.
+   *
+   * Nothing else would have caught it. The gitignore checks cover .env. The page
+   * checks cover what is rendered. Nobody thinks of a username as a secret while
+   * pasting a debugging note, and a README is the file people copy into issues.
+   *
+   * PCCs, branch codes and hostnames are deliberately NOT checked. They are
+   * identifiers, they appear in supplier support email, they are useless without a
+   * password, and hiding them is part of what made the 8236 diagnosis take weeks.
+   * lib/credentials.ts declares which is which and this reads that declaration.
+   */
+  const { execSync } = await import('node:child_process');
+  const env = Object.fromEntries(
+    readFileSync('.env', 'utf8').split(/\r?\n/).filter((l) => /^[A-Z_]+=/.test(l))
+      .map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1).replace(/^["']|["']$/g, '')])
+  );
+  const declaration = readFileSync('lib/credentials.ts', 'utf8');
+  const secretNames = [...declaration.matchAll(/name: '([A-Z0-9_]+)'[^}]*?secret: true/g)].map((m) => m[1]);
+  const values = secretNames
+    .map((n) => [n, env[n]])
+    .filter(([, v]) => typeof v === 'string' && v.length > 3);
+
+  const files = execSync('git ls-files', { encoding: 'utf8' }).trim().split('\n');
+  const leaks = [];
+  for (const f of files) {
+    let body;
+    try {
+      body = readFileSync(f, 'utf8');
+    } catch {
+      continue; // binary or gone
+    }
+    for (const [name, v] of values) if (body.includes(v)) leaks.push(`${name} in ${f}`);
+  }
+  return [leaks.length === 0,
+    leaks.length
+      ? `LEAKED — remove before pushing: ${leaks.join('; ')}`
+      : `${values.length} secret(s) checked against ${files.length} tracked files, none present`];
+});
+
+await check('No secret value reaches the credentials screen', async () => {
+  /**
+   * The highest-consequence check in this file.
+   *
+   * /accounts/gds now renders every environment variable so the environment can
+   * be verified without opening .env. A screen like that is one careless edit away
+   * from printing a password into a browser cache, a screenshot and a support
+   * ticket, and this repository is public. So the assertion is not "it looks
+   * masked" — it takes each real secret out of .env and greps the rendered HTML
+   * for the literal value.
+   */
+  const env = Object.fromEntries(
+    readFileSync('.env', 'utf8').split(/\r?\n/).filter((l) => /^[A-Z_]+=/.test(l))
+      .map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1).replace(/^["']|["']$/g, '')])
+  );
+  const html = await (await fetch(`${APP}/accounts/gds`)).text();
+  const secrets = ['GDS_PASSWORD', 'GDS_USERNAME', 'SABRE_PASSWORD', 'SABRE_USER_ID', 'ADMIN_PASSWORD', 'APP_ACCESS_KEY'];
+  const set = secrets.filter((k) => env[k] && env[k].length > 3);
+  const leaked = set.filter((k) => html.includes(env[k]));
+  return [leaked.length === 0,
+    leaked.length ? `LEAKED: ${leaked.join(', ')}` : `${set.length} secret(s) set, none of their values appear in the page`];
+});
+
+await check('A secret is still checkable — length and hash are shown', async () => {
+  // React writes <!-- --> between interpolated values, so a naive grep for
+  // "sha256 abc123" finds nothing on a page that renders it correctly. That
+  // mistake has now been made three times in this project; strip first.
+  const html = (await (await fetch(`${APP}/accounts/gds`)).text()).replace(/<!--[\s\S]*?-->/g, '');
+  const prints = (html.match(/sha256\s*[0-9a-f]{12}/g) ?? []).length;
+  return [prints >= 2, `${prints} fingerprint(s) rendered — hash your value and compare, no need to print it`];
+});
+
+await check('The environment table cannot omit a variable the code reads', () => {
+  const declared = new Set(
+    [...readFileSync('lib/credentials.ts', 'utf8').matchAll(/name: '([A-Z0-9_]+)'/g)].map((m) => m[1])
+  );
+  /**
+   * The old hand-written table on /accounts/gds listed seven variables and left
+   * out GDS_TARGET_BRANCH, which is the one whose absence produced uAPI 8236 and
+   * weeks of it being reported as an entitlement refusal. So the table is now
+   * checked against what the code actually reads, not against someone's memory.
+   */
+  const read = new Set();
+  for (const f of ['lib/gds.ts', 'lib/sabre.ts', 'lib/ticketing.ts', 'lib/offers.ts', 'middleware.ts']) {
+    for (const m of readFileSync(f, 'utf8').matchAll(/process\.env\.([A-Z0-9_]+)/g)) read.add(m[1]);
+  }
+  // Request-shape overrides that only exist for people on a different Travelport
+  // product; declaring every one of them would bury the four that matter.
+  const shapeOnly = new Set(['GDS_ACCEPT', 'GDS_CONTENT_TYPE', 'GDS_EXTRA_HEADERS', 'GDS_SOAP_ACTION',
+    'GDS_SEARCH_METHOD', 'GDS_PNR_METHOD', 'GDS_BRANCH']);
+  const undeclared = [...read].filter((v) => !declared.has(v) && !shapeOnly.has(v));
+  return [undeclared.length === 0,
+    undeclared.length
+      ? `read by the code but absent from lib/credentials.ts: ${undeclared.join(', ')}`
+      : `all ${read.size} supplier variables the code reads are declared`];
+});
+
 await check('A supplier timeout bounds the whole attempt, not each call inside it', () => {
   const sabre = readFileSync('lib/sabre.ts', 'utf8');
   const tkt = readFileSync('lib/ticketing.ts', 'utf8');
