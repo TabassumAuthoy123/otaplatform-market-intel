@@ -1,7 +1,7 @@
 import type { Booking, Passenger } from '@/lib/bookings';
 import { searchConfigStatus } from '@/lib/gds';
 import { getToken, sabreStatus } from '@/lib/sabre';
-import type { Supplier } from '@/lib/offers';
+import { searchAllSuppliers, type Supplier } from '@/lib/offers';
 
 /**
  * Create a PNR, issue a ticket, void it, refund it — on either GDS.
@@ -29,7 +29,7 @@ import type { Supplier } from '@/lib/offers';
  * held sale and says so. Ticketing is an explicit, separate action.
  */
 
-export type TicketAction = 'create_pnr' | 'issue' | 'void' | 'refund';
+export type TicketAction = 'create_pnr' | 'issue' | 'void' | 'refund' | 'cancel';
 
 export type TicketResult = {
   supplier: Supplier;
@@ -48,6 +48,10 @@ export type TicketResult = {
   diagnosis: string;
   /** PNR / record locator, when one is actually created. */
   locator?: string;
+  /** The Galileo PNR. This is what retrieve, ticket and cancel must use. */
+  providerLocator?: string;
+  /** Travelport's own wrapper record. Useful for their support, not for the host. */
+  universalLocator?: string;
   ticketNumbers?: string[];
   /** Trimmed raw answer, for the screen and for a support ticket. */
   raw?: string;
@@ -142,17 +146,65 @@ function diagnose(supplier: Supplier, code: string | undefined, message: string 
    * request that is otherwise correct — it is proof the payload is right and
    * the entitlement is not.
    */
-  if (
-    supplier === 'travelport' &&
-    (code === '1201' || code === '8236' || text.includes('NOT ROUTABLE') || text.includes('NO PROVIDER/SUPPLIER IS CONFIGURED'))
-  ) {
+  /**
+   * 8236 IS NOT AN ENTITLEMENT REFUSAL. It was reported as one here for weeks.
+   *
+   * "No provider/supplier is configured for this user for the requested
+   * transaction" is what uAPI says when the request does not name the provider —
+   * or names no branch at all. Both were true: GDS_TARGET_BRANCH was unset so
+   * every booking went out with TargetBranch="", and the segment carried no
+   * ProviderCode. Search never revealed it because its whole body sits in
+   * GDS_SEARCH_BODY with the branch and <com:Provider Code="1G"/> written inside.
+   *
+   * With the branch set and the provider named, booking WORKS on these
+   * credentials — verified with four real PNRs, retrieved and then cancelled.
+   * So 8236 now points at our own configuration, which is the actionable answer.
+   */
+  if (supplier === 'travelport' && (code === '8236' || text.includes('NO PROVIDER/SUPPLIER IS CONFIGURED'))) {
+    return {
+      entitlementBlocked: false,
+      diagnosis:
+        `Travelport uAPI 8236 — the request did not tell uAPI which provider or branch to book through. This is ` +
+        `configuration on our side, not entitlement: check GDS_TARGET_BRANCH (should be ${branchTp}) and that the ` +
+        `segment carries ProviderCode. Booking has been proven to work on these credentials once both are present.`
+    };
+  }
+
+  if (supplier === 'travelport' && (code === '1201' || text.includes('NOT ROUTABLE'))) {
+    return {
+      entitlementBlocked: false,
+      diagnosis:
+        `Travelport uAPI 1201 — a marshalling failure, which means the XML itself was not accepted. A nonsense ` +
+        `element and an empty request both return 1201, so this is our payload and not the account.`
+    };
+  }
+
+  /**
+   * "General air service Error" with a booking class the host will not sell.
+   *
+   * Verified: the identical request books cleanly in Y, M and K on BS341 and
+   * fails in E. The search offered E, so the class was open when it was quoted
+   * and closed by the time the segment was re-sold. The durable fix is to book
+   * the AirPricingSolution that AirPrice returns instead of rebuilding a segment
+   * by hand — that carries the host context and cannot drift like this.
+   */
+  if (supplier === 'travelport' && (code === '3000' || text.includes('GENERAL AIR SERVICE ERROR'))) {
+    return {
+      entitlementBlocked: false,
+      diagnosis:
+        `Travelport uAPI 3000, "General air service Error" — usually the booking class is no longer sellable on ` +
+        `that segment. The same request books in another class, so this is availability rather than entitlement or ` +
+        `credentials. Re-price the fare and book the class the price response returns.`
+    };
+  }
+
+  if (supplier === 'travelport' && text.includes('NEED TICKET ACCOUNT')) {
     return {
       entitlementBlocked: true,
       diagnosis:
-        `Travelport uAPI ${code ?? 'entitlement error'} — the request reached the booking service, parsed and ` +
-        `validated, and was then refused because no provider is configured for this account to book with. ` +
-        `Travelport must enable a booking provider for PCC ${pccTp} on branch ${branchTp}. No change to this code ` +
-        `will get past it.`
+        `Galileo answered "NEED TICKET ACCOUNT" — the PNR side is fine and this is the TICKETING side. PCC ` +
+        `${pccTp} has no ticket account on the Galileo host, so no AirTicketing call can succeed. That is the one ` +
+        `thing Travelport still has to switch on; creating and cancelling bookings already works.`
     };
   }
 
@@ -254,7 +306,23 @@ const attr = (xml: string, el: string, a: string): string | undefined => {
  * a build step and a schema to keep current for no gain.
  */
 function tpEnvelope(inner: string, service: string): string {
+  /**
+   * An empty TargetBranch is not a harmless default.
+   *
+   * Travelport answers 8236 — "no provider/supplier is configured for this user
+   * for the requested transaction" — which is indistinguishable from a real
+   * entitlement refusal, and was misreported as one here for weeks. Search never
+   * revealed it because its entire request body lives in GDS_SEARCH_BODY with the
+   * branch written inside. So the value is required, and its absence is stated
+   * rather than sent.
+   */
   const target = process.env.GDS_TARGET_BRANCH ?? process.env.GDS_BRANCH ?? '';
+  if (!target) {
+    throw new Error(
+      'GDS_TARGET_BRANCH is not set. Travelport booking calls need the branch — without it every request goes out ' +
+      'with TargetBranch="" and comes back as uAPI 8236, which looks like an entitlement block and is not one.'
+    );
+  }
   return `<?xml version="1.0" encoding="UTF-8"?>
 <soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/"
   xmlns:univ="http://www.travelport.com/schema/universal_v52_0"
@@ -290,12 +358,54 @@ async function travelportCall(action: TicketAction, path: string, body: string):
     const text = await res.text();
     const elapsedMs = Date.now() - started;
 
+    /**
+     * The exact request and reply, when asked for.
+     *
+     * A uAPI fault says what is wrong with the request but not which request,
+     * and reconstructing the payload by reading the template is how you end up
+     * debugging a string you only think you sent. Set GDS_DEBUG_DUMP=1 to get
+     * both sides on disk. Off by default: the body carries passenger names.
+     */
+    if (process.env.GDS_DEBUG_DUMP === '1') {
+      try {
+        const { writeFile, mkdir } = await import('node:fs/promises');
+        const dir = 'content/gds-debug';
+        await mkdir(dir, { recursive: true });
+        const stamp = `${action}-${Date.now()}`;
+        await writeFile(`${dir}/${stamp}.request.xml`, body, 'utf8');
+        await writeFile(`${dir}/${stamp}.response.xml`, text, 'utf8');
+      } catch {
+        // a debug dump that fails must never break the call it was watching
+      }
+    }
+
     // uAPI puts the useful code in ErrorInfo, and the transport fault beside it
     const code = tag(text, 'Code') ?? tag(text, 'faultcode');
     const message = tag(text, 'Description') ?? tag(text, 'faultstring') ?? tag(text, 'Message');
-    const locator = attr(text, 'UniversalRecord', 'LocatorCode') ?? attr(text, 'AirReservation', 'LocatorCode');
+    /**
+     * uAPI returns THREE locators and they are not interchangeable.
+     *
+     *   ProviderReservationInfo  H07J06   the Galileo PNR
+     *   UniversalRecord          37MH79   Travelport's own wrapper
+     *   AirReservation           37MH7I   the air part of that wrapper
+     *
+     * Everything that talks to the host — retrieve, ticket, cancel — needs the
+     * PROVIDER one. Taking UniversalRecord first, as this did, produced a
+     * booking whose stored reference answered "UNABLE TO RETRIEVE - CHECK RECORD
+     * LOCATOR" on the next call: a real PNR that the platform could no longer
+     * find. Both are kept, and the provider locator is the one used.
+     */
+    const providerLocator = attr(text, 'ProviderReservationInfo', 'LocatorCode');
+    const universalLocator = attr(text, 'UniversalRecord', 'LocatorCode');
+    const locator = providerLocator ?? universalLocator ?? attr(text, 'AirReservation', 'LocatorCode');
     const ticketNumbers = [...text.matchAll(/TicketNumber="([^"]+)"/gi)].map((m) => m[1]);
-    const ok = res.ok && !code && Boolean(locator || ticketNumbers.length || action === 'void');
+    /**
+     * Void and cancel return nothing to hold on to — no locator, no ticket
+     * number — so for those two the absence of an error code IS the success
+     * signal. Every other action has to produce something concrete.
+     */
+    const nothingToReturn = action === 'void' || action === 'cancel';
+    const ok = res.ok && !code && Boolean(locator || ticketNumbers.length || nothingToReturn);
 
     const d = diagnose('travelport', code, message, res.status);
     return {
@@ -303,6 +413,7 @@ async function travelportCall(action: TicketAction, path: string, body: string):
       entitlementBlocked: d.entitlementBlocked,
       httpStatus: res.status, elapsedMs, endpointHost: hostOf(url),
       code, supplierMessage: message,
+      providerLocator, universalLocator,
       diagnosis: ok ? `Travelport accepted the ${action.replace('_', ' ')}.` : d.diagnosis,
       locator, ticketNumbers: ticketNumbers.length ? ticketNumbers : undefined,
       raw: clip(text)
@@ -320,17 +431,49 @@ async function travelportCall(action: TicketAction, path: string, body: string):
   }
 }
 
-function tpPassenger(p: Passenger, i: number): string {
+function tpPassenger(p: Passenger, i: number, phone?: string): string {
+  // Type must not be "Agency" on a traveller phone — Galileo answers 13529.
+  const digits = String(phone ?? '').replace(/\D/g, '');
   return `<com:BookingTraveler Key="T${i + 1}" TravelerType="ADT" DOB="${xmlEscape(p.dob)}" Nationality="${xmlEscape(p.nationality)}">
         <com:BookingTravelerName Prefix="${xmlEscape(p.title)}" First="${xmlEscape(p.firstName)}" Last="${xmlEscape(p.lastName)}"/>
+        ${digits ? `<com:PhoneNumber Key="PH${i + 1}" Type="Mobile" Number="${xmlEscape(digits)}" Location="DAC"/>` : ''}
         ${p.passport ? `<com:SSR Type="DOCS" Status="HK" FreeText="P/${xmlEscape(p.nationality)}/${xmlEscape(p.passport)}"/>` : ''}
       </com:BookingTraveler>`;
 }
 
+/**
+ * The Galileo provider code this account books through.
+ *
+ * uAPI is a facade over several hosts and the request has to name which one.
+ * The search body has always carried `<com:Provider Code="1G"/>`, which is why
+ * search worked — the booking request carried nothing, and Travelport answered
+ * "No provider/supplier is configured for this user for the requested
+ * transaction". That reads exactly like an entitlement refusal and was reported
+ * as one here for weeks. It was a missing attribute.
+ */
+const TP_PROVIDER = process.env.GDS_PROVIDER_CODE ?? '1G';
+
 async function travelportCreatePnr(b: Booking): Promise<TicketResult> {
+  /**
+   * FOUR THINGS WERE WRONG, and each one hid the next.
+   *
+   * 1. No ProviderCode on the segment      -> 8236, which looks like entitlement
+   * 2. No ProviderCode on ActionStatus     -> 4037 "Please provide ProviderCode
+   *                                           for ActionStatus"
+   * 3. ActionStatus Type="TAW"             -> invokes the ticketing application,
+   *                                           which fails with "NEED TICKET
+   *                                           ACCOUNT" before the PNR is made
+   * 4. Phone Type="Agency" on a traveller  -> 13529, not allowed there
+   *
+   * With all four fixed a real PNR is created and retrieves: provider locator
+   * H07J06, segment status HK. ACTIVE creates the booking WITHOUT asking the
+   * host to ticket it, which is what a held sale wants — ticketing is a separate
+   * call and is separately blocked.
+   */
   const segments = b.itinerary
     .map(
       (s, i) => `<air:AirSegment Key="S${i + 1}" Group="0" Carrier="${xmlEscape(s.carrier)}" FlightNumber="${xmlEscape(s.flightNumber)}"
+          ProviderCode="${TP_PROVIDER}" ProviderSegmentOrder="${i + 1}"
           Origin="${xmlEscape(s.origin)}" Destination="${xmlEscape(s.destination)}"
           DepartureTime="${xmlEscape(s.departure)}" ArrivalTime="${xmlEscape(s.arrival)}"
           ClassOfService="${xmlEscape(b.fare.bookingCode || 'Y')}"/>`
@@ -339,11 +482,11 @@ async function travelportCreatePnr(b: Booking): Promise<TicketResult> {
 
   const inner = `<univ:AirCreateReservationReq TargetBranch="{TARGET}" AuthorizedBy="OTAPlatform" RetainReservation="Both">
       <com:BillingPointOfSaleInfo OriginApplication="uAPI"/>
-      ${b.passengers.map(tpPassenger).join('\n      ')}
+      ${b.passengers.map((p, i) => tpPassenger(p, i, b.contact.phone)).join('\n      ')}
       <air:AirPricingSolution Key="P1">
         ${segments}
       </air:AirPricingSolution>
-      <com:ActionStatus Type="TAW" TicketDate="${new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10)}"/>
+      <com:ActionStatus Type="ACTIVE" ProviderCode="${TP_PROVIDER}"/>
     </univ:AirCreateReservationReq>`;
 
   /**
@@ -375,6 +518,36 @@ async function travelportIssue(locator: string): Promise<TicketResult> {
   );
 }
 
+/**
+ * Cancel a whole Universal Record.
+ *
+ * This exists because the probe now succeeds. Every load of `/accounts/gds` asks
+ * Travelport to create a PNR, and Travelport does — so without this, browsing to
+ * a status page silently accumulates live bookings on the account. A held seat
+ * that nobody cancels is an agency debit, and on a production PCC that is real
+ * money for someone else's inventory.
+ *
+ * Cancel goes to UniversalRecordService and takes the UNIVERSAL locator, which is
+ * the one case where the provider locator is the wrong one to use.
+ *
+ * A cancelled record still RETRIEVES, which is the confusing part and the reason
+ * this note exists. Retrieving a cancelled provider locator returns an
+ * `AirReservation` shell — checked: 2206 bytes, zero `AirSegment`, zero
+ * `BookingTraveler`. The record is not gone; the segments and the passengers are.
+ * Do not read "still retrievable" as "cancel failed" and cancel it twice.
+ */
+export async function cancelReservation(universalLocator: string): Promise<TicketResult> {
+  const inner = `<univ:UniversalRecordCancelReq TargetBranch="{TARGET}" AuthorizedBy="OTAPlatform"
+      UniversalRecordLocatorCode="${xmlEscape(universalLocator)}" CancelAll="true" Version="0">
+      <com:BillingPointOfSaleInfo OriginApplication="uAPI"/>
+    </univ:UniversalRecordCancelReq>`;
+  return travelportCall(
+    'cancel',
+    process.env.GDS_CANCEL_PATH ?? '/B2BGateway/connect/uAPI/UniversalRecordService',
+    tpEnvelope(inner, 'UniversalRecordCancel')
+  );
+}
+
 async function travelportVoidOrRefund(action: 'void' | 'refund', ticketNumber: string): Promise<TicketResult> {
   const inner =
     action === 'void'
@@ -382,7 +555,11 @@ async function travelportVoidOrRefund(action: 'void' | 'refund', ticketNumber: s
       <com:BillingPointOfSaleInfo OriginApplication="uAPI"/>
       <air:AirTicketingSpecificDocument Number="${xmlEscape(ticketNumber)}"/>
     </air:VoidDocumentReq>`
-      : `<air:AirRefundReq TargetBranch="{TARGET}" AuthorizedBy="OTA Platform">
+      : // AuthorizedBy must be letters and numbers only. This said "OTA Platform"
+        // with a space, which uAPI rejects as 1005 "Unable to parse XML stream" —
+        // and 1005 is indistinguishable from the booking block at a glance, so a
+        // refund would have looked entitlement-refused when it was one character.
+        `<air:AirRefundReq TargetBranch="{TARGET}" AuthorizedBy="OTAPlatform">
       <com:BillingPointOfSaleInfo OriginApplication="uAPI"/>
       <air:AirRefundTicket Number="${xmlEscape(ticketNumber)}"/>
     </air:AirRefundReq>`;
@@ -729,9 +906,48 @@ export async function refundTicket(supplier: Supplier, locator: string, ticketNu
  * blocked" as a remembered claim and as something the screen just proved.
  */
 export async function probeTicketing(): Promise<TicketResult[]> {
+  /**
+   * Never do this to a production PCC without being told to.
+   *
+   * This probe was harmless for as long as it was believed to be permanently
+   * refused. It is not refused — it creates a live booking and then cancels it,
+   * on every load of `/accounts/gds`. Against certification inventory that costs
+   * nothing. Against a production PCC it is real seats on a real airline, held
+   * and released by a page refresh, and a cancel that fails leaves an agency
+   * debit behind. Certification is the current state of both accounts, so this
+   * guard does nothing today; the day someone pastes production credentials in,
+   * it is the difference between a status page and an incident.
+   */
+  const allowLive = process.env.TICKETING_PROBE_ON_PRODUCTION === '1';
+  const status = ticketingStatus();
+  const refuseToProbe = (supplier: Supplier): TicketResult | null => {
+    const s = status.find((x) => x.supplier === supplier);
+    if (!s?.production || allowLive) return null;
+    return {
+      supplier,
+      action: 'create_pnr',
+      ok: false,
+      entitlementBlocked: false,
+      elapsedMs: 0,
+      diagnosis:
+        `Not probed: ${supplier} is on PRODUCTION credentials (PCC ${s.pcc ?? '—'}) and this probe creates a real ` +
+        `booking. Set TICKETING_PROBE_ON_PRODUCTION=1 only if holding and releasing live inventory on every page ` +
+        `load is genuinely what you want. Book through /portal/book instead.`
+    };
+  };
+
   const today = new Date();
-  const depart = new Date(today.getTime() + 45 * 86400000).toISOString().slice(0, 19);
-  const arrive = new Date(today.getTime() + 45 * 86400000 + 5 * 3600000).toISOString().slice(0, 19);
+  /**
+   * Times in the shape uAPI actually returns: milliseconds and an offset.
+   *
+   * The probe used to send `2026-09-18T12:34:56` — no offset, no milliseconds —
+   * which is not the format a live search hands back, so the probe was not
+   * exercising the same payload the booking flow sends.
+   */
+  const at = (msFromNow: number, offset: string) =>
+    new Date(today.getTime() + msFromNow).toISOString().slice(0, 23) + offset;
+  const depart = at(45 * 86400000, '+06:00');
+  const arrive = at(45 * 86400000 + 5 * 3600000, '+04:00');
 
   const probe: Booking = {
     ref: 'PROBE',
@@ -760,9 +976,73 @@ export async function probeTicketing(): Promise<TicketResult[]> {
     supplier: 'travelport'
   };
 
-  const [tp, sb] = await Promise.all([
-    createReservation({ ...probe, supplier: 'travelport' }),
-    createReservation({ ...probe, supplier: 'sabre' })
-  ]);
-  return [tp, sb];
+  /**
+   * Book a segment that actually exists.
+   *
+   * The probe used to send a hard-coded EK585 with invented times. Galileo
+   * answered 3000, "General air service Error" — a segment it has no inventory
+   * for is not a segment it can sell, so the probe was testing nothing useful
+   * and its failure said nothing about entitlement either way.
+   *
+   * Taking the first fare from a live search means the probe exercises exactly
+   * the payload the booking flow builds, against a flight the host knows about.
+   * If the search itself fails the probe says so rather than blaming booking.
+   */
+  const live = await searchAllSuppliers({
+    from: 'DAC',
+    to: 'DXB',
+    date: depart.slice(0, 10),
+    adults: '1'
+  }).catch(() => null);
+
+  const forSupplier = (supplier: Supplier): Booking => {
+    const offer = live?.offers.find((o) => o.supplier === supplier);
+    if (!offer || offer.segments.length === 0) return { ...probe, supplier };
+    return {
+      ...probe,
+      supplier,
+      itinerary: offer.segments.map((sg) => ({
+        carrier: sg.carrier,
+        flightNumber: sg.flightNumber,
+        origin: sg.origin,
+        destination: sg.destination,
+        departure: sg.departure,
+        arrival: sg.arrival,
+        minutes: sg.minutes
+      })),
+      fare: { ...probe.fare, bookingCode: offer.bookingCode || 'Y', platingCarrier: offer.platingCarrier }
+    };
+  };
+
+  const attempt = (supplier: Supplier): Promise<TicketResult> => {
+    const refused = refuseToProbe(supplier);
+    return refused ? Promise.resolve(refused) : createReservation(forSupplier(supplier));
+  };
+
+  const [tp, sb] = await Promise.all([attempt('travelport'), attempt('sabre')]);
+
+  /**
+   * Clean up after ourselves.
+   *
+   * When this probe was believed to be permanently refused, leaving it running on
+   * every page load was free. It is not refused — Travelport creates the booking —
+   * so the probe must undo what it did or a status page becomes a slow leak of
+   * held seats. Cancel is best-effort and never changes the reported verdict: the
+   * question the probe answers is "can we book", and a failed cleanup is a
+   * separate fact, appended to the diagnosis so it is visible rather than silent.
+   */
+  const results = [tp, sb];
+  for (const r of results) {
+    if (!r.ok || r.supplier !== 'travelport') continue;
+    const ur = r.universalLocator ?? r.locator;
+    if (!ur) {
+      r.diagnosis += ' The probe booking could not be cancelled — no universal record locator came back. Cancel it by hand.';
+      continue;
+    }
+    const undone = await cancelReservation(ur).catch(() => null);
+    r.diagnosis += undone?.ok
+      ? ` The probe booking was cancelled again (${ur}), so nothing is left held.`
+      : ` WARNING: the probe booking ${ur} could NOT be cancelled — cancel it by hand before it holds a seat.`;
+  }
+  return results;
 }

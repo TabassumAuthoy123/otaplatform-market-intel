@@ -48,3 +48,6 @@ content/backups/
 # CRM vocabulary overrides — runtime configuration a manager edits in the
 # portal, per deployment, like the alerts file.
 content/crm-vocab.json
+
+# Raw GDS request/response dumps from GDS_DEBUG_DUMP=1 — carry passenger names.
+content/gds-debug/

@@ -153,24 +153,74 @@ agency added: the same booking reports 1,500, which is the service charge and
 nothing else. A fictional margin does not stay on one screen; it flows into the
 P&L, the margin-by-service report and every commission figure built on them.
 
-### Ticketing — built, and refused
+### Ticketing — Travelport books, Sabre is refused
 
-`lib/ticketing.ts` creates the PNR, issues the ticket, voids it and refunds it,
-on either supplier. It is real code that runs against the real endpoints, and
-`/accounts/gds` executes it on every page load so the status below can never go
-stale.
+`lib/ticketing.ts` creates the PNR, issues the ticket, voids it, refunds it and
+cancels the record, on either supplier. It is real code that runs against the real
+endpoints, and `/accounts/gds` executes it on every page load so the status below
+can never go stale.
 
-Both suppliers refuse, and the refusals are the point:
+Because it now genuinely books, that page **creates a real PNR and cancels it
+again** on every load. Free on certification inventory; on a production PCC it
+would hold and release real airline seats on a refresh, so it refuses to run
+against production credentials unless `TICKETING_PROBE_ON_PRODUCTION=1` says
+otherwise. A cancelled record still retrieves — as an empty shell with no segments
+and no travellers — so "still retrievable" is not a failed cancel.
 
 | | Call | Answer |
 |---|---|---|
-| Travelport | `AirCreateReservationReq` on `/uAPI/AirService` | uAPI **8236** — *"No provider/supplier is configured for this user for the requested transaction"* |
+| Travelport | `AirCreateReservationReq` on `/uAPI/AirService` | **creates a real PNR** — provider locator returned, segment status `HK` |
+| Travelport | `AirTicketingReq` | Galileo host: **NEED TICKET ACCOUNT** — genuinely blocked |
 | Sabre | `POST /v1/trip/orders/createBooking` | HTTP 200 with **UNAUTHORIZED_ACCESS** in the body — *"the service PassengerDetailsRQ returned an authorization failure"* |
 
-8236 is the useful one, and it is now proven rather than assumed: a deliberately
-broken request gets **1201**, a marshalling exception, and so does an empty
-skeleton. 8236 is only reachable by a request that has already parsed, routed and
-validated. The payload is right; the account has no booking provider.
+**This file said Travelport was entitlement-blocked, and that was wrong for
+weeks.** The claim rested on uAPI **8236** — *"No provider/supplier is configured
+for this user for the requested transaction"* — which reads like a refusal and is
+not one. uAPI is a facade over several hosts and the request must name which host
+and which branch. The search body had always carried `<com:Provider Code="1G"/>`,
+which is why search worked. The booking body carried no `ProviderCode` at all,
+and `GDS_TARGET_BRANCH` was missing from `.env`, so every create went out with
+`TargetBranch=""`. 8236 was our own missing attributes described back to us.
+
+The old text even argued the point: *"8236 is only reachable by a request that
+has already parsed, routed and validated. The payload is right; the account has
+no booking provider."* The first half is true. The conclusion does not follow —
+a request can parse perfectly and still fail to say where to send it.
+
+Five faults were stacked, each hiding the next, and each new error code looked
+like a fresh block:
+
+| Symptom | Real cause |
+|---|---|
+| 8236 no provider configured | `TargetBranch=""` + no `ProviderCode` on the segment |
+| 4037 provide ProviderCode for ActionStatus | needed on `ActionStatus` too |
+| **NEED TICKET ACCOUNT** on create | `ActionStatus Type="TAW"` invokes ticketing *during* the create |
+| 13529 phone not allowed | traveller phone was `Type="Agency"`, must be `Mobile` |
+| 13518 departure after arrival | the probe's hand-made times, not the supplier |
+
+With all of those fixed, `AirCreateReservationReq` returns a PNR. Verified end to
+end: retrieved by locator, passenger and segment read back, segment `Status="HK"`,
+then cancelled with `UniversalRecordCancelReq`. **Retrieve needs the *provider*
+locator, not the Universal Record locator** — an earlier check used the UR
+locator, got *"UNABLE TO RETRIEVE"* and nearly became a second false negative.
+`travelportCall` therefore prefers `ProviderReservationInfo/@LocatorCode` over the
+`UniversalRecord` and `AirReservation` ones, and keeps all three.
+
+Also proved, because it is the kind of thing that gets misread as a block:
+`ClassOfService="E"` is not sellable on this account and answers **3000**, while
+`Y`, `M` and `K` all book. A closed booking class is a fare problem, not a
+permission problem.
+
+**What is actually blocked on Travelport is ticketing, and only ticketing.**
+`AirTicketingReq` reaches the Galileo host and the host answers **NEED TICKET
+ACCOUNT** for PCC `3BX8`. That is a host-side setup item. So the ask to Travelport
+changed completely: not *"enable a booking provider"* (already open) but *"set up
+a ticket account on the Galileo host for PCC 3BX8"*. Sending the first email would
+have wasted a support cycle on a thing that was never off.
+
+`GDS_TARGET_BRANCH` is now **required** — `tpEnvelope` throws with that reasoning
+in the message rather than silently sending `TargetBranch=""` and letting the next
+person read 8236 as entitlement again.
 
 **The Sabre row was wrong until 3 August 2026.** It read
 `POST /v2.5.0/passenger/records → 403`. That path **does not exist on this host**
@@ -196,15 +246,15 @@ granted."* A platform telling an agency a booking exists when the supplier said 
 is the worst failure available here, so a create-PNR now needs an empty `errors`
 array **and** a confirmation id before it counts.
 
-To unblock: **Travelport** must enable a booking provider for PCC `3BX8` on
-branch `P7251392`; **Sabre** must enable `PassengerDetailsRQ` and
-`/v1.3.0/air/ticket` on PCC `S00L`. Both of those Sabre paths already exist on the
-host — they answer 403, not 404 — so the integration is correct and only the
-account has to change.
+To unblock: **Travelport** must set up a ticket account on the Galileo host for
+PCC `3BX8` — booking already works, so this is about issuing only. **Sabre** must
+enable `PassengerDetailsRQ` and `/v1.3.0/air/ticket` on PCC `S00L`. Both of those
+Sabre paths already exist on the host — they answer 403, not 404 — so the
+integration is correct and only the account has to change.
 Both are still certification credentials — production credentials are empty in
 both database tables.
 
-Three things this cost, worth knowing before touching that file:
+Four things this cost, worth knowing before touching that file:
 
 - `AirCreateReservationReq` goes to **AirService**, not UniversalRecordService.
   The latter answers a Tomcat 404 page for it; the former validates it properly.
@@ -215,9 +265,16 @@ Three things this cost, worth knowing before touching that file:
 - The first version grew its own copy of Sabre's auth and invented two
   environment variables that do not exist, so it 401'd on working credentials.
   `lib/sabre.ts` owns the handshake; ticketing calls into it.
+- **A supplier error code is not a diagnosis.** Four different Travelport codes
+  each looked like the same block. `diagnose()` now answers them separately —
+  8236 and 1201 say *our config, our payload*; 3000 says *this booking class is
+  closed*; only NEED TICKET ACCOUNT sets `entitlementBlocked: true`. Set
+  `GDS_DEBUG_DUMP=1` to write every request and response to `content/gds-debug/`
+  (gitignored) when a new code turns up.
 
-Every confirmation screen says the booking is held. Never tell a passenger they
-are ticketed until entitlement is granted.
+Every confirmation screen says the booking is held, which is now literally true on
+Travelport — the seats really are held. Never tell a passenger they are ticketed:
+issuing is still refused on both suppliers.
 
 ---
 
@@ -265,7 +322,7 @@ is missing, **config only** means the settings exist but nothing sends.
 | 11 | Email, SMS and WhatsApp settings | config only | see below |
 | 12 | Six user roles | built and **enforced at the route** | `admin/roles.js` |
 | + | Booking management, PNR tracking, supplier cost vs selling price, gross profit per booking | built | `/accounts/reports`, `/portal/book` |
-| + | Ticketing, void and refund calls | built; **refused on GDS entitlement**, proved live | `lib/ticketing.ts`, `/accounts/gds` |
+| + | Ticketing, void and refund calls | built; **Travelport creates real PNRs**, issuing refused on both, proved live | `lib/ticketing.ts`, `/accounts/gds` |
 | + | Partial payments, VAT support, automatic numbering | built | throughout |
 | + | **Multi-currency** | built | any invoice or bill can name a currency and a rate |
 | + | **Audit log** | built | admin → Audit log |

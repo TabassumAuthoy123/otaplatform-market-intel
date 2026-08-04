@@ -290,20 +290,24 @@ await check('Ticketing integration exists and runs for real', async () => {
   const res = await fetch(`${APP}/api/ticketing/probe`);
   const d = await res.json();
   const line = d.results.map((r) => `${r.supplier}=${r.code ?? r.httpStatus}${r.entitlementBlocked ? ' (entitlement)' : ''}`).join(', ');
-  // The check is that both calls REACH the supplier and get a real answer, not
-  // that they succeed — they cannot succeed until the accounts are provisioned.
+  // The check is that both calls REACH the supplier and get a real answer.
+  // Travelport's answer today is a created PNR; Sabre's is a refusal. Asserting
+  // either specific outcome here is what made the old version of this file agree
+  // with a wrong conclusion for weeks.
   const reached = d.results.every((r) => r.httpStatus !== undefined);
   return [res.status === 200 && reached, line];
 });
-await check('Ticketing is documented as blocked, with both supplier codes', () => {
+await check('Ticketing is documented with each supplier answer, not one blanket claim', () => {
   const readme = readFileSync('README.md', 'utf8');
   /**
-   * The codes the suppliers return TODAY, checked against the live probe rather
-   * than hard-coded, so this cannot go stale the way the Sabre row did — it read
-   * NOT_AUTHORIZED on /v2.5.0/passenger/records for weeks while that path was
-   * actually answering 404 and had never been reached.
+   * The Sabre row here read NOT_AUTHORIZED on /v2.5.0/passenger/records for weeks
+   * while that path was answering 404 and had never been reached. Then the whole
+   * Travelport row turned out to be our own missing branch. Both times the README
+   * was confidently specific and wrong, so this now also requires the README to
+   * carry the correction rather than only the current codes.
    */
-  const want = ['8236', 'UNAUTHORIZED_ACCESS', 'PassengerDetailsRQ', 'createBooking', '3BX8', 'S00L'];
+  const want = ['8236', 'NEED TICKET ACCOUNT', 'UNAUTHORIZED_ACCESS', 'PassengerDetailsRQ',
+    'createBooking', '3BX8', 'S00L', 'GDS_TARGET_BRANCH'];
   const missing = want.filter((x) => !readme.includes(x));
   return [missing.length === 0,
     missing.length ? `README does not mention ${missing.join(', ')}` : `README names all ${want.length}`];
@@ -533,33 +537,122 @@ await check('A 200 with errors in the body is not a success', () => {
     `both error shapes: ${readsBothShapes}, locator required: ${requiresLocator}, errors block ok: ${guardsErrors}`];
 });
 
-await check('The live probe reports both suppliers as blocked, not booked', async () => {
+/**
+ * This check used to assert both suppliers were blocked, and it passed for weeks
+ * while being wrong: Travelport's refusal was our own empty TargetBranch. A test
+ * that hard-codes the conclusion cannot tell you the conclusion changed — it just
+ * keeps agreeing with itself. So it now asserts the two things that stay true
+ * whatever the accounts do: nobody is reported as booked without a locator, and
+ * nobody is reported as blocked on a code that means our own request was wrong.
+ */
+await check('No supplier is reported as booked without a locator, or blocked on our own bug', async () => {
   const r = await fetch(`${APP}/api/ticketing/probe`);
   const d = await r.json();
-  const tp = d.results.find((x) => x.supplier === 'travelport');
-  const sb = d.results.find((x) => x.supplier === 'sabre');
-  const honest = tp && sb && !tp.ok && !sb.ok && tp.entitlementBlocked && sb.entitlementBlocked;
-  return [honest, honest
-    ? `travelport ${tp.code}, sabre ${sb.code} — neither reported as accepted`
-    : `travelport ok=${tp?.ok} blocked=${tp?.entitlementBlocked}, sabre ok=${sb?.ok} blocked=${sb?.entitlementBlocked}`];
+  // codes that mean WE sent something wrong; calling any of them entitlement is
+  // the exact mistake that cost weeks on 8236
+  const ourFault = ['8236', '1201', '1005', '4037', '13518', '13529', '3000'];
+  const lies = d.results.filter((x) =>
+    (x.ok && !x.providerLocator && !x.locator) || (x.entitlementBlocked && ourFault.includes(String(x.code))));
+  const line = d.results
+    .map((x) => `${x.supplier} ok=${x.ok} blocked=${x.entitlementBlocked} ${x.code ?? x.providerLocator ?? ''}`)
+    .join(', ');
+  return [lies.length === 0, lies.length ? `misreported: ${lies.map((x) => x.supplier).join(', ')} — ${line}` : line];
+});
+
+await check('Travelport booking still carries the branch and the provider code', () => {
+  const src = readFileSync('lib/ticketing.ts', 'utf8');
+  // Every one of these was absent once, and each absence produced an error that
+  // read like entitlement. The branch throw is the important one: without it a
+  // missing env var silently sends TargetBranch="" and the next person reads 8236
+  // as a supplier refusal all over again.
+  const throwsOnMissingBranch = /GDS_TARGET_BRANCH is not set/.test(src);
+  const providerOnSegment = /ProviderCode="\$\{TP_PROVIDER\}" ProviderSegmentOrder=/.test(src);
+  const providerOnAction = /ActionStatus Type="ACTIVE" ProviderCode="\$\{TP_PROVIDER\}"/.test(src);
+  const mobilePhone = /Type="Mobile"/.test(src);
+  /**
+   * Test the CODE, not the prose about it.
+   *
+   * The first version of this grepped the whole file for `ActionStatus Type="TAW"`
+   * and failed on the comment explaining why TAW is wrong — a check that a
+   * warning about a mistake counts as the mistake. Comments go first.
+   */
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const noTaw = !/ActionStatus Type="TAW"/.test(code);
+  const all = throwsOnMissingBranch && providerOnSegment && providerOnAction && mobilePhone && noTaw;
+  return [all, all
+    ? 'branch required, ProviderCode on segment and ActionStatus, ACTIVE not TAW, phone Mobile'
+    : `branch throw ${throwsOnMissingBranch}, seg ${providerOnSegment}, action ${providerOnAction}, mobile ${mobilePhone}, no TAW ${noTaw}`];
+});
+
+await check('No uAPI request sends an AuthorizedBy with a space in it', () => {
+  const src = readFileSync('lib/ticketing.ts', 'utf8');
+  /**
+   * uAPI answers 1005 "Unable to parse XML stream" to AuthorizedBy="OTA Platform"
+   * — letters and numbers only. Four of the five calls were fixed when that was
+   * first found; AirRefundReq kept the space for months because nothing exercises
+   * refund (there is no ticket to refund yet), so the one call that would fail was
+   * the one nobody could run. A grep catches what an untriggerable path cannot.
+   */
+  // Comments first — again. The note explaining that "OTA Platform" is rejected
+  // contains the string "OTA Platform", so grepping the raw file flags the very
+  // warning that exists to prevent the bug. Second time in this file.
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+  const bad = [...code.matchAll(/AuthorizedBy="([^"]*)"/g)].map((m) => m[1]).filter((v) => !/^[A-Za-z0-9]+$/.test(v));
+  return [bad.length === 0, bad.length ? `rejected by uAPI: ${bad.map((v) => `"${v}"`).join(', ')}` : 'all alphanumeric'];
+});
+
+await check('A probe booking is cancelled again rather than left holding a seat', () => {
+  const src = readFileSync('lib/ticketing.ts', 'utf8');
+  /**
+   * The probe was safe to run on every page load only while it was refused. It is
+   * not refused any more — it creates a real booking. Two things must hold: it
+   * undoes what it did, and it will not do it at all to a production PCC.
+   */
+  const cancels = /cancelReservation\(ur\)/.test(src) && /UniversalRecordCancelReq/.test(src);
+  const guarded = /TICKETING_PROBE_ON_PRODUCTION/.test(src);
+  const warnsOnFailure = /could NOT be cancelled/.test(src);
+  return [cancels && guarded && warnsOnFailure,
+    `cancels: ${cancels}, production-guarded: ${guarded}, says so when cleanup fails: ${warnsOnFailure}`];
+});
+
+await check('The PNR locator read back is the provider locator, not the record locator', () => {
+  const src = readFileSync('lib/ticketing.ts', 'utf8');
+  // Retrieving with the Universal Record locator answers "UNABLE TO RETRIEVE",
+  // which looks exactly like the PNR was never created. It was.
+  const prefersProvider = /providerLocator\s*\?\?\s*universalLocator/.test(src);
+  const readsProvider = /attr\(text, 'ProviderReservationInfo', 'LocatorCode'\)/.test(src);
+  return [prefersProvider && readsProvider,
+    `reads ProviderReservationInfo: ${readsProvider}, prefers it: ${prefersProvider}`];
 });
 
 await check('The refusal names the service to ask the supplier about', async () => {
   const r = await fetch(`${APP}/api/ticketing/probe`);
   const d = await r.json();
   const sb = d.results.find((x) => x.supplier === 'sabre');
-  const tp = d.results.find((x) => x.supplier === 'travelport');
-  const named = /PassengerDetailsRQ/.test(sb?.diagnosis ?? '') && /PCC/.test(tp?.diagnosis ?? '');
-  return [named, named ? 'PassengerDetailsRQ for Sabre, PCC and branch for Travelport' : 'diagnosis is not actionable'];
+  const named = /PassengerDetailsRQ/.test(sb?.diagnosis ?? '');
+  return [named, named ? 'PassengerDetailsRQ named for Sabre' : 'Sabre diagnosis is not actionable'];
 });
 
-await check('A malformed request is told apart from an entitlement refusal', () => {
+await check('Each Travelport code gets its own answer, not one blanket refusal', () => {
   const src = readFileSync('lib/ticketing.ts', 'utf8');
-  // Travelport answers 1201 to anything it cannot marshal, including nonsense,
-  // and 8236 only to a request that parsed and validated. Verified by sending a
-  // deliberately broken one: 1201. Ours: 8236.
-  return [src.includes("code === '8236'") && src.includes("code === '1005'"),
-    'schema faults, our own payload mistakes and entitlement are separate branches'];
+  /**
+   * Five codes, five different meanings, and for weeks they collapsed into
+   * "entitlement". 8236 and 1201 are our request. 3000 is a closed booking class.
+   * 1005 is unparseable XML. Only NEED TICKET ACCOUNT is a real host-side block.
+   */
+  const codes = ["code === '8236'", "code === '1201'", "code === '1005'", "code === '3000'", 'NEED TICKET ACCOUNT'];
+  const missing = codes.filter((c) => !src.includes(c));
+  return [missing.length === 0,
+    missing.length ? `not distinguished: ${missing.join(', ')}` : 'all five branches present'];
+});
+
+await check('8236 is not treated as entitlement anywhere', () => {
+  const src = readFileSync('lib/ticketing.ts', 'utf8');
+  // The whole point. Assert the branch that owns 8236 sets it to false.
+  const i = src.indexOf("code === '8236'");
+  const window = i >= 0 ? src.slice(i, i + 900) : '';
+  return [i >= 0 && /entitlementBlocked:\s*false/.test(window),
+    i < 0 ? '8236 is not handled at all' : 'the 8236 branch reports it as our configuration'];
 });
 
 
