@@ -449,6 +449,20 @@ reassuring blank.
 Seeing an alert and signing it off are separate capabilities. Read Only is told
 the book stopped balancing and cannot acknowledge it away.
 
+**It has already caught a real outage.** Running `next build` while the dev server
+was live corrupted `.next` — the known gotcha in troubleshooting below — and
+`/accounts` started returning 500. Two of the seven checks failed on that pass,
+and they were exactly the two that ask the app a question: book integrity and
+supplier connections. The other five passed, so the failure was attributed
+correctly rather than looking like a broken book. A clean restart put all seven
+back. That is the design working: a check that cannot run reports itself instead
+of going quiet.
+
+```bash
+# the fix for that gotcha
+rm -rf .next && npm run dev:alt
+```
+
 ### A bug this work found
 
 The fare card showed `ticket by …` and the booking record threw it away —
