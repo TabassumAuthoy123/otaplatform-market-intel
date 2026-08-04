@@ -27,6 +27,7 @@ const CAPS = {
   crm_write: 'Log calls and update lead fields',
   crm_assign: 'Assign and reassign leads between reps',
   crm_all: 'Edit any lead, not only the ones assigned to you',
+  crm_vocab: 'Change the call status, disposition and interest lists',
   agencies_read: 'View the researched agency dataset',
   agencies_write: 'Edit the researched agency dataset',
   books_read: 'View accounting records and reports',
@@ -72,7 +73,7 @@ const ROLES = {
   manager: {
     label: 'Manager',
     summary: 'Read everything, reassign leads, approve cancellations',
-    caps: ['crm_read', 'crm_assign', 'crm_all', 'books_read', 'books_credit', 'leads_read', 'agencies_read', 'integrations', 'audit', 'alerts', 'alerts_ack']
+    caps: ['crm_read', 'crm_assign', 'crm_all', 'crm_vocab', 'books_read', 'books_credit', 'leads_read', 'agencies_read', 'integrations', 'audit', 'alerts', 'alerts_ack']
   },
   read_only: {
     label: 'Read Only',
@@ -167,6 +168,10 @@ function requiredCap(pathname, method, col) {
   if (pathname === '/agencies/new' || pathname === '/agencies/delete') return 'agencies_write';
 
   if (pathname.startsWith('/crm')) {
+    // Renaming a disposition changes what every past call means, so it is a
+    // manager's job rather than part of ordinary lead editing.
+    if (pathname.startsWith('/crm/vocab')) return 'crm_vocab';
+    if (pathname.startsWith('/crm/import')) return 'crm_assign';
     if (pathname === '/crm/bulk-assign') return 'crm_assign';
     return write ? 'crm_write' : 'crm_read';
   }

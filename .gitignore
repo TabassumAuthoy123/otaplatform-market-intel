@@ -44,3 +44,7 @@ content/pre-restore-backup.json
 content/alerts.json
 content/scheduler-state.json
 content/backups/
+
+# CRM vocabulary overrides — runtime configuration a manager edits in the
+# portal, per deployment, like the alerts file.
+content/crm-vocab.json

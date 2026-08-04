@@ -38,6 +38,33 @@ const PORTAL_URL = `${APP_URL}/portal`;
 
 const AGENCY = require('./agency-fields');
 const CRM = require('./crm-fields');
+/**
+ * The CRM vocabularies as they are configured, not as they were coded.
+ *
+ * content/crm-vocab.json overrides admin/crm-fields.js. Read per call rather
+ * than held: the file is a couple of KB and a stale dropdown after somebody
+ * renames a disposition would be exactly the confusion the screen exists to
+ * remove. `hidden` retires a value without deleting it, so a lead that already
+ * carries it still renders its label.
+ */
+const VOCAB_FILE = () => path.join(CONTENT_DIR, 'crm-vocab.json');
+
+function vocab() {
+  return CRM.applyOverrides(readJson(VOCAB_FILE(), null));
+}
+
+/** Only the values a person should be offered for NEW work. */
+function vocabOffered(key) {
+  const v = vocab();
+  const hide = new Set(v.hidden[key] || []);
+  return Object.entries(v.vocab[key]).filter(([k]) => !hide.has(k));
+}
+
+/** Any value, including retired ones, so history reads correctly. */
+function vocabLabel(key, slug) {
+  return vocab().vocab[key][slug] || slug;
+}
+
 const RBAC = require('./roles');
 
 const ROOT = path.resolve(__dirname, '..');
@@ -683,7 +710,9 @@ function page({ title, session, body, active = '' }) {
         ${vis.crm ? `<div class="sep">Sales CRM · 400 prospects</div>
         <a href="/crm/dashboard" class="${active === 'crm-dash' ? 'on' : ''}">Manager dashboard</a>
         <a href="/crm" class="${active === 'crm' ? 'on' : ''}">Lead list</a>
-        <a href="/crm/call" class="${active === 'crm-call' ? 'on' : ''}">Call mode</a>` : ''}
+        <a href="/crm/call" class="${active === 'crm-call' ? 'on' : ''}">Call mode</a>
+        ${RBAC.can(session.role, 'crm_vocab') ? `<a href="/crm/vocab" class="${active === 'crm-vocab' ? 'on' : ''}">Lists &amp; vocabulary</a>` : ''}
+        ${RBAC.can(session.role, 'crm_assign') ? `<a href="/crm/import" class="${active === 'crm-import' ? 'on' : ''}">Import leads</a>` : ''}` : ''}
         ${vis.agencies ? `<div class="sep">Market Intelligence</div>
         <a href="/agencies" class="${active === 'agencies' ? 'on' : ''}">Agency dataset</a>` : ''}
         ${vis.design ? '<div class="sep">B2C storefront content</div>' : ''}
@@ -1134,7 +1163,7 @@ const BOOK_COLLECTIONS = [
   { key: 'hotels', label: 'Hotels', hint: 'Properties that can appear on a hotel or package line.', idPrefix: 'HTL-', noPrefix: null, title: ['name'], search: ['name', 'city'], amount: null, party: null, template: { id: '', name: '', city: '', country: '', stars: '', segment: '' } },
   { key: 'visaTypes', label: 'Visa types', hint: 'Category, validity, service fee and processing window.', idPrefix: 'VIS-', noPrefix: null, title: ['name'], search: ['name', 'category'], amount: null, party: null, template: { id: '', name: '', category: '', validityDays: '', serviceFee: '', processingDays: '' } },
   { key: 'countries', label: 'Countries', hint: 'ISO code, currency and dialling code.', idPrefix: 'CTR-', noPrefix: null, title: ['name'], search: ['name', 'iso2'], amount: null, party: null, template: { id: '', name: '', iso2: '', currency: '', dialCode: '' } },
-  { key: 'currencies', label: 'Currencies', hint: 'Rate to the base currency. Documents copy the rate when raised, so changing one here never restates a past sale.', idPrefix: 'CUR-', noPrefix: null, title: ['name'], search: ['name', 'code'], amount: null, party: null, template: { id: '', name: '', code: '', symbol: '', rateToBase: 0, isBase: 0 } },
+  { key: 'currencies', label: 'Currencies', hint: 'Rate to the base currency, and when it was last confirmed. Documents copy the rate when raised, so changing one here never restates a past sale — it prices the next one.', idPrefix: 'CUR-', noPrefix: null, title: ['name'], search: ['name', 'code'], amount: null, party: null, template: { id: '', name: '', code: '', symbol: '', rateToBase: 0, isBase: 0, checkedOn: '' } },
   { key: 'employees', label: 'Employees', hint: '', idPrefix: 'EMP-', noPrefix: null, title: ['name'], search: ['name', 'role'], amount: null, party: null }
 ];
 
@@ -1859,6 +1888,324 @@ function leadScopeView(session, lead, scope) {
   });
 }
 
+/** A lead with every field present, so an import cannot create a ragged record. */
+function blankLead() {
+  return {
+    lead_id: '', priority: 'P3', tier: '', segment: '', company: '', decision_maker: '',
+    address: '', city: '', phone: '', mobile: '', email: '', website: '', facebook: '',
+    licence_ref: '', booking_engine: '', prospect_note: '', data_source: '', source_url: '',
+    assigned_to: '', call_status: 'not_started', last_call_date: '', disposition: '',
+    interest_level: '', demo_scheduled: '', next_action: '', next_action_date: '',
+    notes: '', do_not_call_reason: ''
+  };
+}
+
+/**
+ * Parse a pasted CSV and work out exactly what it would do.
+ *
+ * RFC-4180 quoting by hand, because the field values in this dataset genuinely
+ * contain commas, quotes and newlines — addresses out of the government register
+ * are full of them, and a naive split on commas would shred them.
+ *
+ * Nothing is written here. The caller previews first.
+ */
+function planImport(csv) {
+  const errors = [];
+  const text = String(csv || '').replace(/^\uFEFF/, '').trim();
+  if (!text) return { errors: ['Paste some CSV first.'], rows: [], adds: [], updates: [], skipped: [] };
+
+  /* --- RFC-4180 reader ------------------------------------------------- */
+  const table = [];
+  let row = [];
+  let field = '';
+  let quoted = false;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') { field += '"'; i += 1; }
+        else quoted = false;
+      } else field += ch;
+      continue;
+    }
+    if (ch === '"') { quoted = true; continue; }
+    if (ch === ',') { row.push(field); field = ''; continue; }
+    if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i += 1;
+      row.push(field); field = '';
+      if (row.some((c) => c !== '')) table.push(row);
+      row = [];
+      continue;
+    }
+    field += ch;
+  }
+  row.push(field);
+  if (row.some((c) => c !== '')) table.push(row);
+
+  if (table.length < 2) return { errors: ['That looks like a header with no rows.'], rows: [], adds: [], updates: [], skipped: [] };
+
+  /* --- map the header to field names ---------------------------------- */
+  const norm = (h) => String(h).toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  const known = Object.keys(blankLead());
+  const aliases = {
+    id: 'lead_id', leadid: 'lead_id', lead: 'lead_id',
+    company_agency: 'company', company_name: 'company',
+    owner_decision_maker: 'decision_maker', owner: 'decision_maker',
+    office_address: 'address', phone_mobile: 'phone',
+    ref: 'licence_ref', why_they_are_a_prospect: 'prospect_note',
+    source: 'data_source', p: 'priority'
+  };
+  const header = table[0].map((h) => {
+    const k = norm(h);
+    return known.includes(k) ? k : (aliases[k] ?? null);
+  });
+  if (!header.includes('lead_id')) {
+    errors.push('No lead_id column. That is the key an import upserts on — without it every row would be a duplicate.');
+  }
+  const unmapped = table[0].filter((_, i) => header[i] === null);
+  if (errors.length) return { errors, rows: [], adds: [], updates: [], skipped: [] };
+
+  /* --- rows ------------------------------------------------------------ */
+  const existing = new Map(crmLeads().map((l) => [l.lead_id, l]));
+  const rows = [];
+  const adds = [];
+  const updates = [];
+  const skipped = [];
+  const seen = new Set();
+
+  for (let r = 1; r < table.length; r += 1) {
+    const cells = table[r];
+    const rec = {};
+    const ignoredCrm = [];
+    header.forEach((k, i) => {
+      if (!k) return;
+      const v = (cells[i] ?? '').trim();
+      if (v === '') return;
+      /**
+       * CALL PROGRESS IS DROPPED HERE, not at apply time.
+       *
+       * The first version only guarded updates, so a CSV row for a NEW lead
+       * could carry call_status=won and the import would create a lead the
+       * pipeline counted as closed — a deal nobody made, in the funnel and on
+       * the manager dashboard. An import brings research; progress is only ever
+       * earned by a rep logging a call.
+       */
+      if (CRM.EDITABLE.includes(k)) { ignoredCrm.push(k); return; }
+      // Phone numbers, emails and addresses go in exactly as printed — the data
+      // dictionary is explicit that source artefacts are preserved, not repaired.
+      rec[k] = v;
+    });
+    const id = rec.lead_id;
+    if (!id) { skipped.push({ line: r + 1, why: 'no lead_id' }); continue; }
+    if (!/^SBD-\d{4}$/.test(id)) { skipped.push({ line: r + 1, why: `lead_id "${id}" is not in the SBD-0000 form` }); continue; }
+    if (seen.has(id)) { skipped.push({ line: r + 1, why: `${id} appears more than once in this file` }); continue; }
+    seen.add(id);
+
+    if (existing.has(id)) {
+      const before = existing.get(id);
+      const changed = Object.keys(rec).filter((k) => rec[k] !== before[k]);
+      updates.push({ id, company: before.company, changed, wouldTouchCrm: ignoredCrm });
+    } else {
+      adds.push({ id, company: rec.company || '(no company name)', wouldTouchCrm: ignoredCrm });
+    }
+    rows.push(rec);
+  }
+
+  return { errors, rows, adds, updates, skipped, unmapped, columns: header.filter(Boolean) };
+}
+
+/**
+ * Import screen: paste, preview, then confirm.
+ *
+ * The CRM specification asked for this and it was never built, so growing the
+ * database past the researched 400 meant hand-editing a JSON file. The preview
+ * is the part that matters — an upsert straight off a paste is how a
+ * half-finished spreadsheet quietly overwrites the research everything else
+ * depends on.
+ */
+function importView(session, plan, errors, csv) {
+  const total = crmLeads().length;
+  const list = (arr, render) => arr.slice(0, 12).map(render).join('') + (arr.length > 12 ? `<div style="font-size:11.5px;color:var(--muted);padding:4px 0">and ${arr.length - 12} more</div>` : '');
+
+  return page({
+    title: 'Import leads',
+    session,
+    active: 'crm-import',
+    body: `
+      <h1>Import leads</h1>
+      <p class="sub">
+        Paste CSV with a <code>lead_id</code> column. Matching ids are UPDATED, new ones are ADDED, and
+        <strong>call progress is never touched</strong> — an import writes research fields only, so re-running a
+        seed cannot wipe what a rep recorded. ${total} leads in the database now.
+      </p>
+
+      ${errors && errors.length ? `<div class="flash warn"><strong>Not imported:</strong><ul style="margin:6px 0 0 16px">${errors.map((e) => `<li>${esc(e)}</li>`).join('')}</ul></div>` : ''}
+
+      ${plan && plan.done ? `
+        <div class="flash">
+          Imported. <strong>${plan.done.added} added, ${plan.done.updated} updated.</strong>
+          The database now holds ${total} leads. <a href="/crm">Open the lead list →</a>
+        </div>` : ''}
+
+      ${plan && !plan.done ? `
+        <div class="card">
+          <h2 style="margin:0 0 10px;font-size:13.5px;color:var(--navy)">This is what it would do — nothing is written yet</h2>
+          <div class="grid" style="margin-bottom:14px">
+            <div class="tile"><strong>${plan.adds.length}</strong><span>New leads</span></div>
+            <div class="tile"><strong>${plan.updates.length}</strong><span>Existing, would update</span></div>
+            <div class="tile"><strong>${plan.skipped.length}</strong><span>Skipped</span></div>
+            <div class="tile"><strong>${plan.columns.length}</strong><span>Columns recognised</span></div>
+          </div>
+
+          ${plan.unmapped && plan.unmapped.length ? `
+            <p style="font-size:12.5px;color:var(--amber);line-height:1.7;margin:0 0 12px">
+              <strong>${plan.unmapped.length} column(s) will be ignored</strong> because they do not match a lead field:
+              ${esc(plan.unmapped.join(', '))}. Nothing is guessed — a column this does not recognise is left alone
+              rather than written into the wrong place.
+            </p>` : ''}
+
+          ${plan.adds.length ? `<div style="margin-bottom:12px">
+            <div style="font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:4px">Will be added</div>
+            ${list(plan.adds, (a) => `<div style="font-size:12.5px">
+              <span class="tnum">${esc(a.id)}</span> ${esc(a.company)}
+              ${a.wouldTouchCrm && a.wouldTouchCrm.length ? `<span style="color:var(--amber)"> · ${esc([...new Set(a.wouldTouchCrm)].join(', '))} ignored, that is call progress</span>` : ''}
+            </div>`)}
+          </div>` : ''}
+
+          ${plan.updates.length ? `<div style="margin-bottom:12px">
+            <div style="font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:4px">Will be updated</div>
+            ${list(plan.updates, (u) => `<div style="font-size:12.5px">
+              <span class="tnum">${esc(u.id)}</span> ${esc(u.company)}
+              ${u.changed.length ? `<span style="color:var(--muted)"> — ${esc(u.changed.join(', '))}</span>` : '<span style="color:var(--muted)"> — no research field differs</span>'}
+              ${u.wouldTouchCrm.length ? `<span style="color:var(--amber)"> · ${esc(u.wouldTouchCrm.join(', '))} ignored, that is call progress</span>` : ''}
+            </div>`)}
+          </div>` : ''}
+
+          ${plan.skipped.length ? `<div>
+            <div style="font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--amber);margin-bottom:4px">Skipped</div>
+            ${list(plan.skipped, (sk) => `<div style="font-size:12.5px;color:var(--muted)">line ${sk.line}: ${esc(sk.why)}</div>`)}
+          </div>` : ''}
+        </div>` : ''}
+
+      <form method="post" action="/crm/import">
+        <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+        <div class="card">
+          <label class="row"><span class="lab">CSV ${plan && !plan.done ? '<em>edit and preview again, or confirm below</em>' : '<em>first row is the header</em>'}</span>
+            <textarea name="csv" rows="12" placeholder="lead_id,company,decision_maker,city,mobile,email,website,prospect_note,data_source,source_url">${esc(csv || '')}</textarea></label>
+          <div class="bar">
+            <button class="primary" type="submit">${plan && !plan.done ? 'Preview again' : 'Preview'}</button>
+            ${plan && !plan.done && (plan.adds.length || plan.updates.length) ? `
+              <button class="primary" type="submit" name="confirm" value="1" style="background:var(--amber)">
+                Apply — ${plan.adds.length} add, ${plan.updates.length} update
+              </button>` : ''}
+            <span style="margin-left:auto;font-size:12px;color:var(--muted)">
+              Export from <a href="${esc(APP_URL)}/api/crm/export?format=csv">/api/crm/export?format=csv</a> to see the exact column names.
+            </span>
+          </div>
+        </div>
+      </form>`
+  });
+}
+
+/**
+ * The dropdown lists a manager should own.
+ *
+ * These were constants in admin/crm-fields.js: adding a disposition meant a code
+ * edit and a restart, which the CRM specification explicitly did not want. A
+ * manager who cannot add "Interested — waiting on their IATA renewal" will put
+ * it in the notes field instead, and then nobody can count it.
+ *
+ * Retiring is deliberately not deleting. A value recorded against a real lead
+ * stays resolvable for ever, or that lead's history would start rendering as a
+ * raw slug — so the screen refuses to retire anything still in use, and hides
+ * the rest rather than removing them.
+ */
+function vocabView(session, msg, errors) {
+  const v = vocab();
+  const leads = crmLeads();
+  const acts = crmActivities();
+  const fieldFor = { CALL_STATUS: 'call_status', DISPOSITION: 'disposition', INTEREST: 'interest_level', DEMO: 'demo_scheduled', ACTIVITY_TYPE: null };
+  const titles = {
+    CALL_STATUS: 'Call status — the funnel',
+    DISPOSITION: 'Disposition — why the call ended that way',
+    INTEREST: 'Interest level',
+    DEMO: 'Demo scheduled',
+    ACTIVITY_TYPE: 'Activity type — what a logged touch was'
+  };
+
+  const usage = (key, slug) => {
+    const f = fieldFor[key];
+    if (!f) return acts.filter((a) => a.activity_type === slug).length;
+    return leads.filter((l) => l[f] === slug).length;
+  };
+
+  const block = (key) => {
+    const hidden = new Set(v.hidden[key] || []);
+    const all = { ...(CRM.DEFAULTS[key] || {}), ...v.vocab[key] };
+    const overridden = readJson(VOCAB_FILE(), {})[key];
+
+    return `
+      <form method="post" action="/crm/vocab">
+        <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+        <input type="hidden" name="list" value="${esc(key)}">
+        <div class="card" style="padding:0;overflow:hidden">
+          <div style="padding:14px 18px;border-bottom:1px solid var(--hair);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <h2 style="margin:0;font-size:13.5px;color:var(--navy)">${esc(titles[key])}</h2>
+            <span style="font-size:11.5px;color:var(--muted)">${Object.keys(all).length} value(s)${overridden ? ' · customised' : ' · built-in'}</span>
+          </div>
+          <table>
+            <thead><tr><th style="width:26%">Key</th><th>Label shown to reps</th><th style="text-align:right">In use</th><th style="width:90px">Retire</th></tr></thead>
+            <tbody>
+              ${Object.keys(all).map((slug) => {
+                const used = usage(key, slug);
+                const isHidden = hidden.has(slug);
+                return `
+                <tr${isHidden ? ' style="opacity:.55"' : ''}>
+                  <td class="tnum" style="font-size:12px">${esc(slug)}${isHidden ? ' <span style="font-size:10.5px;color:var(--amber)">retired</span>' : ''}</td>
+                  <td><input type="text" name="label_${esc(slug)}" value="${esc(all[slug])}" style="width:100%"></td>
+                  <td class="tnum" style="text-align:right">${used || '—'}</td>
+                  <td style="text-align:center">
+                    <input type="checkbox" name="retire" value="${esc(slug)}" ${isHidden ? 'checked' : ''} ${used ? 'disabled title="in use — cannot be retired"' : ''}>
+                  </td>
+                </tr>`;
+              }).join('')}
+              <tr style="background:var(--panel)">
+                <td class="tnum" style="font-size:11.5px;color:var(--muted)">new</td>
+                <td><input type="text" name="new_label" placeholder="Add a value — the key is generated from the label"></td>
+                <td></td><td></td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="bar" style="padding:12px 18px">
+            <button class="primary" type="submit">Save this list</button>
+            <span style="margin-left:auto"></span>
+          </div>
+        </div>
+      </form>
+      ${overridden ? `
+        <form method="post" action="/crm/vocab/reset" style="margin:-8px 0 18px">
+          <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+          <input type="hidden" name="list" value="${esc(key)}">
+          <button class="secondary" type="submit" style="font-size:12px">Reset ${esc(key)} to the built-in list</button>
+        </form>` : '<div style="margin-bottom:18px"></div>'}`;
+  };
+
+  return page({
+    title: 'CRM lists',
+    session,
+    active: 'crm-vocab',
+    body: `
+      <h1>CRM lists</h1>
+      <p class="sub">
+        The dropdowns reps choose from. Changing a label here changes it everywhere, including on calls already
+        logged — which is the point, and also why a value that is in use cannot be retired.
+      </p>
+      ${msg ? `<div class="flash">${esc(msg)}</div>` : ''}
+      ${errors && errors.length ? `<div class="flash warn"><strong>Not saved:</strong><ul style="margin:6px 0 0 16px">${errors.map((e) => `<li>${esc(e)}</li>`).join('')}</ul></div>` : ''}
+      ${CRM.OVERRIDABLE.map(block).join('')}`
+  });
+}
+
 /**
  * What the scheduled checks have found, and — just as important — whether they
  * are still running.
@@ -2469,7 +2816,7 @@ function statusChip(s) {
     : s === 'lost' || s === 'do_not_call' ? 'background:var(--panel);color:var(--muted)'
     : s === 'not_started' ? 'background:var(--panel);color:var(--muted)'
     : 'background:rgba(19,41,75,.07);color:var(--navy)';
-  return `<span style="display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;${tone}">${esc(CRM.CALL_STATUS[s] || s)}</span>`;
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;${tone}">${esc(vocabLabel('CALL_STATUS', s))}</span>`;
 }
 
 const PAGE = 50;
@@ -2523,9 +2870,9 @@ function crmListView(session, all, users, q, flash) {
         <label class="row" style="margin:0"><span class="lab">Tier</span>
           <select name="tier">${opt(tiers.map((t) => [t, t]), q.tier, 'All')}</select></label>
         <label class="row" style="margin:0"><span class="lab">Call status</span>
-          <select name="status">${opt(Object.entries(CRM.CALL_STATUS), q.status, 'All')}</select></label>
+          <select name="status">${opt(vocabOffered('CALL_STATUS'), q.status, 'All')}</select></label>
         <label class="row" style="margin:0"><span class="lab">Disposition</span>
-          <select name="disposition">${opt(Object.entries(CRM.DISPOSITION), q.disposition, 'All')}</select></label>
+          <select name="disposition">${opt(vocabOffered('DISPOSITION'), q.disposition, 'All')}</select></label>
         <label class="row" style="margin:0"><span class="lab">Assigned to</span>
           <select name="assigned">${opt([['unassigned', 'Unassigned']].concat(users.map((u) => [u.id, u.name])), q.assigned, 'Anyone')}</select></label>
         <label class="row" style="margin:0"><span class="lab">Has website</span>
@@ -2604,12 +2951,12 @@ function leadFormFields(lead, users) {
         <option value=""${!lead.assigned_to ? ' selected' : ''}>Unassigned</option>
         ${users.map((u) => `<option value="${esc(u.id)}"${lead.assigned_to === u.id ? ' selected' : ''}>${esc(u.name)}</option>`).join('')}
       </select></label>
-    ${sel('call_status', CRM.CALL_STATUS, lead.call_status, null)}
+    ${sel('call_status', Object.fromEntries(vocabOffered('CALL_STATUS')), lead.call_status, null)}
     <label class="row"><span class="lab">Last call date</span>
       <input type="date" name="last_call_date" value="${esc(lead.last_call_date || '')}"></label>
-    ${sel('disposition', CRM.DISPOSITION, lead.disposition, '— none yet —')}
-    ${sel('interest_level', CRM.INTEREST, lead.interest_level, '— not scored —')}
-    ${sel('demo_scheduled', CRM.DEMO, lead.demo_scheduled, '— n/a —')}
+    ${sel('disposition', Object.fromEntries(vocabOffered('DISPOSITION')), lead.disposition, '— none yet —')}
+    ${sel('interest_level', Object.fromEntries(vocabOffered('INTEREST')), lead.interest_level, '— not scored —')}
+    ${sel('demo_scheduled', Object.fromEntries(vocabOffered('DEMO')), lead.demo_scheduled, '— n/a —')}
     <label class="row"><span class="lab">Next action</span>
       <input type="text" name="next_action" value="${esc(lead.next_action || '')}" placeholder="e.g. send pricing, call owner back"></label>
     <label class="row"><span class="lab">Next action date</span>
@@ -2678,7 +3025,7 @@ function crmLeadView(session, lead, users, activities, flash, errors) {
             <h2 style="margin:0 0 12px;font-size:14px;color:var(--navy)">Log a touch</h2>
             <label class="row"><span class="lab">Type</span>
               <select name="activity_type">
-                ${Object.entries(CRM.ACTIVITY_TYPE).filter(([k]) => k !== 'status_change')
+                ${vocabOffered('ACTIVITY_TYPE').filter(([k]) => k !== 'status_change')
                   .map(([v, lab]) => `<option value="${esc(v)}">${esc(lab)}</option>`).join('')}
               </select></label>
             <label class="row"><span class="lab">Outcome</span>
@@ -2700,7 +3047,7 @@ function crmLeadView(session, lead, users, activities, flash, errors) {
           : `<table><thead><tr><th>When</th><th>Type</th><th>By</th><th>Outcome</th><th>Detail</th></tr></thead><tbody>
              ${activities.map((a) => `<tr>
                <td class="tnum" style="white-space:nowrap">${esc(String(a.occurred_at).slice(0, 16).replace('T', ' '))}</td>
-               <td>${esc(CRM.ACTIVITY_TYPE[a.activity_type] || a.activity_type)}</td>
+               <td>${esc(vocabLabel('ACTIVITY_TYPE', a.activity_type))}</td>
                <td>${esc(repName(users, a.user_id))}</td>
                <td>${esc(a.outcome || '—')}</td>
                <td style="max-width:380px">${esc(a.body || '—')}</td></tr>`).join('')}
@@ -2720,10 +3067,10 @@ function crmDashboardView(session, leads, users, activities, flash) {
   const abandoned = leads.filter((l) => l.disposition && !l.next_action && !CRM.CLOSED.has(l.call_status));
   const unassigned = leads.filter((l) => !l.assigned_to);
 
-  const funnel = CRM.FUNNEL_ORDER.map((s) => ({ s, n: leads.filter((l) => l.call_status === s).length })).filter((r) => r.n > 0);
+  const funnel = vocab().order.map((s) => ({ s, n: leads.filter((l) => l.call_status === s).length })).filter((r) => r.n > 0);
   const maxFunnel = Math.max(...funnel.map((r) => r.n), 1);
 
-  const dispo = Object.entries(CRM.DISPOSITION)
+  const dispo = vocabOffered('DISPOSITION')
     .map(([k, lab]) => ({ k, lab, n: leads.filter((l) => l.disposition === k).length })).filter((r) => r.n > 0);
 
   const perRep = users.map((u) => {
@@ -2789,7 +3136,7 @@ function crmDashboardView(session, leads, users, activities, flash) {
           ${funnel.map((r) => `
             <div style="padding:6px 0">
               <div style="display:flex;justify-content:space-between;font-size:12.5px;margin-bottom:3px">
-                <a href="/crm?status=${esc(r.s)}" style="color:var(--ink);text-decoration:none">${esc(CRM.CALL_STATUS[r.s])}</a>
+                <a href="/crm?status=${esc(r.s)}" style="color:var(--ink);text-decoration:none">${esc(vocabLabel('CALL_STATUS', r.s))}</a>
                 <strong class="tnum">${r.n}</strong></div>
               <div style="height:6px;background:var(--panel);border-radius:20px">
                 <div style="height:100%;width:${Math.max(2, (r.n / maxFunnel) * 100)}%;background:var(--teal);border-radius:20px"></div></div>
@@ -2909,7 +3256,7 @@ function crmCallView(session, lead, users, activities, remaining, flash, errors)
         <div style="padding:13px 18px;border-bottom:1px solid var(--hair)"><h2 style="margin:0;font-size:13.5px;color:var(--navy)">Previous touches</h2></div>
         <table><tbody>${activities.slice(0, 6).map((a) => `<tr>
           <td class="tnum" style="white-space:nowrap;width:130px">${esc(String(a.occurred_at).slice(0, 16).replace('T', ' '))}</td>
-          <td>${esc(CRM.ACTIVITY_TYPE[a.activity_type] || a.activity_type)}</td>
+          <td>${esc(vocabLabel('ACTIVITY_TYPE', a.activity_type))}</td>
           <td>${esc(a.outcome || '')}</td><td>${esc(a.body || '')}</td></tr>`).join('')}</tbody></table>
       </div>` : ''}`
   });
@@ -3640,6 +3987,131 @@ const server = http.createServer(async (req, res) => {
       }));
     }
 
+    if (pathname === '/crm/import' && req.method === 'GET') {
+      return send(res, 200, importView(session, null, null, null));
+    }
+
+    if (pathname === '/crm/import' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+
+      const plan = planImport(String(form.csv || ''));
+      if (plan.errors.length) return send(res, 422, importView(session, null, plan.errors, String(form.csv || '')));
+
+      // Preview first, always. An upsert that ran straight off a paste is how
+      // 400 researched records get quietly overwritten by a half-finished
+      // spreadsheet, and the research is the asset here.
+      if (!form.confirm) {
+        return send(res, 200, importView(session, plan, null, String(form.csv || '')));
+      }
+
+      const leads = crmLeads();
+      const byId = new Map(leads.map((l) => [l.lead_id, l]));
+      let added = 0;
+      let updated = 0;
+      for (const row of plan.rows) {
+        const existing = byId.get(row.lead_id);
+        if (existing) {
+          // `planImport` already dropped every call-progress column, so nothing
+          // here can overwrite what a rep recorded.
+          for (const [k, v] of Object.entries(row)) {
+            if (v !== '' && v !== undefined) existing[k] = v;
+          }
+          updated += 1;
+        } else {
+          leads.push({ ...blankLead(), ...row });
+          added += 1;
+        }
+      }
+      await writeJsonAtomic(CRM_LEADS_FILE, leads);
+      await audit(session, 'update', {
+        collection: 'crm-leads', id: 'import',
+        summary: `Imported ${plan.rows.length} row(s): ${added} added, ${updated} updated (research fields only)`
+      });
+      return send(res, 200, importView(session, { ...plan, done: { added, updated } }, null, ''));
+    }
+
+    if (pathname === '/crm/vocab' && req.method === 'GET') {
+      return send(res, 200, vocabView(session, url.searchParams.get('msg')));
+    }
+
+    if (pathname === '/crm/vocab' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+
+      const stored = readJson(VOCAB_FILE(), {});
+      const errors = [];
+      const key = String(form.list || '');
+      if (!CRM.OVERRIDABLE.includes(key)) errors.push('Unknown list.');
+
+      const leads = crmLeads();
+      const fieldFor = { CALL_STATUS: 'call_status', DISPOSITION: 'disposition', INTEREST: 'interest_level', DEMO: 'demo_scheduled', ACTIVITY_TYPE: null };
+      const inUse = (slug) => {
+        const f = fieldFor[key];
+        if (!f) return crmActivities().some((a) => a.activity_type === slug);
+        return leads.some((l) => l[f] === slug);
+      };
+
+      if (!errors.length) {
+        stored[key] = stored[key] || {};
+
+        // relabel anything submitted
+        for (const [k, v] of Object.entries(form)) {
+          const m = /^label_(.+)$/.exec(k);
+          if (!m) continue;
+          const label = String(v || '').trim();
+          if (!label) { errors.push(`"${m[1]}" cannot have an empty label.`); continue; }
+          stored[key][m[1]] = label;
+        }
+
+        // retire, but never for a value already recorded against real work
+        const retire = new Set([].concat(form.retire ?? []));
+        const defaults = CRM.DEFAULTS[key] || {};
+        for (const slug of Object.keys({ ...defaults, ...stored[key] })) {
+          if (retire.has(slug)) {
+            if (inUse(slug)) {
+              errors.push(`"${slug}" is recorded against existing work, so it cannot be retired — it would render as a raw slug on those records.`);
+              continue;
+            }
+            stored[key][slug] = null;
+          } else if (stored[key][slug] === null) {
+            delete stored[key][slug];
+          }
+        }
+
+        // add a new value
+        const newLabel = String(form.new_label || '').trim();
+        if (newLabel) {
+          const slug = CRM.slugify(newLabel);
+          if (!slug) errors.push('That label produces no usable key — use letters and numbers.');
+          else if (slug in { ...defaults, ...stored[key] }) errors.push(`"${slug}" already exists in this list.`);
+          else stored[key][slug] = newLabel;
+        }
+      }
+
+      if (errors.length) return send(res, 422, vocabView(session, null, errors));
+
+      await writeJsonAtomic(VOCAB_FILE(), stored);
+      await audit(session, 'update', {
+        collection: 'crm-vocab', id: key,
+        summary: `Changed the ${key} list`,
+        after: stored[key]
+      });
+      return redirect(res, `/crm/vocab?msg=${encodeURIComponent('Saved. The dropdowns change on the next page load.')}`);
+    }
+
+    if (pathname === '/crm/vocab/reset' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const key = String(form.list || '');
+      if (!CRM.OVERRIDABLE.includes(key)) return redirect(res, '/crm/vocab');
+      const stored = readJson(VOCAB_FILE(), {});
+      delete stored[key];
+      await writeJsonAtomic(VOCAB_FILE(), stored);
+      await audit(session, 'update', { collection: 'crm-vocab', id: key, summary: `Reset the ${key} list to the built-in defaults` });
+      return redirect(res, `/crm/vocab?msg=${encodeURIComponent(`${key} is back to the built-in list.`)}`);
+    }
+
     if (pathname === '/alerts' && req.method === 'GET') {
       return send(res, 200, alertsView(session, scheduler.status(), url.searchParams.get('msg')));
     }
@@ -4165,7 +4637,7 @@ async function applyCrmForm(leads, idx, form, session, activityBody) {
       lead_id: lead.lead_id,
       user_id: candidate.assigned_to || null,
       activity_type: 'call',
-      outcome: CRM.CALL_STATUS[candidate.call_status] || candidate.call_status,
+      outcome: vocabLabel('CALL_STATUS', candidate.call_status),
       body: activityBody.trim().slice(0, 4000),
       occurred_at: now
     });

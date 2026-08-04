@@ -334,6 +334,81 @@ editor pages to HTTP 500. Nothing failed, because the suite checked `/design`,
 
 ---
 
+## Things that were static and no longer are
+
+An audit of what in this platform was hard-coded, manual, or only true because
+somebody typed it once. Four were fixed; one turned out to need something from
+the supplier rather than from me, and that is recorded rather than papered over.
+
+**Every search re-asked both suppliers.** A customer reloading the fare list
+waited 1.5–3 seconds per supplier for an answer that had not changed, and every
+reload spent certification quota. Merged results are now cached for 90 seconds
+and the list **says how old the quote is** rather than implying it is live.
+Measured on DAC–DXB: 9.5s → 0.64s.
+
+The TTL is short deliberately. A GDS fare is a live quote — the whole reason
+`repriceOffer` exists is that one can vanish between seeing it and booking it.
+**Re-pricing never reads the cache**; confirming a booking always asks the
+supplier, because a cache feeding the confirmation step would be a way to sell a
+fare that no longer exists.
+
+**CRM dropdowns needed a code edit and a restart.** Adding a disposition meant
+editing `admin/crm-fields.js`, which the CRM specification explicitly did not
+want — and a manager who cannot add "Interested, waiting on their IATA renewal"
+puts it in the notes field instead, where nothing can count it. `/crm/vocab` now
+owns the call status, disposition, interest, demo and activity lists. Zero
+hard-coded uses remain.
+
+Retiring a value **hides it rather than deleting it**, and the screen refuses to
+retire anything already recorded against a lead — otherwise that lead's history
+would start rendering as a raw slug.
+
+**There was no CSV import.** Export existed in four formats; growing past the
+researched 400 towards the 5,800 in the roadmap meant hand-editing JSON.
+`/crm/import` upserts on `lead_id` with a **mandatory preview** — adds, updates,
+skips and ignored columns, all before anything is written. An upsert straight off
+a paste is how a half-finished spreadsheet quietly overwrites the research
+everything else depends on.
+
+**An import cannot fabricate call progress.** The first version guarded updates
+only, so a CSV row for a *new* lead could carry `call_status=won` and the import
+would create a lead the pipeline counted as closed — a deal nobody made, in the
+funnel and on the manager dashboard. Call-progress columns are now stripped when
+the CSV is read, so adds and updates are both safe, and the preview names what it
+is ignoring.
+
+**Currency rates are typed by hand.** Freezing the rate onto each document is
+correct and stays — a rate that moves next month must not restate a sale already
+paid. But the *master* rate then ages silently, and it is what prices the next
+foreign invoice. A scheduled check now reports any rate never confirmed or older
+than thirty days, and `checkedOn` records when a human last looked.
+
+### Hotels: entitled, but blocked on a schema rather than a permission
+
+`/portal/hotels`, `/portal/packages` and `/portal/visa` are stored samples while
+flights is live. Probing the Sabre host settled why that can change:
+
+```
+POST /v4.0.0/get/hotelavail    400  live — validates our payload
+POST /v3.0.0/get/hoteldetails  400  live — validates our payload
+POST /v1.0.0/book/hotel        403  ERR.2SG.SEC.NOT_AUTHORIZED
+```
+
+Hotel **search is entitled on these credentials** — it validates the request
+rather than refusing it, which is the same distinction that mattered for flight
+booking. Hotel *booking* is blocked exactly as flight booking is.
+
+What stopped the build was the request schema: `SearchCriteria` must match one of
+three alternatives and every shape tried came back *"instance failed to match
+exactly one schema (matched 0 out of 3)"*. Roughly twenty attempts got no closer,
+and guessing at a third-party schema indefinitely is not work — nor is shipping a
+hotel page that pretends. **The ask to Sabre is therefore a document, not a
+permission:** send the GetHotelAvail v4 `SearchCriteria` schema. The moment that
+arrives this is a small piece of work, because the transport, auth and merge
+layer already exist for flights.
+
+---
+
 ## Scheduled checks
 
 Nothing in this platform used to run on a timer. Every figure is derived at
@@ -352,6 +427,7 @@ Six checks now run inside the admin portal, each on its own interval:
 | Inventory expiry | 12 h | Unsold stock with an expiry date is cash on a shelf. It was displayed and never warned about. |
 | Supplier connections | 1 h | A dead GDS credential looks exactly like a route with no inventory — the storefront just shows fewer fares. |
 | Daily backup | 24 h | The only backup was a button somebody had to press. Fourteen dated copies are kept in `content/backups/`. |
+| Currency rates | 12 h | Rates are hand-typed and freeze onto documents correctly, but the master then ages silently and prices the next foreign invoice. |
 
 Three properties matter more than the checks themselves.
 
@@ -430,7 +506,7 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 103 checks — the specification, hardening and automation
+node scripts/verify-srs.mjs      # 112 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 34 checks — the admin portal, signed in
 node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```

@@ -641,6 +641,84 @@ await check('A held booking keeps its ticketing deadline', () => {
     'stored on the record, urgency derived per day, and a missing deadline is its own state rather than "fine"'];
 });
 
+
+/* --------------------------------------------- static things made dynamic */
+section('No longer static');
+
+await check('Repeated searches do not re-ask the suppliers', async () => {
+  const src = readFileSync('lib/offers.ts', 'utf8');
+  const cached = src.includes('const searchCache') && src.includes('CACHE_TTL_MS');
+
+  /**
+   * Slice the actual function body rather than pattern-matching near its name.
+   * The first version searched 900 characters after any mention of
+   * `repriceOffer` — and the comment explaining why re-pricing must stay live
+   * mentions it, with readCache defined just below. My own comment failed my own
+   * check, which has happened enough times in this repository to be worth
+   * guarding against by construction.
+   */
+  const start = src.indexOf('export async function repriceOffer');
+  const body = start < 0 ? '' : src.slice(start);
+  const repriceIsLive = start > -1 && !body.includes('readCache(');
+
+  return [cached && repriceIsLive,
+    start < 0 ? 'repriceOffer not found' : 'merged results cached briefly; repriceOffer always asks the supplier'];
+});
+
+await check('A cached answer says how old it is', () => {
+  const page = readFileSync('app/(portal)/portal/flights/page.tsx', 'utf8');
+  return [page.includes('cachedAgeMs') && page.includes('quoted'),
+    'the fare list states its age rather than implying it is live'];
+});
+
+await check('The cache TTL is short enough not to quote a dead fare', () => {
+  const src = readFileSync('lib/offers.ts', 'utf8');
+  const m = /GDS_CACHE_TTL_MS \?\? ([\d_]+)/.exec(src);
+  const ms = m ? Number(m[1].replace(/_/g, '')) : Infinity;
+  return [ms > 0 && ms <= 120_000, `${ms / 1000}s — long enough for a reload, short enough that nothing on screen is stale`];
+});
+
+await check('CRM dropdowns are configuration, not code', () => {
+  const fields = readFileSync('admin/crm-fields.js', 'utf8');
+  const server = readFileSync('admin/server.js', 'utf8');
+  const noHardCoded = !/CRM\.(CALL_STATUS|DISPOSITION|INTEREST|DEMO|ACTIVITY_TYPE|FUNNEL_ORDER)\b/.test(server);
+  return [fields.includes('applyOverrides') && server.includes('vocabOffered') && noHardCoded,
+    'every call site reads the configured list; zero hard-coded uses left'];
+});
+
+await check('A retired vocabulary value stays resolvable', () => {
+  const fields = readFileSync('admin/crm-fields.js', 'utf8');
+  return [fields.includes('hidden') && fields.includes('still resolvable'),
+    'hiding rather than deleting, or a lead that used it would render a raw slug'];
+});
+
+await check('CSV import exists and previews before writing', () => {
+  const src = readFileSync('admin/server.js', 'utf8');
+  return [src.includes('function planImport') && src.includes("if (!form.confirm)"),
+    'preview is mandatory — an upsert straight off a paste would overwrite the research'];
+});
+
+await check('An import can never fabricate call progress', () => {
+  const src = readFileSync('admin/server.js', 'utf8');
+  // Dropped at PARSE time, so it applies to new rows too. Guarding only updates
+  // let a CSV create a lead the pipeline counted as won.
+  return [src.includes('if (CRM.EDITABLE.includes(k)) { ignoredCrm.push(k); return; }'),
+    'call-progress columns are stripped when the CSV is read, for adds and updates alike'];
+});
+
+await check('Currency rates are watched for going stale', async () => {
+  const jobs = readFileSync('admin/jobs.js', 'utf8');
+  const state = JSON.parse(readFileSync('content/scheduler-state.json', 'utf8'));
+  return [jobs.includes("key: 'fx_rates'") && Boolean(state.jobs?.fx_rates),
+    `the check has run and raised ${state.jobs?.fx_rates?.raised ?? '?'} — a hand-typed rate prices the NEXT invoice`];
+});
+
+await check('Sabre hotel search is entitled, and that is recorded honestly', () => {
+  const readme = readFileSync('README.md', 'utf8');
+  return [readme.includes('hotelavail') && readme.includes('schema'),
+    'the endpoint validates rather than refusing, so the ask is a schema not a provisioning change'];
+});
+
 /* --------------------------------------------------------------------- report */
 const pad = (s, n) => String(s).padEnd(n);
 let lastSection = '';

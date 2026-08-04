@@ -144,8 +144,66 @@ function telNumber(lead) {
   return m ? m[0].replace(/[^\d+]/g, '') : null;
 }
 
+/**
+ * The vocabularies above are the DEFAULTS, and they used to be the only version.
+ *
+ * Adding a call disposition meant editing this file and restarting the portal,
+ * which the original CRM specification explicitly did not want — it asked for a
+ * screen so the list could change "without a deploy". A sales manager who cannot
+ * add "Interested — waiting on their IATA renewal" without a developer will
+ * instead put it in the notes field, and then it cannot be counted.
+ *
+ * `content/crm-vocab.json` overrides them when it exists. Overriding rather than
+ * replacing matters: a key already used by a lead must never simply vanish, or
+ * that lead's disposition would render as a raw slug. `applyOverrides` merges,
+ * so an entry can be relabelled or added, and removing one only hides it from
+ * the dropdowns.
+ */
+const OVERRIDABLE = ['CALL_STATUS', 'DISPOSITION', 'INTEREST', 'DEMO', 'ACTIVITY_TYPE'];
+
+const DEFAULTS = { CALL_STATUS, DISPOSITION, INTEREST, DEMO, ACTIVITY_TYPE };
+
+/**
+ * Merge a stored override over the defaults.
+ *
+ * `hidden` is how a value is retired. It leaves the label available for leads
+ * that already carry it — so history still reads correctly — while keeping it
+ * out of the dropdown for new work. Deleting outright would silently corrupt
+ * every lead that used it.
+ */
+function applyOverrides(stored) {
+  const out = { CALL_STATUS: { ...CALL_STATUS }, DISPOSITION: { ...DISPOSITION }, INTEREST: { ...INTEREST }, DEMO: { ...DEMO }, ACTIVITY_TYPE: { ...ACTIVITY_TYPE } };
+  const hidden = { CALL_STATUS: [], DISPOSITION: [], INTEREST: [], DEMO: [], ACTIVITY_TYPE: [] };
+  if (!stored || typeof stored !== 'object') return { vocab: out, hidden, order: Object.keys(out.CALL_STATUS) };
+
+  for (const key of OVERRIDABLE) {
+    const over = stored[key];
+    if (!over || typeof over !== 'object') continue;
+    for (const [slug, val] of Object.entries(over)) {
+      if (val === null || val === false) {
+        // retired: still resolvable, no longer offered
+        hidden[key].push(slug);
+        continue;
+      }
+      if (typeof val === 'string' && val.trim()) out[key][slug] = val.trim();
+    }
+  }
+  const order = Array.isArray(stored.FUNNEL_ORDER) && stored.FUNNEL_ORDER.length
+    ? stored.FUNNEL_ORDER.filter((k) => k in out.CALL_STATUS)
+    : Object.keys(out.CALL_STATUS);
+  // Anything the stored order forgot still has to appear somewhere.
+  for (const k of Object.keys(out.CALL_STATUS)) if (!order.includes(k)) order.push(k);
+  return { vocab: out, hidden, order };
+}
+
+/** A slug safe to use as a key: lower case, underscores, nothing exotic. */
+function slugify(label) {
+  return String(label).toLowerCase().trim().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40);
+}
+
 module.exports = {
   CALL_STATUS, FUNNEL_ORDER, DISPOSITION, INTEREST, DEMO, ACTIVITY_TYPE,
   PRIORITY_HINT, CLOSED, CONTACTED, EDITABLE, SAVED_VIEWS,
-  validateLead, queueRank, waNumber, telNumber
+  validateLead, queueRank, waNumber, telNumber,
+  OVERRIDABLE, DEFAULTS, applyOverrides, slugify
 };

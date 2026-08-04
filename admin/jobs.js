@@ -260,6 +260,63 @@ function jobs(ctx) {
       }
     },
 
+    /* ------------------------------------------------------ currency rates */
+    {
+      key: 'fx_rates',
+      label: 'Currency rates',
+      everyMinutes: 12 * 60,
+      why: 'Rates are typed by hand and are deliberately frozen onto each document, which is right — but the MASTER rate then quietly ages, and the next foreign invoice is raised at whatever was last entered.',
+      async run() {
+        const b = book();
+        const base = (b.company && b.company.currencySettings && b.company.currencySettings.baseCurrency) || b.company?.currency || 'BDT';
+        const rows = b.currencies || [];
+        if (rows.length === 0) return [];
+
+        const t = today();
+        const maxAgeDays = Number(process.env.FX_MAX_AGE_DAYS ?? 30);
+        const out = [];
+
+        for (const c of rows) {
+          if (c.code === base || Number(c.isBase) === 1) continue;
+          if (!(Number(c.rateToBase) > 0)) {
+            out.push({
+              id: `fx:zero:${c.code}`,
+              severity: 'critical',
+              title: `${c.code} has no usable rate`,
+              detail: `rateToBase is ${c.rateToBase}. Any document raised in ${c.code} would be valued at nothing.`,
+              where: '/books/list?col=currencies'
+            });
+            continue;
+          }
+          // `checkedOn` is optional and absent on rates that were seeded, which
+          // is itself the thing worth saying: nobody has confirmed them since.
+          const days = c.checkedOn
+            ? Math.round((Date.parse(t) - Date.parse(c.checkedOn)) / 86400000)
+            : null;
+          if (days === null) {
+            out.push({
+              id: `fx:unchecked:${c.code}`,
+              severity: 'info',
+              title: `${c.code} has never been confirmed`,
+              detail:
+                `Held at ${c.rateToBase} per 1 ${c.code} with no checkedOn date. Documents already raised keep their ` +
+                `own rate and are safe; it is the NEXT ${c.code} invoice that would use this one.`,
+              where: '/books/list?col=currencies'
+            });
+          } else if (days > maxAgeDays) {
+            out.push({
+              id: `fx:stale:${c.code}`,
+              severity: 'warning',
+              title: `${c.code} rate is ${days} days old`,
+              detail: `Confirmed ${c.checkedOn} at ${c.rateToBase}. Past ${maxAgeDays} days a hand-typed rate should be re-checked before it prices anything new.`,
+              where: '/books/list?col=currencies'
+            });
+          }
+        }
+        return out;
+      }
+    },
+
     /* ------------------------------------------------------------- backup */
     {
       key: 'backup',

@@ -40,7 +40,17 @@ export type Country = { id: string; name: string; iso2: string; currency: string
  * copied onto a document when the document is raised. A rate that moves next
  * month must not restate a sale that was already made and already paid.
  */
-export type Currency = { id: string; name: string; code: string; symbol: string; rateToBase: number; isBase: number };
+export type Currency = {
+  id: string; name: string; code: string; symbol: string; rateToBase: number; isBase: number;
+  /**
+   * When a human last confirmed this rate. Blank means never.
+   *
+   * Documents freeze their own rate, so a stale master cannot restate anything
+   * already raised — it can only misprice the NEXT foreign invoice, which is
+   * exactly the failure the scheduled check watches for.
+   */
+  checkedOn?: string;
+};
 export type Employee = { id: string; name: string; role: string; phone: string };
 
 export type InvoiceLine = {

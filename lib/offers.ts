@@ -105,6 +105,68 @@ function fromSabre(a: SabreAttempt, date: string): Offer[] {
   }));
 }
 
+/* -------------------------------------------------------------- fare cache */
+
+/**
+ * A short-lived cache of merged search results.
+ *
+ * Every render of /portal/flights asked both suppliers again — around 1.5 to 3
+ * seconds each, on a page a customer reloads while comparing. That is slow for
+ * them and it burns certification quota and rate limit for us, for an answer
+ * that had not changed in the intervening two seconds.
+ *
+ * THE TTL IS SHORT ON PURPOSE. A GDS fare is a live quote; the whole reason
+ * `repriceOffer` exists is that a fare can vanish between seeing it and booking
+ * it. Caching for minutes would put stale prices in front of people. Ninety
+ * seconds is long enough to absorb a reload and a back-button, and short enough
+ * that nothing on screen is meaningfully older than the search that produced it.
+ *
+ * RE-PRICING NEVER READS THIS. `repriceOffer` asks the supplier every time, so
+ * confirming a booking always checks the live price no matter what the list
+ * showed. A cache that fed the confirmation step would be a way to sell a fare
+ * that no longer exists.
+ */
+const CACHE_TTL_MS = Number(process.env.GDS_CACHE_TTL_MS ?? 90_000);
+const CACHE_MAX = 60;
+
+type CacheEntry = { at: number; value: SearchResult };
+const searchCache = new Map<string, CacheEntry>();
+
+const cacheKey = (q: Query) => `${q.from}|${q.to}|${q.date}|${q.adults}`;
+
+function readCache(q: Query): SearchResult | null {
+  if (CACHE_TTL_MS <= 0) return null;
+  const hit = searchCache.get(cacheKey(q));
+  if (!hit) return null;
+  if (Date.now() - hit.at > CACHE_TTL_MS) {
+    searchCache.delete(cacheKey(q));
+    return null;
+  }
+  return { ...hit.value, cachedAgeMs: Date.now() - hit.at };
+}
+
+function writeCache(q: Query, value: SearchResult) {
+  if (CACHE_TTL_MS <= 0) return;
+  // A search that returned nothing is not worth remembering — the next attempt
+  // may well be a transient supplier problem clearing.
+  if (value.offers.length === 0) return;
+  searchCache.set(cacheKey(q), { at: Date.now(), value });
+  // Bounded so a busy day cannot grow this without limit.
+  while (searchCache.size > CACHE_MAX) {
+    const oldest = [...searchCache.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+    if (!oldest) break;
+    searchCache.delete(oldest[0]);
+  }
+}
+
+export type SearchResult = {
+  offers: Offer[];
+  suppliers: SupplierResult[];
+  anyConfigured: boolean;
+  /** Set when this answer came from the cache, so the page can say so. */
+  cachedAgeMs?: number;
+};
+
 /* ------------------------------------------------------------------- search */
 
 function tpProblem(a: GdsAttempt): string | undefined {
@@ -132,11 +194,10 @@ function sabreProblem(a: SabreAttempt): string | undefined {
  * slower of them twice over. A supplier that is down or unconfigured contributes
  * nothing and says why, rather than taking the whole search with it.
  */
-export async function searchAllSuppliers(q: Query): Promise<{
-  offers: Offer[];
-  suppliers: SupplierResult[];
-  anyConfigured: boolean;
-}> {
+export async function searchAllSuppliers(q: Query): Promise<SearchResult> {
+  const cached = readCache(q);
+  if (cached) return cached;
+
   const tpStatus = searchConfigStatus();
   const sbStatus = sabreStatus();
 
@@ -176,7 +237,9 @@ export async function searchAllSuppliers(q: Query): Promise<{
   ];
 
   const offers = [...tpOffers, ...sbOffers].sort((a, b) => a.amount - b.amount);
-  return { offers, suppliers, anyConfigured: tpStatus.configured || sbStatus.configured };
+  const result: SearchResult = { offers, suppliers, anyConfigured: tpStatus.configured || sbStatus.configured };
+  writeCache(q, result);
+  return result;
 }
 
 /**

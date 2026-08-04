@@ -116,7 +116,13 @@ export default async function FlightsPage({
           <SectionTitle
             kicker="Live fares"
             title={offers.length ? `${offers.length} fares from ${suppliers.filter((s) => s.offerCount > 0).map((s) => SUPPLIER_LABEL[s.supplier]).join(' and ')}` : 'No live fares for this route'}
-            sub={offers.length ? 'Cheapest first, across both suppliers.' : undefined}
+            sub={
+              offers.length
+                ? result?.cachedAgeMs !== undefined
+                  ? `Cheapest first, across both suppliers · quoted ${Math.round(result.cachedAgeMs / 1000)}s ago and re-priced against the supplier when you confirm`
+                  : 'Cheapest first, across both suppliers.'
+                : undefined
+            }
           />
           {offers.length > 0 ? (
             <div className="grid gap-3">
