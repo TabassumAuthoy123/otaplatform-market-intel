@@ -171,7 +171,24 @@ export async function sabreSearch(q: SabreQuery): Promise<SabreAttempt> {
   }
 
   const baseUrl = process.env.SABRE_BASE_URL!.replace(/\/+$/, '');
+  /**
+   * ONE budget for the whole Sabre path, not one per call.
+   *
+   * A Sabre search is two sequential HTTP calls — token, then shop — and each
+   * used to get the full `timeoutMs` of its own. With the default 30000 that made
+   * the real worst case 60s, a number nobody configured and nothing documented:
+   * it just emerged from two independent AbortControllers. Since Travelport runs
+   * in parallel at GDS_TIMEOUT_MS, the storefront's actual worst case was
+   * max(travelport, 60s) while every comment in the codebase said the search was
+   * bounded by a single setting. A live run took 36.7s and tripped a check that
+   * expected 30s, which is how this surfaced.
+   *
+   * Now `SABRE_TIMEOUT_MS` means what it says: the deadline for the whole
+   * attempt. Whatever the token spends, the shop call cannot spend again.
+   */
   const timeoutMs = Number(process.env.SABRE_TIMEOUT_MS || 30000);
+  const deadline = Date.now() + timeoutMs;
+  const remaining = () => Math.max(1, deadline - Date.now());
   const host = (() => {
     try {
       return new URL(baseUrl).host;
@@ -181,7 +198,7 @@ export async function sabreSearch(q: SabreQuery): Promise<SabreAttempt> {
   })();
 
   const started = Date.now();
-  const tok = await getToken(baseUrl, process.env.SABRE_USER_ID!, process.env.SABRE_PASSWORD!, timeoutMs);
+  const tok = await getToken(baseUrl, process.env.SABRE_USER_ID!, process.env.SABRE_PASSWORD!, remaining());
   if (!tok.ok) {
     return {
       configured: true, missing: [], attempted: true, upstreamOk: false,
@@ -216,7 +233,8 @@ export async function sabreSearch(q: SabreQuery): Promise<SabreAttempt> {
 
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    // Whatever the token spent is gone; the shop call gets what is left.
+    const timer = setTimeout(() => controller.abort(), remaining());
     const res = await fetch(`${baseUrl}/v5/offers/shop`, {
       method: 'POST',
       headers: {

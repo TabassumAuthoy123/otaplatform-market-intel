@@ -584,6 +584,27 @@ await check('Travelport booking still carries the branch and the provider code',
     : `branch throw ${throwsOnMissingBranch}, seg ${providerOnSegment}, action ${providerOnAction}, mobile ${mobilePhone}, no TAW ${noTaw}`];
 });
 
+await check('A supplier timeout bounds the whole attempt, not each call inside it', () => {
+  const sabre = readFileSync('lib/sabre.ts', 'utf8');
+  const tkt = readFileSync('lib/ticketing.ts', 'utf8');
+  /**
+   * Both Sabre paths are two sequential HTTP calls — token, then the real one —
+   * and each used to get the full timeout of its own. SABRE_TIMEOUT_MS=30000
+   * therefore meant 60s for a search, and SB_TIMEOUT with sabreCall's single
+   * retry meant ~80s for a booking. Nobody configured those numbers; they emerged
+   * from independent AbortControllers while every comment nearby claimed the call
+   * was bounded by one setting. A 36.7s search is what exposed it.
+   */
+  const searchShares = /const deadline = Date\.now\(\) \+ timeoutMs/.test(sabre)
+    && /getToken\([^)]*remaining\(\)\)/.test(sabre)
+    && /controller\.abort\(\), remaining\(\)/.test(sabre);
+  const ticketShares = /const deadline = started \+ SB_TIMEOUT/.test(tkt)
+    && /sabreToken\(remaining\(\)\)/.test(tkt)
+    && /controller\.abort\(\), remaining\(\)/.test(tkt);
+  return [searchShares && ticketShares,
+    `search shares one deadline: ${searchShares}, ticketing shares one deadline: ${ticketShares}`];
+});
+
 await check('No uAPI request sends an AuthorizedBy with a space in it', () => {
   const src = readFileSync('lib/ticketing.ts', 'utf8');
   /**

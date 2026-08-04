@@ -13,6 +13,8 @@
  * Needs the app on :3002 and live GDS credentials in .env.
  */
 
+import { readFileSync } from 'node:fs';
+
 const APP = process.env.APP_URL || 'http://127.0.0.1:3002';
 
 const arg = (name) => {
@@ -132,15 +134,34 @@ for (const route of routes) {
   perRoute.push({ route, cards: cards.length, suppliers, ms, panels });
 
   const panelText = panels.map((p) => `${p.supplier} ${p.fares}${p.ms ? ` ${p.ms}ms` : ''}`).join(' · ');
+  /**
+   * Report the status code and the page size, always.
+   *
+   * This line used to print only "0 fares in 36688ms — no panel", which is three
+   * different failures wearing the same words: the page 500'd, or the suppliers
+   * returned nothing, or this file's panel regex missed. Diagnosing it meant
+   * re-running and guessing. The page cannot structurally render zero panels when
+   * a search ran — `suppliers` in lib/offers.ts is always two entries — so "no
+   * panel" alongside HTTP 200 means the regex here is wrong, and alongside a 500
+   * means the app is. Say which.
+   */
   ok(`${route} returns a priced answer`, status === 200 && cards.length > 0,
-    `${cards.length} fares in ${ms}ms — ${panelText || 'no panel'}`);
+    `HTTP ${status}, ${money(html.length)} bytes, ${cards.length} fares in ${ms}ms — ${panelText || 'NO PANEL PARSED'}`);
+
+  if (status === 200 && panels.length === 0) {
+    ok(`${route} the supplier status panels are on the page`, false,
+      'HTTP 200 with no panel parsed — the page always renders two, so this regex is stale, not the app');
+  }
 
   if (cards.length === 0) {
     // A route with no inventory in a certification environment is not a failure,
     // but it has to SAY that rather than looking broken.
-    const explained = /no inventory on that pair/.test(html) || /Answered normally with nothing/.test(html);
+    const explained = /no inventory on that pair/.test(html) || /Answered normally with nothing/.test(html)
+      || /No response within/.test(html) || /not whitelisted/.test(html);
     ok(`${route} explains the empty result`, explained,
-      explained ? 'page says the supplier answered normally with nothing' : 'page gives no reason — that reads as broken');
+      explained
+        ? 'page states the supplier answered normally with nothing, or names the transport failure'
+        : `page gives no reason — that reads as broken (HTTP ${status}, ${money(html.length)} bytes)`);
     continue;
   }
 
@@ -239,16 +260,42 @@ console.log('');
  * Americas and a Sabre certification host. A hard 8-second bar failed on one
  * route out of seven at 13.2s while every other run passed — that is a flaky
  * test, and a flaky test is worse than none because it gets ignored. What is
- * actually ours to guarantee is that a slow supplier cannot hang the page: the
- * search is bounded by GDS_TIMEOUT_MS, both suppliers are asked in parallel, and
- * the page still renders. Slow routes are reported, not failed.
+ * actually ours to guarantee is that a slow supplier cannot hang the page: each
+ * supplier is bounded, both are asked in parallel, and the page still renders.
+ * Slow routes are reported, not failed.
+ *
+ * TWICE NOW this check has been wrong about its own bound.
+ *
+ * First it read only GDS_TIMEOUT_MS, which bounds Travelport, and used it to
+ * judge a page that also waits on Sabre. Second — and this is the one that made
+ * it fail on a working app — `node` does not load `.env`. Next does. So the app
+ * was running at GDS_TIMEOUT_MS=45000 while this line computed 20000+10000 from
+ * the default, and a legitimate 36.7s search was reported as a defect. The bound
+ * has to come from the same file the app reads, and it has to account for both
+ * suppliers, because the page waits for the slower one.
  */
+const envFile = (() => {
+  try {
+    return Object.fromEntries(
+      readFileSync('.env', 'utf8')
+        .split(/\r?\n/)
+        .filter((l) => /^[A-Z_]+=/.test(l))
+        .map((l) => [l.slice(0, l.indexOf('=')), l.slice(l.indexOf('=') + 1).replace(/^["']|["']$/g, '')])
+    );
+  } catch {
+    return {};
+  }
+})();
+const setting = (name, fallback) => Number(process.env[name] ?? envFile[name] ?? fallback);
+
 const sorted = [...timings].sort((a, b) => a - b);
 const median = sorted[Math.floor(sorted.length / 2)] ?? 0;
 const worst = Math.max(...timings);
-const budget = Number(process.env.GDS_TIMEOUT_MS ?? 20000) + 10000;
+// Parallel, so the page waits for whichever supplier is slower — plus render.
+const budget = Math.max(setting('GDS_TIMEOUT_MS', 20000), setting('SABRE_TIMEOUT_MS', 30000)) + 10000;
 ok('No search exceeds the configured supplier timeout', worst < budget,
-  `median ${money(median)}ms, slowest ${money(worst)}ms, bound ${money(budget)}ms`);
+  `median ${money(median)}ms, slowest ${money(worst)}ms, bound ${money(budget)}ms ` +
+  `(travelport ${money(setting('GDS_TIMEOUT_MS', 20000))}ms, sabre ${money(setting('SABRE_TIMEOUT_MS', 30000))}ms, parallel)`);
 const slow = timings.filter((t) => t > 8000);
 if (slow.length) {
   note(`${slow.length} of ${timings.length} route(s) took over 8s — live supplier latency, not this codebase`);

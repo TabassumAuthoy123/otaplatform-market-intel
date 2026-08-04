@@ -582,9 +582,11 @@ async function travelportVoidOrRefund(action: 'void' | 'refund', ticketNumber: s
  * moment. lib/sabre.ts owns it, including the double-base64 header and the
  * shared token cache.
  */
-async function sabreToken(): Promise<{ ok: true; token: string } | { ok: false; status?: number; message: string }> {
+async function sabreToken(budgetMs = SB_TIMEOUT): Promise<
+  { ok: true; token: string } | { ok: false; status?: number; message: string }
+> {
   const base = (process.env.SABRE_BASE_URL ?? '').replace(/\/+$/, '');
-  const r = await getToken(base, process.env.SABRE_USER_ID ?? '', process.env.SABRE_PASSWORD ?? '', SB_TIMEOUT);
+  const r = await getToken(base, process.env.SABRE_USER_ID ?? '', process.env.SABRE_PASSWORD ?? '', budgetMs);
   if (r.ok) return { ok: true, token: r.token };
   const body = r.body as { error_description?: string; error?: string } | undefined;
   return {
@@ -623,7 +625,20 @@ async function sabreCallOnce(action: TicketAction, path: string, payload: unknow
   const url = `${base}${path}`;
   const started = Date.now();
 
-  const tok = await sabreToken();
+  /**
+   * SB_TIMEOUT bounds the whole attempt, not each of its two HTTP calls.
+   *
+   * This did token-then-call with the full timeout available to each, so one
+   * attempt could run to 2× SB_TIMEOUT, and sabreCall retries once, which made
+   * the real ceiling 4× — 80s on the default — reached by nothing more exotic
+   * than a slow gateway. Every comment nearby described it as bounded by one
+   * value. It is now actually bounded by one value per attempt; the retry is a
+   * deliberate second attempt and says so.
+   */
+  const deadline = started + SB_TIMEOUT;
+  const remaining = () => Math.max(1, deadline - Date.now());
+
+  const tok = await sabreToken(remaining());
   if (!tok.ok) {
     const d = diagnose('sabre', undefined, tok.message, tok.status);
     return {
@@ -634,7 +649,7 @@ async function sabreCallOnce(action: TicketAction, path: string, payload: unknow
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SB_TIMEOUT);
+  const timer = setTimeout(() => controller.abort(), remaining());
   try {
     const res = await fetch(url, {
       method: 'POST',
