@@ -1,4 +1,6 @@
 import Link from 'next/link';
+import { ModuleLink } from '@/components/ModuleLink';
+import { PANEL_MODULES, enabledModules } from '@/lib/panelMenus';
 import { getCompetitors, getMarket } from '@/lib/market';
 
 // Runs off content/crm-leads.json — the same 400 records the sales floor calls
@@ -68,6 +70,22 @@ export default async function Dashboard() {
   const m = await getMarket();
   const comp = await getCompetitors();
 
+  /**
+   * Drop a drill-down when the module it drills into is switched off.
+   *
+   * Twelve tiles and bars on this page link into `/agencies`. With that module off
+   * they were still clickable and every one of them landed on the 404 the panel
+   * toggles had just created — a broken link manufactured by the feature meant to
+   * tidy things up. Returning `undefined` is what makes this cheap: `Tile` and
+   * `Bar` already render a plain div or span when `href` is absent, so the number
+   * and its label survive and only the navigation goes.
+   */
+  const enabled = new Set((await enabledModules('dashboard')).map((x) => x.href));
+  const off = new Set(
+    PANEL_MODULES.filter((x) => x.group === 'dashboard' && !enabled.has(x.href)).map((x) => x.href)
+  );
+  const ok = (href: string) => (off.has(href.split('?')[0]) ? undefined : href);
+
   const iata = m.byCredential.find((c) => c.key === 'iata')!.count;
   const hajj = m.byCredential.find((c) => c.key === 'hajj')!.count;
   const baira = m.byCredential.find((c) => c.key === 'baira')!.count;
@@ -99,10 +117,10 @@ export default async function Dashboard() {
 
       {/* ------------------------------------------------- headline numbers */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <Tile value={String(m.pipeline.total)} label="Prospects in the database" sub="Compiled from four public registers" href="/agencies" />
-        <Tile value={String(iata)} label="IATA accredited" sub="Quoted by the agency or its register entry" tone="good" href="/agencies?credential=iata" />
-        <Tile value={String(hajj)} label="Hajj licence holders" sub="MoRA register printed a licence number" tone="good" href="/agencies?credential=hajj" />
-        <Tile value={String(noEngine + brochure)} label="No booking engine" sub={`${noEngine} with no website at all · ${brochure} brochure-only`} tone="good" href="/agencies?engine=none_seen" />
+        <Tile value={String(m.pipeline.total)} label="Prospects in the database" sub="Compiled from four public registers" href={ok('/agencies')} />
+        <Tile value={String(iata)} label="IATA accredited" sub="Quoted by the agency or its register entry" tone="good" href={ok('/agencies?credential=iata')} />
+        <Tile value={String(hajj)} label="Hajj licence holders" sub="MoRA register printed a licence number" tone="good" href={ok('/agencies?credential=hajj')} />
+        <Tile value={String(noEngine + brochure)} label="No booking engine" sub={`${noEngine} with no website at all · ${brochure} brochure-only`} tone="good" href={ok('/agencies?engine=none_seen')} />
       </div>
 
       {/* -------------------------------------------- the two CEO questions */}
@@ -126,10 +144,10 @@ export default async function Dashboard() {
               is which register printed a number for each agency:
             </p>
             <div className="mt-3 space-y-1">
-              <Bar label="TOAB membership number printed" value={toab} max={m.pipeline.total} href="/agencies?credential=toab" />
-              <Bar label="BAIRA recruiting licence (RL) printed" value={baira} max={m.pipeline.total} href="/agencies?credential=baira" />
-              <Bar label="Hajj licence number printed" value={hajj} max={m.pipeline.total} href="/agencies?credential=hajj" />
-              <Bar label="No number printed in the source" value={noNumber} max={m.pipeline.total} href="/agencies?credential=none" />
+              <Bar label="TOAB membership number printed" value={toab} max={m.pipeline.total} href={ok('/agencies?credential=toab')} />
+              <Bar label="BAIRA recruiting licence (RL) printed" value={baira} max={m.pipeline.total} href={ok('/agencies?credential=baira')} />
+              <Bar label="Hajj licence number printed" value={hajj} max={m.pipeline.total} href={ok('/agencies?credential=hajj')} />
+              <Bar label="No number printed in the source" value={noNumber} max={m.pipeline.total} href={ok('/agencies?credential=none')} />
             </div>
             <p className="mt-3 rounded-lg border-l-[3px] border-amber-700 bg-amber-700/5 px-4 py-2.5 text-[12.5px] leading-relaxed text-ink">
               “No number printed” does <strong>not</strong> mean unlicensed. It means the directory the record came
@@ -153,9 +171,10 @@ export default async function Dashboard() {
                 </li>
               ))}
             </ul>
-            <Link href="/agencies?credential=iata" className="mt-3 inline-block text-[13px] font-semibold text-teal-700 hover:underline">
+            {/* ModuleLink does its own check — ok() here would guard twice. */}
+              <ModuleLink href="/agencies?credential=iata" className="mt-3 inline-block text-[13px] font-semibold text-teal-700 hover:underline">
               All {iata} IATA-accredited targets →
-            </Link>
+            </ModuleLink>
           </div>
         </div>
       </Panel>
@@ -171,7 +190,7 @@ export default async function Dashboard() {
                 value={e.count}
                 max={m.pipeline.total}
                 note={`${pct(e.count, m.pipeline.total)}%`}
-                href={`/agencies?engine=${e.key}`}
+                href={ok(`/agencies?engine=${e.key}`)}
               />
             ))}
           </div>
@@ -184,7 +203,7 @@ export default async function Dashboard() {
 
         <Panel title="Can a caller actually reach them?" sub="A prospect you cannot dial is not a prospect">
           <div className="space-y-1">
-            <Bar label="Has a mobile number" value={m.reach.withMobile} max={m.pipeline.total} note={`${pct(m.reach.withMobile, m.pipeline.total)}%`} href="/agencies?hasMobile=yes" />
+            <Bar label="Has a mobile number" value={m.reach.withMobile} max={m.pipeline.total} note={`${pct(m.reach.withMobile, m.pipeline.total)}%`} href={ok('/agencies?hasMobile=yes')} />
             <Bar label="Has a landline" value={m.reach.withPhone} max={m.pipeline.total} note={`${pct(m.reach.withPhone, m.pipeline.total)}%`} />
             <Bar label="Has an email" value={m.reach.withEmail} max={m.pipeline.total} note={`${pct(m.reach.withEmail, m.pipeline.total)}%`} />
             <Bar label="Decision maker named" value={m.reach.withDecisionMaker} max={m.pipeline.total} note={`${pct(m.reach.withDecisionMaker, m.pipeline.total)}%`} />
@@ -211,7 +230,7 @@ export default async function Dashboard() {
         <Panel title="By city" sub="Where the calling happens">
           <div className="space-y-1">
             {m.byCity.slice(0, 10).map((c) => (
-              <Bar key={c.city} label={c.city} value={c.count} max={maxCity} href={`/agencies?city=${encodeURIComponent(c.city)}`} />
+              <Bar key={c.city} label={c.city} value={c.count} max={maxCity} href={ok(`/agencies?city=${encodeURIComponent(c.city)}`)} />
             ))}
           </div>
           <p className="mt-3 text-[12.5px] text-muted">{m.byCity.length} cities in total.</p>
@@ -231,9 +250,9 @@ export default async function Dashboard() {
         title="Who you are up against"
         sub={`${comp.headline.vendorsProfiled} vendors profiled · only ${comp.headline.publishPricing} publish a price · ${comp.headline.foreignVendorsWithNamedBdClient} foreign vendors have a named Bangladeshi client`}
         action={
-          <Link href="/competitors" className="text-[13px] font-semibold text-teal-700 hover:underline">
+          <ModuleLink href="/competitors" className="text-[13px] font-semibold text-teal-700 hover:underline">
             Full battlecards →
-          </Link>
+          </ModuleLink>
         }
       >
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

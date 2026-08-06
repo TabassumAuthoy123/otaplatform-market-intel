@@ -4,26 +4,20 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
 
-const ITEMS = [
-  { href: '/accounts', label: 'Dashboard' },
-  { href: '/accounts/invoices', label: 'Sales' },
-  { href: '/accounts/credit-notes', label: 'Credit notes' },
-  { href: '/accounts/bills', label: 'Purchases' },
-  { href: '/accounts/cash', label: 'Cash' },
-  { href: '/accounts/bank', label: 'Bank' },
-  { href: '/accounts/expenses', label: 'Expenses' },
-  { href: '/accounts/inventory', label: 'Inventory' },
-  { href: '/accounts/reports', label: 'Reports' },
-  { href: '/accounts/ledger', label: 'Ledger' },
-  { href: '/accounts/financials', label: 'Financials' },
-  { href: '/accounts/reminders', label: 'Reminders' },
-  { href: '/accounts/statements', label: 'Statements' },
-  { href: '/accounts/masters', label: 'Masters' },
-  { href: '/accounts/gds', label: 'GDS check' },
-  { href: '/accounts/settings', label: 'Settings' }
-];
+export type NavItem = { href: string; label: string };
 
-export default function AccountsNav({ company }: { company: string }) {
+/**
+ * The sixteen links used to be a const array right here.
+ *
+ * They now arrive as a prop because this is a client component and the on/off
+ * state is a file read — see lib/panelMenus.ts. The layout filters once and passes
+ * the result, which matters more than it looks: `items` is rendered TWICE below,
+ * once for the desktop nav and once for the mobile menu. Filtering at the source
+ * fixes both. Filtering at either render site would leave a module hidden on one
+ * breakpoint and visible on the other, and the mobile one is the one nobody
+ * checks.
+ */
+export default function AccountsNav({ company, items }: { company: string; items: NavItem[] }) {
   const path = usePathname();
   const [open, setOpen] = useState(false);
 
@@ -60,7 +54,7 @@ export default function AccountsNav({ company }: { company: string }) {
           <span className="text-[15px] font-bold text-white">Travel Accounts</span>
         </Link>
 
-        <nav className="ml-auto hidden items-center gap-0.5 xl:flex">{ITEMS.map((i) => item(i.href, i.label))}</nav>
+        <nav className="ml-auto hidden items-center gap-0.5 xl:flex">{items.map((i) => item(i.href, i.label))}</nav>
 
         <button
           onClick={() => setOpen(!open)}
@@ -72,7 +66,7 @@ export default function AccountsNav({ company }: { company: string }) {
 
       {open && (
         <div className="border-t border-navy-800 bg-navy-900 px-5 py-3 xl:hidden">
-          <div className="flex flex-wrap gap-1">{ITEMS.map((i) => item(i.href, i.label))}</div>
+          <div className="flex flex-wrap gap-1">{items.map((i) => item(i.href, i.label))}</div>
         </div>
       )}
     </header>

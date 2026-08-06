@@ -1,9 +1,9 @@
 {
   "_meta": {
     "note": "Every string on the B2C portal comes from this file. Edit it through the admin portal (http://localhost:4001) — do not hand-edit unless the admin server is stopped.",
-    "revision": 43,
+    "revision": 53,
     "lastEditedBy": "verify-probe@local",
-    "lastEditedAt": "2026-08-04 10:00:47"
+    "lastEditedAt": "2026-08-06 14:32:41"
   },
   "brand": {
     "name": "OTA Platform",
@@ -904,5 +904,31 @@
         "enabled": true
       }
     ]
+  },
+  "panel": {
+    "accounts": {
+      "accounts": true,
+      "invoices": true,
+      "credit-notes": true,
+      "bills": true,
+      "cash": true,
+      "bank": true,
+      "expenses": true,
+      "inventory": true,
+      "reports": true,
+      "ledger": true,
+      "financials": true,
+      "reminders": true,
+      "statements": true,
+      "masters": true,
+      "gds": true,
+      "settings": true
+    },
+    "dashboard": {
+      "home": true,
+      "agencies": true,
+      "competitors": true,
+      "segments": true
+    }
   }
 }

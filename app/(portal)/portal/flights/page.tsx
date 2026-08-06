@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { ModuleLink } from '@/components/ModuleLink';
 import { RouteCard } from '@/components/portal/cards';
 import { SearchWidget } from '@/components/portal/SearchWidget';
 import { Chip, Section, SectionTitle } from '@/components/portal/ui';
@@ -206,9 +207,9 @@ export default async function FlightsPage({
         <p className="mt-8 max-w-3xl text-[12.5px] leading-relaxed text-muted">
           These prices are invented for the demo. On the production platform this grid is filled from the live
           Sabre and Travelport search above. Never quote a figure from this page to a customer.{' '}
-          <Link href="/accounts/gds" className="font-semibold text-teal-700 hover:underline">
+          <ModuleLink href="/accounts/gds" className="font-semibold text-teal-700 hover:underline">
             The PNR side of the same connection is on the accounts screen →
-          </Link>
+          </ModuleLink>
         </p>
       </Section>
     </>

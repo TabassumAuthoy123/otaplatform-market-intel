@@ -401,6 +401,66 @@ is missing, **config only** means the settings exist but nothing sends.
 | + | **Document attachments** | built as links, not uploads | see below |
 | + | **PDF & Excel export** | built | every screen; Excel has 25 sheets |
 
+### Switching modules off per installation
+
+Admin portal → **Design → Panel modules**. Eighteen switches over the two internal
+modules, with the two roots locked on.
+
+This is not the same as the storefront section and menu toggles beside it, and the
+difference is the whole point. Those hide a link and leave the URL answering 200 —
+`/portal/hotels` is still there for a bookmark, a search engine or a guessed path.
+That is half a feature. Here **off means off**: the link disappears from every menu
+and the route answers **404**.
+
+| | Storefront sections / menu | Panel modules |
+|---|---|---|
+| Hides the link | yes | yes |
+| Blocks the URL | **no** | **yes, 404** |
+| Scope | public site | `/accounts/*`, `/`, `/agencies`, `/competitors`, `/segments` |
+| Where | Design → Storefront sections | Design → Panel modules |
+
+An agency that only sells air tickets can drop Hajj inventory; one whose accountant
+works outside the system can drop the general ledger; one with no GDS of its own can
+drop the GDS check. It sits **on top of** the six roles rather than replacing them:
+a module that is off is gone for everyone including a Super Admin, and roles still
+decide who sees what among the ones left on.
+
+**How the enforcement is split, because neither half works alone.** A server layout
+is the only place one check can cover sixteen pages instead of sixteen copies that a
+seventeenth page can forget — but a layout is not told the pathname. Middleware
+knows the pathname but runs on the Edge runtime and cannot read a file. So
+middleware stamps `x-panel-path` onto the request and the layout reads it, loads
+`content/site.json`, and calls `notFound()`. Deleting the middleware line breaks no
+build and no nav test; it silently stops every disabled route from 404ing while the
+links stay hidden.
+
+**Three things this turned up that the toggles alone would not have fixed:**
+
+- The sixteen nav links were rendered **twice** — desktop bar and mobile strip — so
+  filtering at either render site would have left a module hidden on one breakpoint
+  and visible on the other. Filtering once at the source fixes both. The storefront
+  menu manager taught this lesson already; it applied here too.
+- The first version passed the nav an **allowlist** of enabled hrefs. It carried
+  only the four market-intelligence modules, so `/portal` and `/accounts` — which
+  belong to other groups and are not toggleable here — matched nothing and vanished.
+  It is a blocklist now: an allowlist must enumerate everything that may pass, a
+  blocklist only what must not, and empty is the right default.
+- **Fourteen cross-module links in page bodies** kept pointing at modules that were
+  now 404 — ten drill-downs from the dashboard home into `/agencies`, the statements
+  page into `/accounts/financials`, and two storefront pages into accounts. The
+  feature meant to tidy the panel up was manufacturing dead links. `ModuleLink`
+  renders nothing when its target is off; the tiles and bars already degrade to
+  plain text without an `href`, so the number survives and only the navigation goes.
+  One of the fourteen was a plain `<a>` rather than a `<Link>` and an automated sweep
+  for `<Link>` missed it — worth knowing before trusting such a sweep.
+
+The module list lives in `lib/panel-modules.js` as plain CommonJS, which is
+deliberate: the Next app and the zero-dependency admin portal both read it, one by
+`import` and one by `require`. Written twice, the screen and the guard would be two
+lists, and a drifted list means a module that looks switchable but is not — the same
+failure as the `/accounts/gds` table that named seven environment variables while the
+code read thirty-six.
+
 ### Putting a real agency on it
 
 Every row above was true and the module still could not be handed to an agency,

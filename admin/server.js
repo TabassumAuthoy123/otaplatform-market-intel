@@ -37,6 +37,16 @@ const APP_URL = (process.env.APP_URL || 'http://localhost:3002').replace(/\/+$/,
 const PORTAL_URL = `${APP_URL}/portal`;
 
 const AGENCY = require('./agency-fields');
+/**
+ * The same declaration the app enforces, not a copy of it.
+ *
+ * Written twice, this screen and the route guard would be two lists, and a drifted
+ * list means a module that looks switchable but is not — or is enforced but never
+ * offered. Exactly the `/accounts/gds` table that named seven environment variables
+ * while the code read thirty-six. So the file is plain CommonJS and both sides read
+ * it: `require` here, `allowJs` import in lib/panelMenus.ts.
+ */
+const { PANEL_MODULES, PANEL_GROUP_LABEL, isModuleOn } = require('../lib/panel-modules.js');
 const CRM = require('./crm-fields');
 /**
  * The CRM vocabularies as they are configured, not as they were coded.
@@ -2449,6 +2459,78 @@ function previewPane(session, device) {
  * A mega entry whose children are all switched off stops being a dropdown and
  * goes back to being an ordinary link — an empty panel reads as broken.
  */
+/**
+ * Show / hide the modules of the panel our own staff and the agency's staff use.
+ *
+ * Distinct from the storefront toggles above it, and the difference is the whole
+ * reason this exists: those hide a link and leave the URL answering 200. These
+ * hide the link AND make the route 404, so "off" means off for a bookmark, a
+ * search engine and a guessed path too.
+ */
+function panelMenuManager(session, content) {
+  const state = content.panel || {};
+  const groups = ['accounts', 'dashboard'];
+
+  const row = (m, first) => {
+    const on = isModuleOn(m, state);
+    return `
+      <div style="display:flex;align-items:center;gap:16px;padding:14px 18px;${first ? '' : 'border-top:1px solid var(--hair)'}">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13.5px;font-weight:600;color:var(--navy)">
+            ${esc(m.label)}
+            <code style="margin-left:8px;font-size:11.5px;font-weight:400;color:var(--muted)">${esc(m.href)}</code>
+            ${m.locked ? '<span style="margin-left:8px;font-size:11px;color:var(--muted)">always on</span>' : ''}
+          </div>
+          <div style="font-size:12px;color:var(--muted);margin-top:2px">${esc(m.note)}</div>
+        </div>
+        ${m.locked
+          ? `<span style="flex:none;width:46px;height:26px;border-radius:26px;background:#E6EBF0;position:relative">
+               <span style="position:absolute;top:3px;left:23px;width:20px;height:20px;border-radius:50%;background:#fff"></span>
+             </span>`
+          : `<label style="position:relative;display:inline-block;width:46px;height:26px;flex:none;cursor:pointer">
+               <input type="checkbox" name="mod_${esc(m.group)}_${esc(m.key)}" ${on ? 'checked' : ''}
+                 style="opacity:0;width:0;height:0;position:absolute" onchange="this.form.requestSubmit()">
+               <span style="position:absolute;inset:0;border-radius:26px;transition:.2s;background:${on ? 'var(--teal)' : '#CBD5DD'}"></span>
+               <span style="position:absolute;top:3px;left:${on ? '23px' : '3px'};width:20px;height:20px;border-radius:50%;background:#fff;transition:.2s"></span>
+             </label>`}
+      </div>`;
+  };
+
+  return `
+    <form method="post" action="/design/panel">
+      <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+      <div class="card" style="padding:0;overflow:hidden;margin-top:16px">
+        <div style="padding:14px 18px;border-bottom:1px solid var(--hair)">
+          <h2 style="margin:0;font-size:14px;color:var(--navy)">Panel modules — show / hide</h2>
+          <p style="margin:3px 0 0;font-size:12px;color:var(--muted)">
+            Which parts of the internal panel this installation gets. Switching one off removes it from every menu
+            <strong>and makes its routes answer 404</strong> — unlike the storefront toggles above, a saved link will
+            not get past it. This is separate from user roles: a module that is off is gone for everybody, including a
+            Super Admin, and roles still decide who sees what among the ones that are on.
+          </p>
+        </div>
+        ${groups.map((g) => {
+          const mods = PANEL_MODULES.filter((m) => m.group === g);
+          const live = mods.filter((m) => isModuleOn(m, state)).length;
+          return `
+            <div style="padding:9px 18px;background:var(--panel);border-top:1px solid var(--hair);display:flex;align-items:center;gap:10px">
+              <strong style="font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted)">
+                ${esc(PANEL_GROUP_LABEL[g])}
+              </strong>
+              <span style="margin-left:auto;font-size:11.5px;color:var(--muted)">${live} of ${mods.length} on</span>
+            </div>
+            ${mods.map((m, i) => row(m, i === 0)).join('')}`;
+        }).join('')}
+        <div class="bar" style="padding:14px 18px">
+          <button class="primary" type="submit">Save panel modules</button>
+          <span style="margin-left:auto;font-size:12px;color:var(--muted)">
+            Takes effect on the next page load in the app — no restart
+          </span>
+        </div>
+      </div>
+    </form>`;
+}
+
 function menuManager(session, content) {
   const nav = content.nav || [];
   const toggle = (name, on) => `
@@ -2569,6 +2651,15 @@ function designView(session, content, tab, device, flash) {
 
     ${menuManager(session, content)}`;
 
+  /**
+   * The panel tab previews nothing, deliberately.
+   *
+   * The storefront preview iframe shows the public site, and switching an internal
+   * module off changes nothing there. Showing the same unchanged iframe beside these
+   * toggles would say "your change did nothing", which is the opposite of true.
+   */
+  const panelBody = panelMenuManager(session, content);
+
   const themeBody = `
     <form method="post" action="/design/theme">
       <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
@@ -2636,12 +2727,23 @@ function designView(session, content, tab, device, flash) {
       ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
 
       <div style="display:flex;gap:6px;background:var(--panel);padding:6px;border-radius:11px;margin-bottom:16px;flex-wrap:wrap">
-        ${tabLink('sections', 'Sections')}${tabLink('theme', 'Theme &amp; colours')}
+        ${tabLink('sections', 'Storefront sections')}${tabLink('panel', 'Panel modules')}${tabLink('theme', 'Theme &amp; colours')}
       </div>
 
       <div style="display:grid;gap:16px;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);align-items:start">
-        <div>${tab === 'theme' ? themeBody : sectionsBody}</div>
-        <div style="position:sticky;top:20px">${previewPane(session, device)}</div>
+        <div>${tab === 'theme' ? themeBody : tab === 'panel' ? panelBody : sectionsBody}</div>
+        <div style="position:sticky;top:20px">${tab === 'panel'
+          ? `<div class="card"><h2 style="margin:0 0 6px;font-size:14px;color:var(--navy)">Where to see this</h2>
+               <p style="margin:0;font-size:12.5px;color:var(--muted);line-height:1.6">
+                 These toggles change the internal panel, not the public storefront, so the storefront preview is
+                 hidden here — it would show an unchanged page and imply the change did nothing.
+               </p>
+               <p style="margin:10px 0 0;font-size:12.5px;color:var(--muted);line-height:1.6">
+                 Open <a href="${esc(APP_URL)}/accounts" target="_blank" rel="noreferrer">Travel Accounts</a> or
+                 <a href="${esc(APP_URL)}/" target="_blank" rel="noreferrer">Market Intelligence</a> after saving. A
+                 module switched off disappears from the header and the landing tiles, and its own URL answers 404.
+               </p></div>`
+          : previewPane(session, device)}</div>
       </div>
 
       <style>
@@ -4269,7 +4371,8 @@ const server = http.createServer(async (req, res) => {
     /* ---- design & integrations ---- */
 
     if (pathname === '/design' && req.method === 'GET') {
-      const tab = url.searchParams.get('tab') === 'theme' ? 'theme' : 'sections';
+      const raw = url.searchParams.get('tab');
+      const tab = ['theme', 'panel'].includes(raw) ? raw : 'sections';
       const device = ['mobile', 'tablet', 'desktop'].includes(url.searchParams.get('device'))
         ? url.searchParams.get('device') : 'desktop';
       return send(res, 200, designView(session, readJson(SITE_FILE, {}), tab, device,
@@ -4286,6 +4389,40 @@ const server = http.createServer(async (req, res) => {
       stampMeta(content, session);
       await writeJsonAtomic(SITE_FILE, content);
       return redirect(res, '/design?tab=sections&saved=1');
+    }
+
+    if (pathname === '/design/panel' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const content = readJson(SITE_FILE, {});
+      /**
+       * Rebuild from the declaration, not from the form.
+       *
+       * An unchecked box is simply absent from the body, so iterating the FORM
+       * would never see a module being switched off — it would see nothing and
+       * leave the old value in place, and the toggle would appear to work while
+       * saving nothing. Iterating the declared modules and asking whether each
+       * one is present is the only version that can record an "off".
+       *
+       * Locked modules are written as `true` rather than skipped, so the file
+       * always states the full picture instead of relying on the reader to know
+       * which keys are special.
+       */
+      const panel = { accounts: {}, dashboard: {} };
+      for (const m of PANEL_MODULES) {
+        panel[m.group][m.key] = m.locked ? true : `mod_${m.group}_${m.key}` in form;
+      }
+      content.panel = panel;
+      stampMeta(content, session);
+      await writeJsonAtomic(SITE_FILE, content);
+      const off = PANEL_MODULES.filter((m) => !panel[m.group][m.key]);
+      await audit(session, 'update', {
+        collection: 'panel', id: 'modules',
+        summary: off.length
+          ? `${off.length} module(s) switched off: ${off.map((m) => m.href).join(', ')}`
+          : 'every panel module is on'
+      });
+      return redirect(res, '/design?tab=panel&saved=1');
     }
 
     if (pathname === '/design/menu' && req.method === 'POST') {

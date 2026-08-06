@@ -11,27 +11,51 @@ import { useState } from 'react';
 export default function Nav({
   credentialCounts = {},
   cityCounts = {},
-  total = 0
+  total = 0,
+  hidden = []
 }: {
   credentialCounts?: Record<string, number>;
   cityCounts?: Record<string, number>;
   total?: number;
+  /**
+   * Hrefs the panel toggles have switched OFF.
+   *
+   * Deliberately the disabled list and not the enabled one. The enabled version of
+   * this prop was written first and immediately broke two links: it carried only
+   * the four market-intelligence modules, so `/portal` and `/accounts` — which
+   * belong to other groups and are never toggleable here — matched nothing and
+   * vanished from the nav. An allowlist has to enumerate everything that may pass;
+   * a blocklist only has to name what must not, and an empty one is the correct
+   * default for a component rendered from more than one place.
+   */
+  hidden?: string[];
 }) {
   const path = usePathname();
   const [open, setOpen] = useState<'cred' | 'city' | null>(null);
   const [mobile, setMobile] = useState(false);
 
-  const link = (href: string, label: string) => (
-    <Link
-      key={href + label}
-      href={href}
-      className={`rounded px-3 py-2 text-sm transition-colors ${
-        path === href ? 'bg-white/15 text-white' : 'text-white/75 hover:bg-white/10 hover:text-white'
-      }`}
-    >
-      {label}
-    </Link>
-  );
+  // Compare the path only. Several links here carry a query — /agencies?engine=…
+  // is still the agencies module and must disappear with it.
+  const on = (href: string) => !hidden.includes(href.split('?')[0]);
+
+  /**
+   * Returns null for a disabled module, so `{link('/competitors', …)}` simply
+   * renders nothing. Filtering at the call site instead would mean a conditional
+   * around each of the six call sites here plus the mobile menu — and the mobile
+   * one is where a missed case hides.
+   */
+  const link = (href: string, label: string) =>
+    on(href) ? (
+      <Link
+        key={href + label}
+        href={href}
+        className={`rounded px-3 py-2 text-sm transition-colors ${
+          path === href ? 'bg-white/15 text-white' : 'text-white/75 hover:bg-white/10 hover:text-white'
+        }`}
+      >
+        {label}
+      </Link>
+    ) : null;
 
   const CREDENTIALS: [string, string][] = [
     ['iata', 'IATA accredited'],
@@ -58,7 +82,12 @@ export default function Nav({
           {link('/agencies', `Agencies${total ? ` (${total})` : ''}`)}
           {link('/competitors', 'Competitors')}
 
-          {/* Credential dropdown */}
+          {/*
+            Both dropdowns are entirely filters over /agencies — every link inside
+            them lands there. If that module is off they have nowhere to go, so they
+            go with it rather than staying as two menus that all 404.
+          */}
+          {on('/agencies') && (
           <div className="relative" onMouseEnter={() => setOpen('cred')} onMouseLeave={() => setOpen(null)}>
             <button className="rounded px-3 py-2 text-sm text-white/75 hover:bg-white/10 hover:text-white">
               Credentials ▾
@@ -81,8 +110,9 @@ export default function Nav({
               </div>
             )}
           </div>
+          )}
 
-          {/* City dropdown */}
+          {on('/agencies') && (
           <div className="relative" onMouseEnter={() => setOpen('city')} onMouseLeave={() => setOpen(null)}>
             <button className="rounded px-3 py-2 text-sm text-white/75 hover:bg-white/10 hover:text-white">
               Cities ▾
@@ -102,6 +132,7 @@ export default function Nav({
               </div>
             )}
           </div>
+          )}
 
           {link('/agencies?engine=none_seen', 'No website')}
           {link('/segments', 'Segments')}

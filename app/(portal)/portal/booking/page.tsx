@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { ModuleLink } from '@/components/ModuleLink';
 import { Chip, Section } from '@/components/portal/ui';
 import { findBooking } from '@/lib/bookings';
 
@@ -134,9 +135,9 @@ export default async function BookingConfirmation({ searchParams }: { searchPara
                   A confirmed invoice and the matching airline bill were written into the book, so this sale is
                   already in receivables and the margin report.
                 </p>
-                <Link href="/accounts/invoices" className="mt-3 inline-block text-[13px] font-semibold text-teal-700 hover:underline">
+                <ModuleLink href="/accounts/invoices" className="mt-3 inline-block text-[13px] font-semibold text-teal-700 hover:underline">
                   Open it in Accounts →
-                </Link>
+                </ModuleLink>
               </div>
             )}
 

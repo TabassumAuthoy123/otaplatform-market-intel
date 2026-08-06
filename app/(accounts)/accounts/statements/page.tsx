@@ -1,3 +1,4 @@
+import { ModuleLink } from '@/components/ModuleLink';
 import { ExportBar } from '@/components/accounts/ExportBar';
 import { PageHead, Panel, Table, Td, Tile } from '@/components/accounts/ui';
 import { customerLedger, getBook, money, supplierLedger, todayISO } from '@/lib/accounting';
@@ -114,12 +115,12 @@ export default async function StatementsPage({
         </label>
         <button className="rounded-lg bg-teal-600 px-5 py-2.5 text-[13px] font-semibold text-white hover:bg-teal-700">Show statement</button>
         <div className="ml-auto flex flex-wrap items-center gap-3">
-          <a
+          <ModuleLink
             href="/accounts/financials"
             className="rounded-lg border border-hair px-4 py-2.5 text-[13px] font-semibold text-navy-900 hover:border-teal-500"
           >
             Company financial statement →
-          </a>
+          </ModuleLink>
           <ExportBar section={kind === 'customer' ? 'receivables' : 'payables'} from={from} to={to} label="Download" />
         </div>
       </form>

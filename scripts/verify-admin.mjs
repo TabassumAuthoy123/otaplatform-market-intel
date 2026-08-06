@@ -207,6 +207,84 @@ const pair = await (async () => {
   ok('Audit log recorded the change', seen, seen ? `entry for ${newId} present` : 'no entry found');
 }
 
+/* ------------------------------------------- panel module toggle round trip */
+/**
+ * The internal panel's own modules, switched through the real form.
+ *
+ * Distinct from the storefront menu round trip below it, and the difference is the
+ * point: that one only hides links, and `/portal/visa` keeps answering 200 to a
+ * bookmark. These have to hide the link AND make the route 404, so both halves are
+ * asserted here — a passing nav check with an unguarded route is exactly the
+ * half-working state this feature exists to avoid.
+ */
+{
+  const fsp = await import('node:fs');
+  const siteBefore = fsp.readFileSync('content/site.json', 'utf8');
+
+  const d = await req('/design?tab=panel');
+  const boxes = [...d.text.matchAll(/name="(mod_[a-z]+_[a-z-]+)"/g)].map((m) => m[1]);
+  const locked = (d.text.match(/always on/g) ?? []).length;
+  ok('Panel tab renders a switch per module and locks the two roots',
+    d.status === 200 && boxes.length === 18 && locked === 2,
+    `HTTP ${d.status}, ${boxes.length} switches, ${locked} locked`);
+
+  // Switch two off by sending every box EXCEPT those two — an unchecked box is
+  // absent from the body, which is the only way a browser can express "off".
+  const keep = Object.fromEntries(boxes.filter((b) => !/inventory|competitors/.test(b)).map((b) => [b, 'on']));
+  const off = await req('/design/panel', { method: 'POST', form: { csrf: csrfFrom(d.text), ...keep } });
+  const site = JSON.parse(fsp.readFileSync('content/site.json', 'utf8'));
+  ok('Switching panel modules off writes through',
+    off.status === 302 && site.panel?.accounts?.inventory === false && site.panel?.dashboard?.competitors === false,
+    `inventory=${site.panel?.accounts?.inventory}, competitors=${site.panel?.dashboard?.competitors}`);
+  ok('A locked module is written as on rather than omitted',
+    site.panel?.accounts?.accounts === true && site.panel?.dashboard?.home === true,
+    'the file states the full picture instead of relying on the reader to know which keys are special');
+
+  const app = (p) => fetch(`http://127.0.0.1:3002${p}`);
+  const codes = Object.fromEntries(await Promise.all(
+    ['/accounts/inventory', '/competitors', '/accounts/ledger', '/agencies']
+      .map(async (p) => [p, (await app(p)).status])
+  ));
+  ok('A switched-off module answers 404, not just a hidden link',
+    codes['/accounts/inventory'] === 404 && codes['/competitors'] === 404,
+    `inventory ${codes['/accounts/inventory']}, competitors ${codes['/competitors']}`);
+  ok('The modules left on are untouched',
+    codes['/accounts/ledger'] === 200 && codes['/agencies'] === 200,
+    `ledger ${codes['/accounts/ledger']}, agencies ${codes['/agencies']}`);
+
+  // Count real anchors only. The RSC payload repeats each one and also carries the
+  // `hidden` prop, which is data rather than a link, so a naive substring count
+  // reports dead links that are not there.
+  const anchors = (html, href) => (html.match(new RegExp(`href="${href.replace(/[/?]/g, '\$&')}["?]`, 'g')) ?? []).length;
+  const accHtml = await (await app('/accounts')).text();
+  const dashHtml = await (await app('/')).text();
+  ok('No page still links to a switched-off module',
+    anchors(accHtml, '/accounts/inventory') === 0 && anchors(dashHtml, '/competitors') === 0,
+    `accounts page ${anchors(accHtml, '/accounts/inventory')}, dashboard ${anchors(dashHtml, '/competitors')} — nav, tiles and body links`);
+  ok('Links into other route groups survive',
+    anchors(dashHtml, '/portal') > 0 && anchors(dashHtml, '/accounts') > 0,
+    'an allowlist keyed on one group would have removed these; the prop is a blocklist for that reason');
+
+  const d2 = await req('/design?tab=panel');
+  const all = Object.fromEntries(boxes.map((k) => [k, 'on']));
+  const back = await req('/design/panel', { method: 'POST', form: { csrf: csrfFrom(d2.text), ...all } });
+  const restored = (await app('/accounts/inventory')).status;
+  ok('Restoring every module works', back.status === 302 && restored === 200, `inventory back to HTTP ${restored}`);
+
+  const auditPage = await req('/audit');
+  ok('Switching a module is audited', /module\(s\) switched off|panel module/.test(auditPage.text),
+    'an installation-wide change to what exists has to be attributable');
+
+  // `note` is a verify-flights helper and does not exist here. Assert instead of
+  // narrating: whatever this block wrote, the modules must all be back on.
+  const after = JSON.parse(fsp.readFileSync('content/site.json', 'utf8'));
+  const stillOff = Object.entries(after.panel ?? {})
+    .flatMap(([g, mods]) => Object.entries(mods).filter(([, on]) => on === false).map(([k]) => `${g}.${k}`));
+  ok('This block leaves nothing switched off', stillOff.length === 0,
+    stillOff.length ? `still off: ${stillOff.join(', ')}` : 'every module restored, and site.json now states the panel key explicitly');
+  void siteBefore;
+}
+
 /* ---------------------------------------------------- menu toggle round trip */
 {
   const d = await req('/design?tab=sections');

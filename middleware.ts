@@ -41,11 +41,32 @@ const isLoopbackHost = (host: string | null) => {
   return name === 'localhost' || name === '127.0.0.1' || name === '::1' || name === '0.0.0.0';
 };
 
+/**
+ * Stamp the path onto the request so a server layout can read it.
+ *
+ * A layout is not given the pathname, and a layout is the only place the
+ * module-enabled check can run once for sixteen pages instead of sixteen times.
+ * Middleware cannot make that decision itself: it runs on the Edge runtime, and
+ * the on/off state lives in `content/site.json`, which needs a filesystem. So the
+ * work is split — middleware does the part that needs the request, the layout does
+ * the part that needs the file. See lib/panelMenus.ts.
+ *
+ * Neither half is useful alone. Deleting this line does not break a build or a
+ * test that looks at the nav; it silently stops every disabled route from
+ * returning 404 while the links stay hidden, which is precisely the half-working
+ * state this was built to avoid.
+ */
+function withPath(req: NextRequest) {
+  const headers = new Headers(req.headers);
+  headers.set('x-panel-path', req.nextUrl.pathname);
+  return NextResponse.next({ request: { headers } });
+}
+
 export function middleware(req: NextRequest) {
   const { pathname, searchParams } = req.nextUrl;
 
   if (PUBLIC.some((p) => pathname.startsWith(p))) return NextResponse.next();
-  if (!GUARDED.some((p) => pathname.startsWith(p))) return NextResponse.next();
+  if (!GUARDED.some((p) => pathname.startsWith(p))) return withPath(req);
 
   if (isLoopbackHost(req.headers.get('host'))) return NextResponse.next();
 
@@ -65,6 +86,15 @@ export function middleware(req: NextRequest) {
   );
 }
 
+/**
+ * The API matcher was the whole list until the panel toggles needed a pathname on
+ * page requests too. `/api/:path*` alone meant `withPath` never ran for
+ * `/accounts/inventory`, the layout read a null path, and every module stayed
+ * reachable however the toggles were set.
+ *
+ * Everything except Next's own assets and the storefront, which has its own
+ * separate section and nav toggles in `site.json` and is not part of this.
+ */
 export const config = {
-  matcher: '/api/:path*'
+  matcher: ['/api/:path*', '/', '/accounts/:path*', '/agencies/:path*', '/competitors/:path*', '/segments/:path*']
 };

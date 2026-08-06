@@ -5,24 +5,24 @@ import {
   allBankBalances, cashBook, dailyRollup, expensesByCategory, getBook, inventory, money, moneyShort,
   payables, receivables, recentTransactions, salesByService, summarise, supplierDeposits, todayISO
 } from '@/lib/accounting';
+import { enabledModules } from '@/lib/panelMenus';
 
 export const dynamic = 'force-dynamic';
 
-const QUICK = [
-  { href: '/accounts/invoices', label: 'Sales & invoices' },
-  { href: '/accounts/credit-notes', label: 'Credit notes' },
-  { href: '/accounts/bills', label: 'Supplier bills' },
-  { href: '/accounts/cash', label: 'Cash book' },
-  { href: '/accounts/expenses', label: 'Record expenses' },
-  { href: '/accounts/inventory', label: 'Inventory & float' },
-  { href: '/accounts/reports', label: 'Reports' },
-  { href: '/accounts/ledger', label: 'General ledger' },
-  { href: '/accounts/financials', label: 'Financial statements' },
-  { href: '/accounts/reminders', label: 'Payment reminders' },
-  { href: '/accounts/gds', label: 'GDS live check' }
-];
-
+/**
+ * The quick-link tiles were a second hard-coded list of eleven, alongside the
+ * sixteen in AccountsNav, and the two had already drifted — the tiles offered no
+ * Bank, Statements, Masters or Settings. Now both come from the one declaration in
+ * lib/panelMenus.ts, so a tile cannot outlive the module it points at and cannot
+ * survive that module being switched off.
+ *
+ * The root is dropped: a tile on the page you are already looking at is noise.
+ */
 export default async function AccountsDashboard() {
+  const QUICK = (await enabledModules('accounts'))
+    .filter((m) => m.href !== '/accounts')
+    .map((m) => ({ href: m.href, label: m.tileLabel ?? m.label }));
+
   const book = await getBook();
   const sym = book.company.currencySymbol;
   const today = todayISO(book);
