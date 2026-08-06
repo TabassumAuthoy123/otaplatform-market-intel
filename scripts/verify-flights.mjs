@@ -209,17 +209,72 @@ ok('At least one route returns fares from BOTH suppliers', anyBothSuppliers,
     const html = await (await fetch(`${APP}/portal/flights?from=${from}&to=${to}&depart=${DEPART}&pax=1`)).text();
     const cards = parseCards(html);
 
+    /**
+     * Retry, because a refusal here is often the app being RIGHT.
+     *
+     * This check re-prices a fare against the live supplier, and between the search
+     * and the re-price the sandbox's inventory can move. When it does, the app
+     * correctly says "search again" instead of quoting a fare the supplier no longer
+     * honours — and the first version of this check called that a failure and went
+     * red on a working platform. A flaky check is worse than none, as the note at
+     * the bottom of this file already says about the timing bar.
+     *
+     * So a stale answer is retried with a freshly quoted fare, and it only fails if
+     * it cannot re-price ACROSS every attempt. That distinguishes the two things
+     * that matter: "the supplier moved" and "our re-pricing is broken". It also
+     * still fails on anything that is not a clean price or an honest refusal — a
+     * non-200, or a page that shows neither.
+     */
     for (const supplier of [...new Set(cards.map((c) => c.supplier))]) {
-      const card = cards.find((c) => c.supplier === supplier);
-      const book = await fetch(
-        `${APP}/portal/book?from=${from}&to=${to}&date=${DEPART}&sig=${encodeURIComponent(card.sig)}`
-      );
-      const page = await book.text();
-      const priced = book.status === 200 && !/no longer available|could not be confirmed/i.test(page);
-      const shown = /৳([\d,]+)/.exec(page.split('Fare breakdown').pop() ?? '')?.[1];
-      ok(`A ${supplier} fare re-prices on the booking page`, priced,
-        priced ? `${card.segs[0]?.carrier}${card.segs[0]?.flight} at ৳${money(card.amount)}, page agrees` : `HTTP ${book.status}`);
-      void shown;
+      let priced = false;
+      let detail = 'never attempted';
+      let stale = 0;
+
+      for (let attempt = 1; attempt <= 3 && !priced; attempt += 1) {
+        // Re-quote on later attempts; reusing the dead signature would just fail again.
+        const fresh = attempt === 1
+          ? cards
+          : parseCards(await (await fetch(`${APP}/portal/flights?from=${from}&to=${to}&depart=${DEPART}&pax=1`)).text());
+        const card = fresh.find((c) => c.supplier === supplier);
+        if (!card) { detail = `no ${supplier} fare on attempt ${attempt}`; continue; }
+
+        const book = await fetch(
+          `${APP}/portal/book?from=${from}&to=${to}&date=${DEPART}&sig=${encodeURIComponent(card.sig)}`
+        );
+        const page = await book.text();
+        const refused = /no longer available|could not be confirmed/i.test(page);
+        /**
+         * Read the price the way the page writes it.
+         *
+         * Two mistakes were baked into the previous version of this line, and both
+         * were invisible because its result was thrown away with `void shown` — it
+         * computed a price nobody checked, so nobody noticed it never found one.
+         * It split on "Fare breakdown", which is not a heading on this page (the
+         * headings are "Complete your booking", "Passenger details", "Your
+         * itinerary"), and it looked for `৳`, which the storefront does not use —
+         * it renders `BDT 36,707`. The accounts module is the half that uses the
+         * symbol. Accept both, strip React's comment markers first, and search the
+         * whole page rather than a section that may not be there.
+         */
+        const shown = /(?:BDT|Tk|৳)\s?([\d,]{3,})/.exec(page.replace(/<!--[\s\S]*?-->/g, ''))?.[1];
+
+        if (book.status !== 200) { detail = `HTTP ${book.status} on attempt ${attempt}`; break; }
+        if (refused) {
+          stale += 1;
+          detail = `the supplier no longer honoured the quoted fare, ${stale} time(s) — the page said search again, which is correct`;
+          continue;
+        }
+        if (!shown) { detail = `HTTP 200 but no price on the page — neither a quote nor an honest refusal`; break; }
+        // Compare the re-priced figure with the quoted one rather than only
+        // asserting that some number is present.
+        const agrees = shown.replace(/,/g, '') === String(card.amount);
+        priced = true;
+        detail = `${card.segs[0]?.carrier}${card.segs[0]?.flight} quoted ${money(card.amount)}, page shows ${shown}`
+          + (agrees ? ' — agrees' : ' — DIFFERENT, the supplier re-priced it')
+          + (stale ? ` (after ${stale} stale quote(s), refused correctly)` : '');
+      }
+
+      ok(`A ${supplier} fare re-prices on the booking page`, priced, detail);
     }
 
     /* --- a fare that cannot be trusted must be refused, not guessed at --- */
