@@ -107,6 +107,18 @@ async function postToAccounts(booking: Booking, customerName: string): Promise<s
   const suppliers = (book.suppliers as Record<string, unknown>[]) ?? [];
   const company = (book.company as Record<string, string>) ?? {};
 
+  /**
+   * A storefront sale belongs to the storefront.
+   *
+   * Not an invention — it is where the sale was actually made, and "how much comes
+   * from the website" is the first thing an owner asks once branches exist. Found
+   * by `kind`, not by a hard-coded id, so an installation that names its online
+   * channel something else still gets it, and one with no online branch simply
+   * leaves the sale unattributed rather than being assigned somewhere untrue.
+   */
+  const onlineBranchId =
+    ((book.branches as { id: string; kind: string }[]) ?? []).find((b) => b.kind === 'online')?.id ?? null;
+
   // find or create the customer
   let customer = customers.find((c) => String(c.name).toLowerCase() === customerName.toLowerCase());
 
@@ -209,7 +221,7 @@ async function postToAccounts(booking: Booking, customerName: string): Promise<s
     supplierId: String(supplier.id),
     settlementRef: null,
     settled: false,
-    branchId: null,
+    branchId: onlineBranchId,
     consultantId: null,
     notes: `Created from storefront booking ${booking.ref}. Fare and taxes as quoted by ${booking.supplier}.`
   });
@@ -251,6 +263,9 @@ async function postToAccounts(booking: Booking, customerName: string): Promise<s
       // The link that makes the fare breakdown reachable from the money.
       documentId: docId
     }],
+    branchId: onlineBranchId,
+    // No consultant: nobody sold this one, which is the point of the online branch.
+    consultantId: null,
     notes: `Created from storefront booking ${booking.ref}. Held, not ticketed.`
   });
 

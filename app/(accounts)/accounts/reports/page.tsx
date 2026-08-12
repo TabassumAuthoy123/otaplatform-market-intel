@@ -1,10 +1,8 @@
 import { ExportBar } from '@/components/accounts/ExportBar';
 import { creditSummary } from '@/lib/credit';
+import { attributionCoverage, marginByBranch, marginByConsultant } from '@/lib/attribution';
 import { PageHead, Panel, Table, Td, Tile } from '@/components/accounts/ui';
-import {
-  billBase, bookingProfit, dailyRollup, getBook, money, payables, profitAndLoss,
-  receivables, salesByService, trialBalance
-} from '@/lib/accounting';
+import { billBase, bookingProfit, dailyRollup, getBook, money, moneyShort, payables, profitAndLoss, receivables, salesByService, trialBalance } from '@/lib/accounting';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,6 +11,9 @@ export default async function ReportsPage({ searchParams }: { searchParams: { fr
   const to = searchParams.to || undefined;
   const book = await getBook();
   const credit = creditSummary(book);
+  const byBranch = marginByBranch(book);
+  const byConsultant = marginByConsultant(book);
+  const coverage = attributionCoverage(book);
   const sym = book.company.currencySymbol;
 
   const pl = profitAndLoss(book, from, to);
@@ -133,6 +134,59 @@ export default async function ReportsPage({ searchParams }: { searchParams: { fr
           ))}
         </Table>
       </Panel>
+
+      {/* -------------------------------------------------------- attribution */}
+      {/*
+        Coverage first, deliberately. A branch table built on 2% of the sales is a
+        table somebody will quote as if it were the whole picture, so the
+        proportion that can be attributed at all decides whether the numbers below
+        it are worth reading — and it is stated before them, not after.
+      */}
+      {byBranch.length > 0 && (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <Panel
+            title="Margin by branch"
+            sub={`${coverage.attributed} of ${coverage.total} live invoices attributed · ${coverage.pct.toFixed(0)}% of the book`}
+          >
+            <Table head={['Branch', 'Invoices', 'Revenue', 'Cost', 'Memos', 'Margin', '%']} right={[1, 2, 3, 4, 5, 6]}>
+              {byBranch.map((r) => (
+                <tr key={r.id ?? 'none'} className={r.id === null ? 'text-muted' : 'hover:bg-surface'}>
+                  <Td>
+                    {r.name}
+                    {r.kind === 'online' && <span className="ml-2 text-[11px] text-muted">self-service</span>}
+                  </Td>
+                  <Td right mono>{r.invoices}</Td>
+                  <Td right mono>{moneyShort(r.revenue, sym)}</Td>
+                  <Td right mono className="text-muted">{moneyShort(r.cost, sym)}</Td>
+                  <Td right mono className={r.memoCost ? 'text-amber-800' : 'text-muted'}>
+                    {r.memoCost ? moneyShort(r.memoCost, sym) : '—'}
+                  </Td>
+                  <Td right mono className="font-semibold text-teal-700">{moneyShort(r.margin, sym)}</Td>
+                  <Td right mono className="text-muted">{r.marginPct.toFixed(1)}</Td>
+                </tr>
+              ))}
+            </Table>
+          </Panel>
+
+          <Panel title="Margin by consultant" sub="Who is selling, and at what margin">
+            <Table head={['Consultant', 'Invoices', 'Revenue', 'Margin', '%']} right={[1, 2, 3, 4]}>
+              {byConsultant.map((r) => (
+                <tr key={r.id ?? 'none'} className={r.id === null ? 'text-muted' : 'hover:bg-surface'}>
+                  <Td>{r.name}</Td>
+                  <Td right mono>{r.invoices}</Td>
+                  <Td right mono>{moneyShort(r.revenue, sym)}</Td>
+                  <Td right mono className="font-semibold text-teal-700">{moneyShort(r.margin, sym)}</Td>
+                  <Td right mono className="text-muted">{r.marginPct.toFixed(1)}</Td>
+                </tr>
+              ))}
+            </Table>
+            <div className="border-t border-hair px-5 py-3 text-[12px] leading-relaxed text-muted">
+              A debit memo is charged to whoever caused it rather than to the sale, because a memo has no invoice —
+              the consultant who mispriced a fare is the person it belongs to.
+            </div>
+          </Panel>
+        </div>
+      )}
 
       {/* ------------------------------------------------------ credit control */}
       {/*

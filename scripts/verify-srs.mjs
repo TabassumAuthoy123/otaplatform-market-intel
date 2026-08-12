@@ -793,6 +793,68 @@ await check('The BSP page never writes anything', async () => {
   return [before === after, before === after ? 'the book is byte-identical after a match' : 'the match wrote to the book'];
 });
 
+/* ------------------------------------------------------------- attribution */
+await check('Margin groups by branch and by consultant', async () => {
+  const html = (await (await fetch(`${APP}/accounts/reports`)).text()).replace(/<!--[\s\S]*?-->/g, '');
+  const byBranch = /Margin by branch/.test(html);
+  const byConsultant = /Margin by consultant/.test(html);
+  const coverage = /live invoices attributed/.test(html);
+  /**
+   * Coverage is asserted alongside the tables rather than instead of them. A branch
+   * table built on 2% of the sales is a table somebody will quote as the whole
+   * picture, so the proportion has to be on the page with it.
+   */
+  return [byBranch && byConsultant && coverage,
+    `branch table: ${byBranch}, consultant table: ${byConsultant}, coverage stated: ${coverage}`];
+});
+
+await check('Attribution moved no total', async () => {
+  // A branch is a label on a sale. It must not reprice one, and the whole-book
+  // reconciliation is what proves it did not.
+  const r = await fetch(`${APP}/api/accounts/export?format=csv&section=reconciliation`);
+    const text = (await r.text()).replace(new RegExp(String.fromCharCode(13), 'g'), '');
+    const rows = text.trim().split(String.fromCharCode(10)).slice(1);
+  const bad = rows.filter((x) => Number(x.split('","').map((c) => c.replace(/^"|"$/g, ''))[3]) !== 0);
+  return [bad.length === 0, `${rows.length} control account(s), ${bad.length} out of balance`];
+});
+
+await check('Unattributed is a row, not a silent drop', () => {
+  const src = readFileSync('lib/attribution.ts', 'utf8');
+  /**
+   * A report whose totals do not add back to the whole book gets argued with rather
+   * than used. Unattributed sales get their own row, sorted last however large it
+   * is — it is a backlog, not a performer.
+   */
+  const hasRow = src.includes("'Unattributed'");
+  const sortsLast = src.includes('if (a.id === null) return 1;');
+  return [hasRow && sortsLast, `own row: ${hasRow}, sorted last regardless of size: ${sortsLast}`];
+});
+
+await check('A storefront sale attributes itself to the online branch', () => {
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const online = (bk.branches ?? []).find((b) => b.kind === 'online');
+  if (!online) return [false, 'no online branch on the book'];
+  const storefront = bk.invoices.filter((i) => /storefront booking/i.test(i.notes ?? ''));
+  if (!storefront.length) return [false, 'no storefront sale to check'];
+  /**
+   * Found by `kind`, never by a hard-coded id, so an installation that names its
+   * online channel something else still gets it — and one with no online branch
+   * leaves the sale unattributed rather than assigned somewhere untrue.
+   */
+  const byKind = readFileSync('lib/bookings.ts', 'utf8').includes("(b) => b.kind === 'online'");
+  const attributed = storefront.filter((i) => i.branchId === online.id).length;
+  return [byKind && attributed === storefront.length,
+    `${attributed} of ${storefront.length} storefront sale(s) on ${online.name}, found by kind: ${byKind}`];
+});
+
+await check('A memo is charged to whoever caused it, not to a sale', () => {
+  const src = readFileSync('lib/attribution.ts', 'utf8');
+  // A memo has no invoice, so the document is the only route — and the consultant
+  // who mispriced a fare is the person it belongs to.
+  const viaDocument = src.includes('for (const d of documents(book))') && src.includes('row.memoCost +=');
+  return [viaDocument, `memos attributed through the document: ${viaDocument}`];
+});
+
 /* ------------------------------------------------------------ credit control */
 await check('A sale past the credit limit is refused, with a reason', async () => {
   /**

@@ -68,6 +68,14 @@ export type Currency = {
   checkedOn?: string;
 };
 export type Employee = { id: string; name: string; role: string; phone: string };
+/**
+ * A counter, a desk, or the website. Where a sale was made.
+ *
+ * `kind` separates a physical office from the storefront, because "how much comes
+ * from the website" is a different question from "how is Uttara doing", and an
+ * owner asks both.
+ */
+export type Branch = { id: string; name: string; city: string; kind: 'office' | 'online'; note: string };
 
 export type InvoiceLine = {
   serviceId: string; description: string; pnr: string; pax: number;
@@ -110,6 +118,20 @@ export type Attachment = { name: string; url: string; note: string };
 export type Invoice = ForeignDoc & {
   id: string; no: string; date: string; customerId: string;
   status: InvoiceStatus; vatRate: number; lines: InvoiceLine[]; notes: string;
+  /**
+   * Which branch sold it, and which consultant.
+   *
+   * On the INVOICE rather than only on the document, because margin is revenue less
+   * cost and both live on the invoice line. Attribution that only reached air
+   * tickets would leave a visa or a hotel sale belonging to nobody, and an agency's
+   * counter staff sell all three.
+   *
+   * Both nullable and both silent when absent. Every invoice written before this
+   * existed is unattributed, and the report says so rather than quietly assigning
+   * them to whichever branch sorts first.
+   */
+  branchId?: string | null;
+  consultantId?: string | null;
   attachments?: Attachment[];
 };
 
@@ -263,6 +285,8 @@ export type Book = {
    * this collection posts to the journal; it is a sub-ledger the invoice lines
    * point at. See lib/documents.ts.
    */
+  /** Offices and the storefront. Absent on a book written before attribution. */
+  branches?: Branch[];
   documents?: TravelDocument[];
   inventory: InventoryItem[];
   airlines: Airline[];

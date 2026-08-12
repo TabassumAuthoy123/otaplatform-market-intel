@@ -778,8 +778,58 @@ scan ran past each block's real end. Caught by the check count dropping from 147
 zero. Verified by diffing the check names before and after: 131 and 131, with
 exactly the two intended renames.
 
-**Still to build:** real margin once commission is captured, branch and consultant
-attribution, and branded travel documents.
+#### Margin by branch and by consultant
+
+Two nullable foreign keys and a group-by. The cheapest thing left on the list, and
+what an owner with three offices asks about in the first ten minutes — not "what
+did we sell" but **which counter is actually making money, and which of my staff is
+discounting to hit a number**. TRAACS sells it as "Profit by Branch, Team or
+Product"; we had the product half already through `salesByService`.
+
+`branches[]` is a new master — three counters and one of `kind: 'online'`. The
+attribution lives on the **invoice**, not only on the document, because margin is
+revenue less cost and both live on the invoice line. Attribution that only reached
+air tickets would leave a visa or a hotel sale belonging to nobody, and counter
+staff sell all three.
+
+| | Invoices | Revenue | Margin | % |
+|---|---|---|---|---|
+| Head office — Gulshan | 39 | ৳96.2 lakh | ৳6.0 lakh | 6.2 |
+| Chattogram counter | 35 | ৳89.6 lakh | ৳6.1 lakh | 6.8 |
+| Uttara counter | 37 | ৳85.2 lakh | ৳6.6 lakh | 7.7 |
+| Online — storefront | 2 | ৳76k | — | — |
+
+**Coverage is stated above the table, not below it.** A branch table built on 2% of
+the sales is a table somebody will quote as the whole picture, so the proportion
+that can be attributed at all decides whether the numbers are worth reading.
+Currently 115 of 115 live invoices.
+
+**Unattributed is a row, sorted last however large it is.** A report whose totals do
+not add back to the whole book gets argued with rather than used, and an
+unattributed backlog is a backlog rather than a performer.
+
+**A storefront sale attributes itself.** The booking flow finds the online branch by
+`kind`, never by a hard-coded id, so an installation that names its channel
+something else still gets it and one with no online branch leaves the sale
+unattributed rather than assigned somewhere untrue. No consultant is set — nobody
+sold it, which is the point. Proven by making a real booking through the API,
+checking `branchId=BR-ONL` landed on both the invoice and the document, then
+removing the record.
+
+**A memo is charged to whoever caused it, not to a sale.** A memo has no invoice, so
+the document is the only route — and the consultant who mispriced a fare is the
+person it belongs to.
+
+`scripts/seed-attribution.mjs` creates the branches and spreads the **demo**
+invoices across them. It is the one script here that invents, and it says so
+loudly: `backfill-documents.mjs` refuses to invent a ticket number because the PNRs
+it migrates belong to real bookings, whereas the 118 seeded invoices are not records
+of anything — assigning a branch to a synthetic sale falsifies no history, and a
+report showing 98% unattributed cannot demonstrate anything. The two real storefront
+sales are left alone.
+
+**Still to build:** real margin once commission is captured, and branded travel
+documents.
 
 ### Putting a real agency on it
 
