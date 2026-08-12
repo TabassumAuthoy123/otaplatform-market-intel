@@ -49,12 +49,23 @@ export type SabreAttempt = {
   fault?: { code?: string; message?: string; diagnosis?: string };
 };
 
+type TaxDesc = { id?: number; code?: string; amount?: number; description?: string };
+
 export type SabreOffer = {
   sig: string;
   currency: string;
   amount: number;
   base: number;
   taxes: number;
+  /**
+   * Taxes itemised by code, resolved out of the response's `taxDescs` dictionary.
+   *
+   * Sabre returns codes with human descriptions — UT3 "TRAVEL TAX", P8 "PASSENGER
+   * SECURITY FEE", ZR the advance-passenger-information fee — and the
+   * per-passenger `taxes` array holds only `{ref}` pointers into that dictionary.
+   * Both halves were being discarded in favour of one summed number.
+   */
+  taxBreakdown: { code: string; amount: number; description: string }[];
   cabin: string;
   seatsLeft: number | null;
   segments: {
@@ -281,7 +292,7 @@ export async function sabreSearch(q: SabreQuery): Promise<SabreAttempt> {
  */
 export function parseSabreOffers(data: unknown): SabreOffer[] {
   const root = (data as Record<string, never>)?.['groupedItineraryResponse'] as unknown as
-    | { itineraryGroups?: unknown[]; legDescs?: unknown[]; scheduleDescs?: unknown[] }
+    | { itineraryGroups?: unknown[]; legDescs?: unknown[]; scheduleDescs?: unknown[]; taxDescs?: unknown[] }
     | undefined;
   if (!root?.itineraryGroups) return [];
 
@@ -310,12 +321,22 @@ export function parseSabreOffers(data: unknown): SabreOffer[] {
   const legs = new Map<number, Leg>();
   for (const l of (root.legDescs ?? []) as Leg[]) if (typeof l.id === 'number') legs.set(l.id, l);
 
+  /**
+   * The tax dictionary, built once per response.
+   *
+   * `taxDescs` is a flat list of every tax mentioned anywhere in the answer, and
+   * each priced itinerary refers into it by id. Resolving per offer would rebuild
+   * this map for every fare on the page.
+   */
+  const taxDescs = new Map<number, TaxDesc>();
+  for (const t of (root.taxDescs ?? []) as TaxDesc[]) if (typeof t.id === 'number') taxDescs.set(t.id, t);
+
   const offers: SabreOffer[] = [];
 
   for (const grp of root.itineraryGroups as { itineraries?: unknown[] }[]) {
     for (const it of (grp.itineraries ?? []) as {
       legs?: { ref?: number }[];
-      pricingInformation?: { fare?: { totalFare?: { totalPrice?: number; baseFareAmount?: number; totalTaxAmount?: number; currency?: string } } }[];
+      pricingInformation?: { fare?: { totalFare?: { totalPrice?: number; baseFareAmount?: number; totalTaxAmount?: number; currency?: string }; passengerInfoList?: { passengerInfo?: { taxes?: { ref?: number }[] } }[] } }[];
     }[]) {
       const price = it.pricingInformation?.[0]?.fare?.totalFare;
       if (!price?.totalPrice) continue;
@@ -332,6 +353,27 @@ export function parseSabreOffers(data: unknown): SabreOffer[] {
       const totalNum = Number(price.totalPrice);
       const taxNum = Number(price.totalTaxAmount) || 0;
       const baseNum = Math.max(0, totalNum - taxNum);
+
+      /**
+       * Resolve this itinerary's tax refs against the dictionary.
+       *
+       * `passengerInfo.taxes` is the full itemisation; `taxSummaries` is a shorter
+       * roll-up of the same thing. Taking the first means a document records every
+       * code the airline charged rather than a grouped subset — and BSP bills at
+       * the code level, so the grouped version cannot be reconciled against it.
+       */
+      const paxInfo = (it.pricingInformation?.[0]?.fare?.passengerInfoList?.[0]?.passengerInfo ?? {}) as {
+        taxes?: { ref?: number }[];
+      };
+      const taxBreakdown = (paxInfo.taxes ?? [])
+        .map((r) => taxDescs.get(r.ref as number))
+        .filter((t): t is TaxDesc => Boolean(t))
+        .map((t) => ({
+          code: String(t.code ?? ''),
+          amount: Math.round(Number(t.amount) || 0),
+          description: String(t.description ?? '')
+        }))
+        .filter((t) => t.code && t.amount > 0);
 
       const segments: SabreOffer['segments'] = [];
       for (const legRef of it.legs ?? []) {
@@ -366,6 +408,7 @@ export function parseSabreOffers(data: unknown): SabreOffer[] {
         amount,
         base: baseNum,
         taxes: taxNum,
+        taxBreakdown,
         cabin: '',
         seatsLeft: null,
         segments

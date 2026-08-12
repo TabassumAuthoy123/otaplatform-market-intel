@@ -585,6 +585,58 @@ await check('Travelport booking still carries the branch and the provider code',
 });
 
 /* ------------------------------------------------- the document sub-ledger */
+await check('A booked document carries the fare split the supplier quoted', () => {
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const priced = (bk.documents ?? []).filter((d) => d.baseFare !== null && (d.taxes ?? []).length > 0);
+  if (!priced.length) return [false, 'no document carries a fare breakdown — the booking flow is not capturing it'];
+  /**
+   * The identity that proves capture is real rather than decorative: base plus the
+   * itemised taxes must equal what the invoice line records as the supplier cost.
+   * If the parser drops a tax code or double-counts one, this is where it shows.
+   */
+  const lines = new Map();
+  for (const inv of bk.invoices) for (const l of inv.lines) if (l.documentId) lines.set(l.documentId, l);
+  const bad = priced.filter((d) => {
+    const line = lines.get(d.id);
+    if (!line) return false;
+    const sum = d.baseFare + d.taxes.reduce((t, x) => t + x.amount, 0);
+    return Math.abs(sum - line.supplierCost) > 1;
+  });
+  return [bad.length === 0,
+    bad.length
+      ? `${bad.length} document(s) where base + taxes does not equal the invoice line cost`
+      : `${priced.length} priced document(s); base + itemised taxes equals the line cost on every one`];
+});
+
+await check('Captured taxes are real IATA codes, not one lumped total', () => {
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const priced = (bk.documents ?? []).filter((d) => (d.taxes ?? []).length > 0);
+  if (!priced.length) return [false, 'no document carries itemised taxes'];
+  const codes = [...new Set(priced.flatMap((d) => d.taxes.map((t) => t.code)))];
+  // A single synthetic bucket would satisfy "has taxes" while being useless for a
+  // BSP match. The Bangladesh codes are the ones that must survive.
+  const lumped = codes.length === 1 && /^(ALL|TOTAL|TAX)$/i.test(codes[0]);
+  const local = codes.some((c) => ['BD', 'E5', 'OW', 'OW2', 'UT', 'UT3', 'P7', 'P8'].includes(c));
+  return [!lumped && local,
+    lumped ? `taxes collapsed into one bucket: ${codes[0]}` : `${codes.length} distinct code(s): ${codes.join(', ')}`];
+});
+
+await check('A document created from a booking knows when the passenger flies', () => {
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const fromBooking = (bk.documents ?? []).filter((d) => /storefront booking/.test(d.notes ?? ''));
+  if (!fromBooking.length) return [false, 'no document has been created from a booking yet'];
+  /**
+   * travelDate is the field the migrated documents could not have and the one step
+   * 2 keys on. A booking has the departure times, so there is no excuse for it
+   * being null here.
+   */
+  const missing = fromBooking.filter((d) => !d.travelDate || d.sectors.length === 0);
+  return [missing.length === 0,
+    missing.length
+      ? `${missing.length} booking document(s) with no travel date or no sectors`
+      : `${fromBooking.length} document(s) from bookings, all with a travel date and sectors`];
+});
+
 await check('Adding the document table moved no total', async () => {
   /**
    * The whole claim of this change in one assertion.

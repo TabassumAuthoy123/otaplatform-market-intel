@@ -35,6 +35,18 @@ export type Offer = {
   amount: number;
   baseLabel: string;
   taxLabel: string;
+  /**
+   * The taxes itemised by code, from whichever supplier quoted the fare.
+   *
+   * Both of them send this and both of them were being reduced to one summed
+   * number before it reached anything. It is carried here so a booking can record
+   * it on the document, which is what BSP reconciliation matches against and what
+   * makes a rule like the Hajj excise-duty exemption expressible per code.
+   *
+   * `description` is Sabre's — Travelport sends only the code, so it is empty
+   * there rather than filled in with a guess at what the code means.
+   */
+  taxBreakdown: { code: string; amount: number; description: string }[];
   cabin: string;
   bookingCode: string;
   platingCarrier: string;
@@ -72,6 +84,7 @@ function fromTravelport(a: GdsAttempt): Offer[] {
     amount: o.amount,
     baseLabel: o.basePrice,
     taxLabel: o.taxes,
+    taxBreakdown: (o.taxBreakdown ?? []).map((t) => ({ ...t, description: '' })),
     cabin: o.cabin,
     bookingCode: o.bookingCode,
     platingCarrier: o.platingCarrier,
@@ -90,6 +103,7 @@ function fromSabre(a: SabreAttempt, date: string): Offer[] {
     amount: o.amount,
     baseLabel: `${o.currency}${Math.round(o.base)}`,
     taxLabel: `${o.currency}${Math.round(o.taxes)}`,
+    taxBreakdown: o.taxBreakdown ?? [],
     cabin: o.cabin || 'Economy',
     bookingCode: '',
     platingCarrier: o.segments[0]?.carrier ?? '',

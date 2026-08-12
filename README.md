@@ -511,10 +511,45 @@ Packages are skipped deliberately. A Hajj or Umrah package also carries a PNR an
 is genuinely a flight plus hotel plus ground, so turning one into a single ticket
 would misrepresent it.
 
-**What it unlocks, none of it built yet:** revenue on the travel date, BSP
-reconciliation, ADM/ACM as documents, real margin once commission is captured, and
-branded travel documents — which are a rendering of this table and were impossible
-before it.
+#### Fare capture — both suppliers were already sending it
+
+A DAC–DXB search returns the taxes **itemised by IATA code**, from both GDS, and
+every one of them was being reduced to a single summed number before it reached
+anything:
+
+| | How it arrives | What was kept |
+|---|---|---|
+| Travelport | `<air:TaxInfo Category="BD" Amount="BDT500"/>` — 55 per response | the `Taxes` attribute only |
+| Sabre | `taxDescs[]` dictionary + `{ref}` pointers, with human descriptions | `totalTaxAmount` only |
+
+Both are now parsed and carried through the offer onto the booking and onto the
+document. A booking made through the storefront produces this, verified live:
+
+```
+DOC-0061  TKT  booked        BS341 DAC→DXB      travelDate 2026-09-26
+base 25,900   +   BD 500 · OW 2,500 · P7 1,234 · P8 1,234
+                  UT 4,000 · ZR 168 · E5 446 · YQ 617        =  36,599
+invoice line SFT-INV-0119 supplierCost                          36,599
+```
+
+Those codes are the Bangladesh rules as line items — **OW** the excise duty,
+**BD** the embarkation fee, **E5** the VAT, **UT** the travel tax. A rule like the
+Hajj excise-duty waiver applies to a code and cannot be applied to a total, which
+is why the itemisation is the thing that matters rather than the number.
+
+Three checks hold it: base plus the itemised taxes must equal the invoice line's
+cost on every priced document, the codes must be real ones rather than a single
+`TOTAL` bucket, and a document created from a booking must carry a travel date and
+its sectors.
+
+Travelport's taxes are scoped to each `AirPricingInfo`'s own body. Read from the
+whole response they would attach every fare's taxes to every offer — plausible
+looking, and nonsense.
+
+**What it unlocks, none of it built yet:** revenue on the travel date — which now
+has a date to work from — BSP reconciliation, ADM/ACM as documents, real margin
+once commission is captured, and branded travel documents, which are a rendering
+of this table and were impossible before it.
 
 ### Putting a real agency on it
 

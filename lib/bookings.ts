@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { travelDateOf } from '@/lib/documents';
 import path from 'node:path';
 import type { Offer, Supplier } from '@/lib/offers';
 
@@ -50,6 +51,13 @@ export type Booking = {
      * an empty record. Stored so something can act on it.
      */
     latestTicketing: string;
+    /**
+     * Taxes by IATA code, as the supplier itemised them.
+     *
+     * Optional so every booking written before this existed still parses. Empty
+     * means the supplier sent none — never that they were not asked for.
+     */
+    taxBreakdown?: { code: string; amount: number; description: string }[];
   };
   /** What the agency charged on top of the GDS fare. */
   serviceCharge: number;
@@ -120,6 +128,68 @@ async function postToAccounts(booking: Booking, customerName: string): Promise<s
     suppliers.push(supplier);
   }
 
+  /**
+   * The airline document, built from what the supplier actually quoted.
+   *
+   * This is the point of the whole exercise. The GDS hands over a base fare,
+   * itemised taxes with IATA codes, the plating carrier, every sector with its
+   * departure time and the passenger names — and until now all of it was reduced
+   * to one `supplierCost` number on an invoice line, which is why the book could
+   * not reconcile against BSP, defer revenue to the travel date, or attribute an
+   * ADM to a ticket.
+   *
+   * `documentNo` stays null and the status is `booked`, because that is the truth:
+   * Travelport creates the PNR and Galileo refuses to issue, so there is no ticket
+   * number to record. It becomes `issued` when there is one.
+   *
+   * Nothing here posts. The invoice line below still carries the money and still
+   * posts exactly as before, and the trial balance is unchanged by any of this.
+   */
+  const docs = Array.isArray(book.documents) ? book.documents : [];
+  const docSeq = docs.length + 1;
+  const docId = `DOC-${String(docSeq).padStart(4, '0')}`;
+  const paxName = booking.passengers[0]
+    ? `${booking.passengers[0].lastName}/${booking.passengers[0].firstName} ${booking.passengers[0].title}`.trim()
+    : '';
+  // Fare figures are per passenger, the way the supplier quotes them.
+  const baseNum = Math.round(Number(String(booking.fare.base).replace(/[^\d.]/g, '')) || 0);
+  const quotedTaxes = booking.fare.taxBreakdown ?? [];
+
+  docs.push({
+    id: docId,
+    documentNo: null,
+    type: 'TKT',
+    status: 'booked',
+    pnr: booking.ref,
+    platingCarrier: booking.fare.platingCarrier || booking.itinerary[0]?.carrier || '',
+    passengerName: paxName,
+    sectors: booking.itinerary.map((s) => ({
+      carrier: s.carrier, flightNumber: s.flightNumber,
+      origin: s.origin, destination: s.destination,
+      departure: s.departure, bookingClass: booking.fare.bookingCode || ''
+    })),
+    issueDate: null,
+    // The earliest departure. This is what revenue recognition will key on, and it
+    // is the field the migrated documents could not have.
+    travelDate: travelDateOf(booking.itinerary.map((s) => ({ departure: s.departure }))),
+    currency: booking.fare.currency,
+    fxRate: 1,
+    // Null only when the supplier quoted no base at all; 0 would claim a free fare.
+    baseFare: baseNum > 0 ? baseNum : null,
+    taxes: quotedTaxes.map((t) => ({ code: t.code, amount: t.amount })),
+    // The GDS quote carries no commission for these fares. Recorded as unknown
+    // rather than as zero — zero is a claim that the airline allowed nothing.
+    commissionPct: null,
+    commissionAmt: null,
+    formOfPayment: 'bsp_cash',
+    supplierId: String(supplier.id),
+    settlementRef: null,
+    settled: false,
+    branchId: null,
+    consultantId: null,
+    notes: `Created from storefront booking ${booking.ref}. Fare and taxes as quoted by ${booking.supplier}.`
+  });
+
   const seq = invoices.length + 1;
   const invId = `INV-${String(seq).padStart(4, '0')}`;
   const invNo = `${company.invoicePrefix ?? 'SFT-INV-'}${String(seq).padStart(4, '0')}`;
@@ -153,7 +223,9 @@ async function postToAccounts(booking: Booking, customerName: string): Promise<s
       qty: pax,
       unitPrice: Math.round(booking.grandTotal / pax),
       supplierCost: Math.round(supplierCostTotal / pax),
-      supplierId: String(supplier.id)
+      supplierId: String(supplier.id),
+      // The link that makes the fare breakdown reachable from the money.
+      documentId: docId
     }],
     notes: `Created from storefront booking ${booking.ref}. Held, not ticketed.`
   });
@@ -170,6 +242,7 @@ async function postToAccounts(booking: Booking, customerName: string): Promise<s
     notes: `Airline fare for booking ${booking.ref}`
   });
 
+  book.documents = docs;
   book.invoices = invoices;
   book.bills = bills;
   book.customers = customers;
@@ -208,7 +281,21 @@ export async function createBooking(input: {
       bookingCode: input.offer.bookingCode,
       platingCarrier: input.offer.platingCarrier,
       refundable: input.offer.refundable,
-      latestTicketing: input.offer.latestTicketing || ''
+      latestTicketing: input.offer.latestTicketing || '',
+      /**
+       * The itemised taxes, kept instead of thrown away.
+       *
+       * Both suppliers send them — Travelport as `<air:TaxInfo Category="BD"
+       * Amount="BDT500"/>`, Sabre as refs into a `taxDescs` dictionary with human
+       * descriptions — and a DAC–DXB search returns eight or more codes. Until now
+       * the booking recorded only their sum, so the fare breakdown was gone by the
+       * time it reached the book.
+       *
+       * These are the Bangladesh rules as line items: OW2 the excise duty, BD the
+       * embarkation fee, E5 the VAT. A rule such as the Hajj excise-duty waiver
+       * applies to a code, and cannot be applied to a total.
+       */
+      taxBreakdown: input.offer.taxBreakdown ?? []
     },
     serviceCharge: input.serviceCharge,
     grandTotal: input.offer.amount * Math.max(1, input.passengers.length) + input.serviceCharge,

@@ -281,8 +281,14 @@ export function documentsByCarrier(book: Book): { carrier: string; count: number
   return [...acc.values()].sort((a, b) => b.cost - a.cost);
 }
 
-/** Earliest departure across the sectors, which is what "travel date" means. */
-export function travelDateOf(sectors: DocumentSector[]): string | null {
+/**
+ * Earliest departure across the sectors, which is what "travel date" means.
+ *
+ * Takes anything with a departure rather than a full sector: the caller building a
+ * document already has the itinerary in its own shape, and forcing it to construct
+ * throwaway sectors just to ask this question is friction with no safety in it.
+ */
+export function travelDateOf(sectors: { departure: string }[]): string | null {
   const dates = sectors.map((s) => s.departure).filter(Boolean).sort();
   return dates.length ? dates[0].slice(0, 10) : null;
 }

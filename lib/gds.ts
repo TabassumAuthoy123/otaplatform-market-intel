@@ -264,6 +264,15 @@ export type FareOffer = {
    * show; this one is for diagnosing why they differ.
    */
   quotedBasePrice?: string;
+  /**
+   * The taxes itemised by IATA code, straight off `<air:TaxInfo>`.
+   *
+   * Empty only when the supplier sent none. `taxes` above is their sum and is what
+   * a fare card shows; this is what a BSP billing file is matched against, and what
+   * makes a rule like "the Bangladesh excise duty is waived for Hajj pilgrims"
+   * something the code can express rather than approximate.
+   */
+  taxBreakdown: { code: string; amount: number }[];
   currency: string;
   amount: number;
   refundable: boolean;
@@ -356,6 +365,33 @@ export function parseLowFareSearch(xml: unknown): FareOffer[] {
       ? `${totalCcy}${Math.max(0, Math.round(amount - taxNum))}`
       : rawBase;
     const taxes = rawTaxes.slice(0, 3) === totalCcy ? rawTaxes : `${totalCcy}${Math.round(taxNum)}`;
+
+    /**
+     * The itemised taxes, which were being thrown away on every single search.
+     *
+     * uAPI returns one `<air:TaxInfo Category="BD" Amount="BDT500"/>` per tax with
+     * the real IATA code — BD is the Bangladesh excise duty, E5 the embarkation
+     * fee, P7 and P8 the passenger service charges, YQ the carrier surcharge. A
+     * DAC–DXB search comes back with 55 of them and this parser kept only the
+     * summed `Taxes` attribute.
+     *
+     * They matter because BSP bills at this level: a billing file lists tax codes
+     * and amounts per document, and a book that only knows one total can never be
+     * reconciled against it line for line. They also make the local rules
+     * expressible — the excise duty band and the Hajj exemptions apply to specific
+     * codes, not to "tax".
+     *
+     * Scoped to THIS AirPricingInfo's own body. Reading them from the whole
+     * response would attach every fare's taxes to every offer, which would look
+     * plausible and be nonsense.
+     */
+    const taxBreakdown = Array.from(infoBody.matchAll(/<air:TaxInfo\b([^>]*)\/>/g))
+      .map((t) => ({
+        code: attr(t[1], 'Category'),
+        amount: Math.round(Number(attr(t[1], 'Amount').slice(3)) || 0)
+      }))
+      .filter((t) => t.code && t.amount > 0);
+
     const bookings = Array.from(infoBody.matchAll(/<air:BookingInfo\b([^>]*)\/>/g)).map((b) => b[1]);
 
     const segs = bookings
@@ -389,6 +425,7 @@ export function parseLowFareSearch(xml: unknown): FareOffer[] {
         taxes,
         /** What the supplier actually sent, kept so a mismatch can be traced. */
         quotedBasePrice: rawBase,
+        taxBreakdown,
         currency,
         amount,
         refundable: attr(infoTag, 'Refundable') === 'true',
