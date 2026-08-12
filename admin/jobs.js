@@ -125,6 +125,61 @@ function jobs(ctx) {
 
     /* -------------------------------------------------------- receivables */
     {
+      key: 'credit_limit',
+      label: 'Customers over their credit limit',
+      everyMinutes: 6 * 60,
+      why: 'A breach is only visible to whoever opens the reports page. The failure it warns about — a client quietly running up tickets the agency has already remitted to the airline — builds over months, so it has to arrive rather than wait to be found.',
+      async run() {
+        const b = book();
+        const sym = (b.company && b.company.currencySymbol) || '৳';
+
+        /**
+         * Deliberately recomputed here rather than fetched from the app.
+         *
+         * Every other job that needs a derived figure asks the app for it, so the
+         * check uses the same derivation the screens use. This one is a plain sum
+         * over invoices and receipts with no ambiguity in it, and making the credit
+         * warning depend on the app being up would mean the alert goes quiet in
+         * exactly the situation where somebody most wants it.
+         */
+        const paidOn = {};
+        for (const r of b.receipts || []) paidOn[r.invoiceId] = (paidOn[r.invoiceId] || 0) + r.amount;
+        const creditOn = {};
+        for (const c of b.creditNotes || []) {
+          if (c.settlement === 'credit_balance') creditOn[c.invoiceId] = (creditOn[c.invoiceId] || 0) + c.amount;
+        }
+
+        const owed = {};
+        for (const inv of b.invoices || []) {
+          if (inv.status === 'draft' || inv.status === 'cancelled') continue;
+          const gross = (inv.lines || []).reduce((x, l) => x + l.qty * l.unitPrice, 0);
+          const tot = gross + Math.round((gross * (inv.vatRate || 0)) / 100);
+          const due = Math.max(0, tot - (paidOn[inv.id] || 0) - (creditOn[inv.id] || 0));
+          if (due > 0) owed[inv.customerId] = (owed[inv.customerId] || 0) + due;
+        }
+
+        const out = [];
+        for (const c of b.customers || []) {
+          const limit = Math.max(0, Math.round(Number(c.creditLimit) || 0));
+          // No limit set is not a breach. It is the default and it is silent.
+          if (limit <= 0) continue;
+          const exposure = Math.round(owed[c.id] || 0);
+          if (exposure <= limit) continue;
+          out.push({
+            id: `credit:${c.id}`,
+            severity: 'warning',
+            title: `${c.name} is over their credit limit`,
+            detail:
+              `Owes ${sym}${exposure.toLocaleString('en-IN')} against a limit of ` +
+              `${sym}${limit.toLocaleString('en-IN')} — over by ${sym}${(exposure - limit).toLocaleString('en-IN')}. ` +
+              `Storefront bookings for this customer are being refused until it comes back under.`,
+            where: '/accounts/reports'
+          });
+        }
+        return out;
+      }
+    },
+    {
       key: 'overdue',
       label: 'Overdue receivables',
       everyMinutes: 12 * 60,

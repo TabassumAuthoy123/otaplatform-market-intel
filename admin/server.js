@@ -1521,6 +1521,16 @@ function withOptionalFields(spec, rec) {
     if (rec.currency === undefined) rec.currency = '';
     if (rec.fxRate === undefined) rec.fxRate = 0;
   }
+  /**
+   * Credit limit, surfaced on every customer form whether or not the record has it.
+   *
+   * The generic editor builds its fields from the record it is given, so a field
+   * nobody has yet is a field nobody can ever set — the classic chicken and egg of
+   * a schema addition on a document store. Defaulting it to 0 here puts the box on
+   * the form, and 0 is read everywhere as "no limit enforced", so an untouched
+   * customer behaves exactly as before.
+   */
+  if (spec.key === 'customers' && rec.creditLimit === undefined) rec.creditLimit = 0;
   if (['invoices', 'bills', 'expenses'].includes(spec.key) && !Array.isArray(rec.attachments)) {
     rec.attachments = [];
   }

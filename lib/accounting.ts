@@ -27,7 +27,19 @@ export type PayMethod = 'cash' | 'bank_transfer' | 'card' | 'mfs' | 'online' | '
 export type InvoiceStatus = 'draft' | 'confirmed' | 'partially_paid' | 'paid' | 'cancelled';
 export type BillStatus = 'unpaid' | 'partially_paid' | 'paid';
 
-export type Customer = { id: string; name: string; type: string; phone: string; email: string; address: string; openingBalance: number };
+export type Customer = {
+  id: string; name: string; type: string; phone: string; email: string; address: string;
+  openingBalance: number;
+  /**
+   * How much this customer may owe at once, in the book's currency.
+   *
+   * Absent or 0 means **no limit is enforced**, which is what every customer
+   * written before this field existed has to mean — a default of "no credit"
+   * would have stopped every agency on the book from buying anything on the day
+   * it shipped. A limit is opted into per customer.
+   */
+  creditLimit?: number;
+};
 export type Supplier = { id: string; name: string; type: string; phone: string; email: string; openingBalance: number };
 export type Service = { id: string; name: string; category: string };
 export type Bank = { id: string; name: string; accountNo: string; branch: string; openingBalance: number };

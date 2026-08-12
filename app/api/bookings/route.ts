@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { CreditLimitError } from '@/lib/credit';
 import { createBooking, type Passenger } from '@/lib/bookings';
 import { repriceOffer } from '@/lib/offers';
 
@@ -64,7 +65,24 @@ export async function POST(req: Request) {
   const offer = priced.offer;
 
   const serviceCharge = Math.max(0, Math.min(50000, Number(body.serviceCharge) || 0));
-  const booking = await createBooking({ offer, contact, passengers, serviceCharge });
+
+  /**
+   * A credit refusal is a 409, not a 500.
+   *
+   * The customer can act on it — settle an invoice, or ask for the limit to be
+   * raised — so it has to arrive as a refusal with a reason rather than as a stack
+   * trace. Letting it fall through to the generic handler would make a working
+   * control look like an outage, and the first response would be to disable it.
+   */
+  let booking;
+  try {
+    booking = await createBooking({ offer, contact, passengers, serviceCharge });
+  } catch (err) {
+    if (err instanceof CreditLimitError) {
+      return NextResponse.json({ ok: false, error: err.message, code: err.code }, { status: 409 });
+    }
+    throw err;
+  }
 
   return NextResponse.json({ ok: true, ref: booking.ref, invoiceNo: booking.invoiceNo, grandTotal: booking.grandTotal });
 }

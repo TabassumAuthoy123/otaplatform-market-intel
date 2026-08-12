@@ -600,9 +600,58 @@ Only a travel date **later than the invoice date** defers anything. A ticket sol
 and flown in the same period was never deferred, and the 60 migrated documents have
 no travel date at all, so they are untouched.
 
+#### Credit control — checked before the sale, not at month end
+
+`customer.creditLimit`, and an exposure derived on every request. The failure this
+prevents is the one that actually kills small agencies: a corporate client quietly
+runs up months of tickets, stops paying, and the agency has already remitted every
+one of those fares to the airline.
+
+The expensive part of that feature is a receivables figure that is correct at the
+moment you ask. This book already recomputes receivables from the vouchers on every
+request, so the exposure is a group-by and the limit is one new field. What was
+missing was somewhere to put the limit and somewhere to check it.
+
+**Exposure** is the unpaid balance of every live invoice after receipts and credit
+notes — not the invoice totals. `/accounts/reports` shows it per customer against
+the limit, breaches first.
+
+**Absent or 0 means no limit is enforced.** That default is what let this ship: a
+default of "no credit" would have stopped every agency on the book from buying
+anything on the day it went live. A limit is opted into one customer at a time.
+
+**It warns everywhere and refuses in exactly one place.** Across the accounts module
+a breach is reported and the save goes through, because an agency deciding to
+extend credit past its own limit for a good reason should not have to edit a master
+record first. The storefront booking API refuses, because nobody there is
+exercising that judgement:
+
+```
+HTTP 409  {"code":"CREDIT_LIMIT",
+  "error":"TEST PROBE owes 38,099 against a limit of 10,000. This sale would take
+           them to 76,198. Take payment against the open invoices, or raise the
+           limit in Masters."}
+```
+
+409 and not 500. The customer can act on it, so it has to arrive as a refusal with
+a reason rather than a stack trace — a working control that looks like an outage
+gets switched off. Verified that the refused booking wrote **nothing**: no invoice,
+no bill, no document, and no entry in `bookings.json`.
+
+A scheduled job raises a breach as an alert every six hours, so it reaches somebody
+rather than waiting to be found on a page. A customer with no limit raises nothing.
+
+One test-hygiene note worth keeping. The first version of the regression check
+picked any customer with a limit and posted a booking — and if that customer was
+*within* their limit the sale went through, writing a real invoice into the book
+every time the check passed. A test with a side effect on production data is a slow
+leak, and the green path is exactly where nobody looks for one. It now selects only
+a customer already over their limit, and anything other than a 409 is a failure.
+Proven by running the suite twice: 120 invoices before and after.
+
 **Still to build:** BSP reconciliation, ADM/ACM as documents, real margin once
-commission is captured, and branded travel documents — a rendering of this table,
-impossible before it existed.
+commission is captured, and branded travel documents — a rendering of the document
+table, impossible before it existed.
 
 ### Putting a real agency on it
 

@@ -1,4 +1,5 @@
 import { ExportBar } from '@/components/accounts/ExportBar';
+import { creditSummary } from '@/lib/credit';
 import { PageHead, Panel, Table, Td, Tile } from '@/components/accounts/ui';
 import {
   billBase, bookingProfit, dailyRollup, getBook, money, payables, profitAndLoss,
@@ -11,6 +12,7 @@ export default async function ReportsPage({ searchParams }: { searchParams: { fr
   const from = searchParams.from || undefined;
   const to = searchParams.to || undefined;
   const book = await getBook();
+  const credit = creditSummary(book);
   const sym = book.company.currencySymbol;
 
   const pl = profitAndLoss(book, from, to);
@@ -130,6 +132,46 @@ export default async function ReportsPage({ searchParams }: { searchParams: { fr
             </tr>
           ))}
         </Table>
+      </Panel>
+
+      {/* ------------------------------------------------------ credit control */}
+      {/*
+        Placed above the outstandings, because "who is over their limit" is the
+        question somebody opens this page to answer and "which invoices are open"
+        is how they answer it. A customer with no limit set appears with a dash
+        rather than a zero — no limit and no headroom are different states, and
+        printing 0 for the first would read as "no credit left".
+      */}
+      <Panel
+        title="Credit control"
+        sub={
+          credit.withLimit === 0
+            ? `No customer has a credit limit set yet. Add one in Masters — until then nothing is enforced.`
+            : `${credit.withLimit} customer(s) on a limit · ${credit.breached.length} over it` +
+              (credit.breached.length ? ` by ${money(credit.overBy, sym)}` : '')
+        }
+      >
+        <Table head={['Customer', 'Type', 'Open invoices', 'Oldest', 'Owed now', 'Limit', 'Headroom']} right={[2, 4, 5, 6]}>
+          {credit.positions.filter((p) => p.exposure > 0 || p.limit > 0).slice(0, 25).map((p) => (
+            <tr key={p.customer.id} className={p.breached ? 'bg-amber-700/5' : 'hover:bg-surface'}>
+              <Td className={p.breached ? 'font-semibold text-amber-800' : ''}>{p.customer.name}</Td>
+              <Td className="text-muted">{p.customer.type.replace('_', ' ')}</Td>
+              <Td right mono>{p.openInvoices || '—'}</Td>
+              <Td mono className="text-muted">{p.oldest ?? '—'}</Td>
+              <Td right mono className="font-semibold">{money(p.exposure, sym)}</Td>
+              <Td right mono className={p.limit ? '' : 'text-muted'}>{p.limit ? money(p.limit, sym) : 'none set'}</Td>
+              <Td right mono className={p.headroom === undefined ? 'text-muted' : p.headroom < 0 ? 'font-semibold text-amber-800' : 'text-teal-700'}>
+                {p.headroom === undefined ? '—' : money(p.headroom, sym)}
+              </Td>
+            </tr>
+          ))}
+        </Table>
+        <div className="border-t border-hair px-5 py-3 text-[12px] leading-relaxed text-muted">
+          Exposure is the unpaid balance of every live invoice after receipts and credit notes — not the invoice
+          totals. A breach is reported here and everywhere else in the accounts module; it does not block a save,
+          because extending credit past your own limit is sometimes the right call. The one place it refuses is the
+          self-service storefront booking, where nobody is making that judgement.
+        </div>
       </Panel>
 
       {/* ------------------------------------------------------- outstandings */}

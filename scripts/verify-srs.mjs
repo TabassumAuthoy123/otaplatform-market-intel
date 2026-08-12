@@ -688,6 +688,100 @@ await check('Only a future travel date defers anything', () => {
     `guarded in the journal: ${guarded}; ${migrated.length} migrated document(s) have no travel date and are not deferred`];
 });
 
+/* ------------------------------------------------------------ credit control */
+await check('A sale past the credit limit is refused, with a reason', async () => {
+  /**
+   * The check drives the real API rather than reading the function, because the
+   * thing being asserted is the refusal reaching the caller — a control that
+   * computes the right verdict and then lets the sale through is worse than none.
+   *
+   * It needs a customer already over a limit. If none exists the check says so
+   * rather than passing on an empty set, which would go green on a book where the
+   * feature had been deleted.
+   */
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+
+  /**
+   * Only attempt the booking against a customer who is ALREADY over their limit.
+   *
+   * The first version picked any customer with a limit and posted a booking. If
+   * that customer happened to be within their limit the sale went through — a
+   * check that writes a real invoice into the book every time it passes. A test
+   * with a side effect on the production data is a slow leak, and the green path
+   * is exactly where nobody looks for one.
+   */
+  const paid = {};
+  for (const r of bk.receipts) paid[r.invoiceId] = (paid[r.invoiceId] ?? 0) + r.amount;
+  const owed = {};
+  for (const inv of bk.invoices) {
+    if (inv.status === 'draft' || inv.status === 'cancelled') continue;
+    const gross = inv.lines.reduce((t, l) => t + l.qty * l.unitPrice, 0);
+    const due = Math.max(0, gross + Math.round((gross * (inv.vatRate || 0)) / 100) - (paid[inv.id] ?? 0));
+    if (due > 0) owed[inv.customerId] = (owed[inv.customerId] ?? 0) + due;
+  }
+  const limited = bk.customers.filter(
+    (c) => Number(c.creditLimit) > 0 && (owed[c.id] ?? 0) > Number(c.creditLimit)
+  );
+  if (!limited.length) {
+    return [false, 'no customer is currently over a credit limit, so the refusal cannot be exercised safely'];
+  }
+
+  const before = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const depart = new Date(Date.now() + 45 * 864e5).toISOString().slice(0, 10);
+  const html = await (await fetch(`${APP}/portal/flights?from=DAC&to=DXB&depart=${depart}&pax=1`)).text();
+    const sig = /sig=([^"'&<]+)/.exec(html)?.[1];
+  if (!sig) return [false, 'no fare on the page to try booking'];
+
+  const over = limited[0];
+  const [last, first] = String(over.name).split(/\s+/).reverse();
+  const res = await fetch(`${APP}/api/bookings`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      sig: decodeURIComponent(sig), from: 'DAC', to: 'DXB', date: depart,
+      contact: { name: 'credit check', email: 'c@softifybd.com', phone: '01700000000' },
+      passengers: [{ title: 'MR', firstName: first || 'A', lastName: last || 'B', dob: '1990-01-01', passport: 'X1', nationality: 'BD' }],
+      serviceCharge: 0
+    })
+  });
+  const body = await res.json();
+  const after = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const wroteNothing = before.invoices.length === after.invoices.length
+    && (before.documents ?? []).length === (after.documents ?? []).length;
+
+  // A refusal is only useful if it is 409 with a reason and leaves no half-written
+  // sale. 500 would read as an outage and get the control switched off.
+  if (res.status === 409) {
+    return [wroteNothing && /limit/i.test(body.error ?? ''),
+      wroteNothing ? `409 with a reason, and no invoice or document was written` : '409 but a partial sale was written'];
+  }
+  // Anything other than 409 is a failure now: the customer was selected precisely
+  // because they are over, so a sale going through means the control did not fire.
+  return [false, `HTTP ${res.status} — a customer over their limit was allowed to book`];
+});
+
+await check('No credit limit means no enforcement', () => {
+  const src = readFileSync('lib/credit.ts', 'utf8');
+  /**
+   * The default that let this ship without breaking every existing customer. An
+   * absent or zero limit has to mean "not enforced" — defaulting to "no credit"
+   * would have stopped every agency on the book from buying anything on the day it
+   * went live.
+   */
+  const openDefault = /if \(limit <= 0\) \{\s*\n\s*return \{ ok: true/.test(src);
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const unlimited = bk.customers.filter((c) => !Number(c.creditLimit)).length;
+  return [openDefault, `${unlimited} customer(s) have no limit and are unaffected; zero means not enforced: ${openDefault}`];
+});
+
+await check('A breach is an alert, not only a screen', () => {
+  const src = readFileSync('admin/jobs.js', 'utf8');
+  const job = /key: 'credit_limit'/.test(src);
+  const silentWhenUnset = /if \(limit <= 0\) continue;/.test(src);
+  return [job && silentWhenUnset,
+    `scheduled job present: ${job}, and a customer with no limit raises nothing: ${silentWhenUnset}`];
+});
+
 await check('Adding the document table moved no total', async () => {
   /**
    * The whole claim of this change in one assertion.

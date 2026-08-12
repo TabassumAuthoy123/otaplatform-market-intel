@@ -1,4 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import type { Book } from '@/lib/accounting';
+import { CreditLimitError, wouldBreach } from '@/lib/credit';
 import { travelDateOf } from '@/lib/documents';
 import path from 'node:path';
 import type { Offer, Supplier } from '@/lib/offers';
@@ -107,6 +109,28 @@ async function postToAccounts(booking: Booking, customerName: string): Promise<s
 
   // find or create the customer
   let customer = customers.find((c) => String(c.name).toLowerCase() === customerName.toLowerCase());
+
+  /**
+   * Credit control, checked before the sale rather than discovered at month end.
+   *
+   * This is the ONE place a limit refuses rather than warns. Everywhere else in the
+   * accounting module a breach is reported and the save goes through, because an
+   * agency deciding to extend credit past its own limit for a good reason should
+   * not have to edit a master record first. Here there is nobody exercising that
+   * judgement — it is a self-service form on a public storefront, and the failure
+   * it prevents is a corporate client quietly running up months of tickets the
+   * agency has already remitted to the airline.
+   *
+   * A customer with no limit set is unaffected, which is every customer on the book
+   * today. The limit is opted into one customer at a time.
+   *
+   * Checked on the customer as they exist BEFORE this sale is written. A brand-new
+   * customer has no history and no limit, so a first-time buyer is never blocked.
+   */
+  if (customer) {
+    const verdict = wouldBreach(book as unknown as Book, String(customer.id), booking.grandTotal);
+    if (!verdict.ok) throw new CreditLimitError(verdict.reason);
+  }
   if (!customer) {
     customer = {
       id: `CUS-${String(customers.length + 1).padStart(3, '0')}`,
