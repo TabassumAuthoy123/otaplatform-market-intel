@@ -224,9 +224,20 @@ const pair = await (async () => {
   const d = await req('/design?tab=panel');
   const boxes = [...d.text.matchAll(/name="(mod_[a-z]+_[a-z-]+)"/g)].map((m) => m[1]);
   const locked = (d.text.match(/always on/g) ?? []).length;
-  ok('Panel tab renders a switch per module and locks the two roots',
-    d.status === 200 && boxes.length === 18 && locked === 2,
-    `HTTP ${d.status}, ${boxes.length} switches, ${locked} locked`);
+  /**
+   * Counted from the declaration, not hard-coded.
+   *
+   * This read `=== 18` and went red the moment a nineteenth module was added — a
+   * correct change failing a test that had memorised yesterday's answer. The
+   * property worth asserting is that the screen offers a switch for every
+   * unlocked module and none for the locked ones, whatever the count happens to be.
+   */
+  const { PANEL_MODULES } = await import('../lib/panel-modules.js');
+  const expectSwitches = PANEL_MODULES.filter((m) => !m.locked).length;
+  const expectLocked = PANEL_MODULES.filter((m) => m.locked).length;
+  ok('Panel tab renders a switch per unlocked module, and none for the locked ones',
+    d.status === 200 && boxes.length === expectSwitches && locked === expectLocked,
+    `HTTP ${d.status}, ${boxes.length}/${expectSwitches} switches, ${locked}/${expectLocked} locked`);
 
   // Switch two off by sending every box EXCEPT those two — an unchecked box is
   // absent from the body, which is the only way a browser can express "off".

@@ -1164,6 +1164,15 @@ const BOOK_COLLECTIONS = [
   },
   { key: 'supplierDeposits', label: 'Supplier deposits', hint: 'Advances placed with consolidators and airlines. This is real money leaving cash or bank.', idPrefix: 'DEP-', noPrefix: null, title: ['no'], search: ['no', 'reference', 'note'], amount: 'amount', party: 'supplierId' },
   { key: 'inventory', label: 'Inventory blocks', hint: 'Seats, room nights and quota bought up front.', idPrefix: 'INV-BLK-', noPrefix: null, title: ['name'], search: ['name', 'note'], amount: null, party: 'supplierId' },
+  /**
+   * Airline documents. Not a voucher — nothing here posts to the ledger.
+   *
+   * It is registered alongside the vouchers because it is edited the same way and
+   * needs the same fingerprint concurrency, audit and backup, but the amount column
+   * is deliberately null: a document carries a fare, not a value, and showing one
+   * in the money column would invite somebody to reconcile against it.
+   */
+  { key: 'documents', label: 'Airline documents', hint: 'Tickets, EMDs and memos. The fare, tax and commission an invoice line has nowhere to hold. Leave documentNo blank while only a PNR exists.', idPrefix: 'DOC-', noPrefix: null, title: ['documentNo', 'pnr'], search: ['documentNo', 'pnr', 'passengerName', 'platingCarrier'], amount: null, party: 'supplierId' },
   { key: 'customers', label: 'Customers', hint: 'Who we invoice.', idPrefix: 'CUS-', noPrefix: null, title: ['name'], search: ['name', 'phone', 'email'], amount: null, party: null },
   { key: 'suppliers', label: 'Suppliers & vendors', hint: 'Airlines, consolidators, hotels, visa handlers.', idPrefix: 'SUP-', noPrefix: null, title: ['name'], search: ['name', 'phone'], amount: null, party: null },
   { key: 'services', label: 'Services', hint: 'What can appear on an invoice line.', idPrefix: 'SRV-', noPrefix: null, title: ['name'], search: ['name'], amount: null, party: null },
@@ -1210,6 +1219,35 @@ const BOOK_ENUMS = {
   payments: { method: PAYMENT_METHODS },
   expenses: { method: PAY_METHODS },
   supplierDeposits: { method: PAY_METHODS, kind: [{ value: 'deposit', label: 'Deposit' }] },
+  /**
+   * Typed dropdowns rather than free text on all three. A document type or a status
+   * typed by hand drifts into `Ticket`, `TKT`, `tkt` — and the day a BSP file has to
+   * be matched against it, none of them join.
+   */
+  documents: {
+    type: [
+      { value: 'TKT', label: 'Ticket' },
+      { value: 'EMD', label: 'EMD' },
+      { value: 'MCO', label: 'MCO' },
+      { value: 'REFUND', label: 'Refund' },
+      { value: 'ADM', label: 'Agency debit memo' },
+      { value: 'ACM', label: 'Agency credit memo' }
+    ],
+    status: [
+      { value: 'booked', label: 'Booked, not issued' },
+      { value: 'issued', label: 'Issued' },
+      { value: 'void', label: 'Voided' },
+      { value: 'refunded', label: 'Refunded' },
+      { value: 'exchanged', label: 'Exchanged' }
+    ],
+    formOfPayment: [
+      { value: 'bsp_cash', label: 'BSP cash' },
+      { value: 'easypay', label: 'IATA EasyPay' },
+      { value: 'agency_card', label: 'Agency card' },
+      { value: 'customer_card', label: 'Customer card' },
+      { value: 'cash', label: 'Direct to supplier' }
+    ]
+  },
   bills: {
     status: [
       { value: 'unpaid', label: 'Unpaid' },

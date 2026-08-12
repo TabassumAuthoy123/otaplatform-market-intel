@@ -584,6 +584,68 @@ await check('Travelport booking still carries the branch and the provider code',
     : `branch throw ${throwsOnMissingBranch}, seg ${providerOnSegment}, action ${providerOnAction}, mobile ${mobilePhone}, no TAW ${noTaw}`];
 });
 
+/* ------------------------------------------------- the document sub-ledger */
+await check('Adding the document table moved no total', async () => {
+  /**
+   * The whole claim of this change in one assertion.
+   *
+   * A document is a sub-ledger record that an invoice line points at; it carries a
+   * fare, not a value, and it does not post. If it ever starts posting, the two
+   * derivations stop agreeing and this fails — which is exactly why the schema
+   * change was done on its own rather than bundled with the deferral work that
+   * genuinely does move money.
+   */
+  const r = await fetch(`${APP}/api/accounts/export?format=csv&section=reconciliation`);
+  const rows = (await r.text()).trim().split(/\r?\n/).slice(1);
+  const bad = rows.filter((x) => Number(x.split('","').map((c) => c.replace(/^"|"$/g, ''))[3]) !== 0);
+  return [r.ok && rows.length >= 6 && bad.length === 0,
+    bad.length ? `out of balance: ${bad.join(' | ')}` : `${rows.length} control account(s), every difference still 0`];
+});
+
+await check('Documents never reach the journal', () => {
+  const src = readFileSync('lib/accounting.ts', 'utf8');
+  const journalStart = src.indexOf('export function journal');
+  const journalSrc = journalStart < 0 ? '' : src.slice(journalStart, journalStart + 9000);
+  // A posting loop over documents is the one edit that would silently break the
+  // additive guarantee while every screen still looked right.
+  const posts = /for \(const [a-z]+ of (book\.)?documents/.test(journalSrc);
+  return [journalStart >= 0 && !posts,
+    posts ? 'the journal now iterates documents — the sub-ledger has started posting' : 'the journal builder does not touch the document table'];
+});
+
+await check('The migration invented no ticket number and no fare split', () => {
+  const book = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const docs = book.documents ?? [];
+  const migrated = docs.filter((d) => /Migrated from/.test(d.notes ?? ''));
+  /**
+   * A fabricated 13-digit number reconciles against nothing, and the first person
+   * to match it against a BSP file spends a day discovering it was never real. A
+   * guessed fare split produces a margin that looks precise and is not.
+   */
+  const invented = migrated.filter((d) => d.documentNo !== null || d.baseFare !== null || (d.taxes ?? []).length > 0);
+  return [docs.length > 0 && invented.length === 0,
+    invented.length
+      ? `${invented.length} migrated document(s) carry data the book never had`
+      : `${migrated.length} migrated document(s), all with documentNo null and no fare split`];
+});
+
+await check('An unknown fare reads as unknown, not as zero', () => {
+  const src = readFileSync('lib/documents.ts', 'utf8');
+  const nullsOut = /if \(d\.baseFare === null\) return null;/.test(src);
+  const fallsBack = /fromDoc \?\? \(ref \? Math\.round\(ref\.line\.supplierCost\) : 0\)/.test(src);
+  const saysWhich = /costFrom/.test(src);
+  return [nullsOut && fallsBack && saysWhich,
+    `gross returns null: ${nullsOut}, cost falls back to the invoice line: ${fallsBack}, and the row states which: ${saysWhich}`];
+});
+
+await check('The documents screen states where each cost came from', async () => {
+  const html = (await (await fetch(`${APP}/accounts/documents`)).text()).replace(/<!--[\s\S]*?-->/g, '');
+  const shows = /not recorded/.test(html) && /\(invoice line\)/.test(html);
+  const noFakeZero = !/৳0<\/td>/.test(html.split('Fare + tax')[1] ?? '');
+  return [shows && noFakeZero,
+    shows ? 'unknown fares print "not recorded" and the fallback source is named on every row' : 'the screen does not distinguish an unknown fare from a zero one'];
+});
+
 await check('A real agency can be started on this book', async () => {
   /**
    * Every SRS row above passed while the module was still unusable by an agency:

@@ -1,5 +1,8 @@
 import path from 'node:path';
 import { todayIn } from '@/lib/clock';
+// Type only: the document sub-ledger derives FROM the book, so the runtime
+// dependency runs one way and this import cannot become a cycle.
+import type { TravelDocument } from '@/lib/documents';
 import { readJsonRequired } from '@/lib/jsonStore';
 
 /**
@@ -56,6 +59,15 @@ export type Employee = { id: string; name: string; role: string; phone: string }
 export type InvoiceLine = {
   serviceId: string; description: string; pnr: string; pax: number;
   qty: number; unitPrice: number; supplierCost: number; supplierId: string;
+  /**
+   * The airline document this line sells, when one has been recorded.
+   *
+   * Optional, and deliberately so. Every line written before the document table
+   * existed has no id, every non-air line never will, and the money stays on the
+   * line either way — `supplierCost` is still what posts. See lib/documents.ts for
+   * why the link points this direction and what it unlocks.
+   */
+  documentId?: string | null;
 };
 
 /**
@@ -230,6 +242,15 @@ export type Book = {
   transfers: Transfer[];
   supplierCreditNotes: SupplierCreditNote[];
   supplierDeposits: SupplierDeposit[];
+  /**
+   * Airline documents — tickets, EMDs, memos.
+   *
+   * Optional because every book written before this table existed has no key, and
+   * a missing key has to mean "none recorded" rather than crash a page. Nothing in
+   * this collection posts to the journal; it is a sub-ledger the invoice lines
+   * point at. See lib/documents.ts.
+   */
+  documents?: TravelDocument[];
   inventory: InventoryItem[];
   airlines: Airline[];
   hotels: Hotel[];

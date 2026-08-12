@@ -461,6 +461,61 @@ lists, and a drifted list means a module that looks switchable but is not — th
 failure as the `/accounts/gds` table that named seven environment variables while the
 code read thirty-six.
 
+### The airline document — the sub-ledger the book was missing
+
+`/accounts/documents`. A ticket has a document number, a base fare, a list of
+taxes, a commission the airline allows, a plating carrier, a passenger, sectors,
+and **two dates that drive different things** — the issue date moves cash, the
+travel date earns revenue. All of that used to collapse into one `supplierCost`
+number on an invoice line, and with it went the ability to reconcile against a BSP
+billing file, raise an ADM against a ticket, defer revenue to the month of travel,
+or attribute margin to the consultant who sold it.
+
+That is the difference between this and TRAACS, which is the reference product in
+this category: their book is organised around the airline document and ours was
+organised around the invoice.
+
+**This change moves no total, and that is asserted rather than asserted-to.**
+Documents do not post. An invoice line still carries the money and still posts
+exactly as before; a document is a sub-ledger record the line points at through a
+nullable `documentId`. Proven twice over:
+
+- the reconciliation after the migration is identical to before — all six control
+  accounts and both trial balances, every difference still zero;
+- strip `documents[]` and `line.documentId` from the book and it is **byte-identical**
+  to the pre-migration backup.
+
+A check now fails if the journal builder ever starts iterating documents, because
+that single edit is what would break the guarantee while every screen still looked
+right.
+
+```bash
+node scripts/backfill-documents.mjs            # report only
+node scripts/backfill-documents.mjs --write    # do it, then re-check the book
+```
+
+**The migration invents nothing.** 89 invoice lines carry a PNR; 60 of them are air
+tickets and became documents. None gets a ticket number, a fare, a tax line or a
+commission, because the book never had them. A fabricated 13-digit number
+reconciles against nothing and costs somebody a day to discover that; a guessed
+fare split produces a margin that looks precise and is not. So they are
+`status: "booked"` — a PNR exists, nothing was issued — which is also literally our
+own GDS position, since Travelport creates real PNRs and Galileo refuses to issue.
+
+Where the fare is unknown every derivation falls back to the invoice line's
+`supplierCost`, which is the number every other report already used. The screen
+says `not recorded` rather than `৳0`, and names the fallback on each row. Both are
+checked: an unknown fare must read as unknown, never as zero.
+
+Packages are skipped deliberately. A Hajj or Umrah package also carries a PNR and
+is genuinely a flight plus hotel plus ground, so turning one into a single ticket
+would misrepresent it.
+
+**What it unlocks, none of it built yet:** revenue on the travel date, BSP
+reconciliation, ADM/ACM as documents, real margin once commission is captured, and
+branded travel documents — which are a rendering of this table and were impossible
+before it.
+
 ### Putting a real agency on it
 
 Every row above was true and the module still could not be handed to an agency,
