@@ -793,6 +793,56 @@ await check('The BSP page never writes anything', async () => {
   return [before === after, before === after ? 'the book is byte-identical after a match' : 'the match wrote to the book'];
 });
 
+/* ------------------------------------------------ branded travel document */
+async function itineraryFor(pred) {
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const doc = (bk.documents ?? []).find(pred);
+  if (!doc) return null;
+  const res = await fetch(`${APP}/accounts/documents/${doc.id}/itinerary`);
+  return { doc, status: res.status, html: (await res.text()).replace(/<!--[\s\S]*?-->/g, '') };
+}
+
+await check('The travel document carries the agency branding and the passenger', async () => {
+  const r = await itineraryFor((d) => d.baseFare !== null && d.type === 'TKT');
+  if (!r) return [false, 'no priced ticket to render'];
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const wants = [bk.company.name, bk.company.address.split(',')[0], r.doc.passengerName, r.doc.pnr];
+  const missing = wants.filter((w) => w && !r.html.includes(w));
+  return [r.status === 200 && missing.length === 0,
+    missing.length ? `HTTP ${r.status}, missing: ${missing.join(', ')}` : `HTTP 200 with the agency header, passenger and PNR`];
+});
+
+await check('It never claims a ticket exists when none was issued', async () => {
+  const r = await itineraryFor((d) => d.baseFare !== null && d.type === 'TKT' && !d.documentNo);
+  if (!r) return [true, 'every document is ticketed, so there is nothing to misstate'];
+  /**
+   * The one thing a document like this must not do. A passenger takes it to an
+   * airport counter, and Galileo has issued nothing for our PCC — so it has to say
+   * so in words rather than leaving a blank where a ticket number belongs.
+   */
+  const honest = /Booking confirmed — not yet ticketed/.test(r.html)
+    && /cannot be used to board/.test(r.html);
+  return [honest, honest ? 'says it is a held booking and not a boarding document' : 'the unticketed state is not stated'];
+});
+
+await check('The fare prints itemised, which is why capture came first', async () => {
+  const r = await itineraryFor((d) => d.baseFare !== null && (d.taxes ?? []).length > 0);
+  if (!r) return [false, 'no document with a tax breakdown'];
+  // A passenger asking why the ticket costs what it does gets an answer rather
+  // than one line reading "taxes".
+  const codes = (r.html.match(/Tax [A-Z]{1,3}[0-9]?</g) ?? []).length;
+  return [codes >= r.doc.taxes.length,
+    `${codes} tax code(s) printed against ${r.doc.taxes.length} on the document`];
+});
+
+await check('A memo is not handed to a passenger', async () => {
+  const r = await itineraryFor((d) => d.type === 'ADM' || d.type === 'ACM');
+  if (!r) return [true, 'no memo on the book'];
+  // A memo is a claim raised against a ticket. Rendering one as a travel document
+  // would put an airline's clawback in a passenger's hands.
+  return [r.status === 404, `HTTP ${r.status} for a memo`];
+});
+
 /* ------------------------------------------------------------- attribution */
 await check('Margin groups by branch and by consultant', async () => {
   const html = (await (await fetch(`${APP}/accounts/reports`)).text()).replace(/<!--[\s\S]*?-->/g, '');

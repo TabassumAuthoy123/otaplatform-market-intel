@@ -205,7 +205,14 @@ export default async function DocumentsPage({
               return (
                 <tr key={r.doc.id} className="hover:bg-surface">
                   <Td mono className={r.doc.documentNo ? '' : 'text-muted'}>
-                    {r.doc.documentNo ?? 'not issued'}
+                    {/*
+                      The document id is the link, not the ticket number — most of
+                      them have no ticket number and a row you cannot click is a row
+                      somebody assumes is broken.
+                    */}
+                    <Link href={`/accounts/documents/${r.doc.id}/itinerary`} className="hover:text-teal-700 hover:underline">
+                      {r.doc.documentNo ?? 'not issued'}
+                    </Link>
                   </Td>
                   <Td mono>{r.doc.pnr || '—'}</Td>
                   <Td>{DOCUMENT_TYPE_LABEL[r.doc.type]}</Td>

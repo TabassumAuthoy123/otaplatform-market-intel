@@ -1,21 +1,21 @@
 'use client';
 
 /**
- * "Save as PDF" in the browser's print dialog is the PDF export.
+ * The one interactive control on an otherwise static document.
  *
- * A PDF library would mean a second renderer to keep in step with the pages
- * people actually reviewed, and it would drift. The print stylesheet in
- * globals.css does the work instead: navigation and filters drop out, table
- * headings repeat on every page, and nothing is left inside a scroll window.
+ * A client component purely because `window.print()` needs a browser. Kept in its
+ * own file so the itinerary page stays a server component — it reads the book and
+ * the company record, and pulling all of that into the client to get one button
+ * would ship the accounting data to the browser to render a print dialog.
  */
-export function PrintButton({ label = 'Print / PDF' }: { label?: string }) {
+export function PrintButton() {
   return (
     <button
       type="button"
       onClick={() => window.print()}
-      className="rounded-lg border border-hair bg-white px-3.5 py-2 text-[12.5px] font-semibold text-navy-900 transition-colors hover:border-teal-500 hover:text-teal-700"
+      className="rounded-lg bg-teal-600 px-5 py-2.5 text-[13px] font-semibold text-white hover:bg-teal-700"
     >
-      {label}
+      Print / save as PDF
     </button>
   );
 }

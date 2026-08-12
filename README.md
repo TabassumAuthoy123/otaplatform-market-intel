@@ -828,8 +828,47 @@ of anything — assigning a branch to a synthetic sale falsifies no history, and
 report showing 98% unattributed cannot demonstrate anything. The two real storefront
 sales are left alone.
 
-**Still to build:** real margin once commission is captured, and branded travel
-documents.
+#### The branded travel document
+
+`/accounts/documents/<id>/itinerary`. The Itinerary Plus equivalent: agency
+letterhead, the passenger's details, their itinerary and their fare.
+
+**Deliberately last, and it took a day rather than a week.** Every field it prints
+— passenger name, sectors with departure times, base fare, taxes by IATA code,
+plating carrier, ticket number — exists because of the document table and fare
+capture. Built first, on an invoice line holding one `supplierCost` and a free-text
+description, it would have been a letterhead wrapped around a sentence.
+
+The fare prints **itemised**: base, then every tax by its own code, then the agency
+service charge, then the total. A passenger asking why the ticket costs what it
+does gets an answer rather than one line reading "taxes". Eight codes on the live
+document.
+
+**It never claims a ticket exists.** No document here has a number, because Galileo
+answers NEED TICKET ACCOUNT — so the header reads *"Booking confirmed — not yet
+ticketed"* and the body says the document **cannot be used to board**. Leaving a
+blank where a ticket number belongs, or inventing one, is the single thing a
+document like this must not do: the passenger takes it to an airport counter.
+
+**It lives inside the panel, not on the storefront.** It carries a name, a route
+and a fare. A public URL keyed on a document id is guessable, and the whole point
+of the middleware work was that customer data does not sit on a reachable path. It
+renders under `/accounts`, which is loopback-bound and behind the panel-module
+gate; the agency prints it or saves it as PDF and sends that. The browser's print
+dialog rather than a PDF library, for the reason already given elsewhere — a second
+renderer drifts from the page people actually reviewed.
+
+**A memo is not handed to a passenger.** An ADM is a claim raised against a ticket;
+rendering one here would put an airline's clawback in a customer's hands. It 404s,
+and that is checked.
+
+---
+
+That completes the seven steps set out in the design note. The remaining item on it
+is **real margin once commission is captured** — the GDS quotes no commission on
+these fares, so `commissionAmt` is recorded as unknown rather than as zero, and
+margin is still the agency's service charge alone. That changes when a carrier
+contract with a commission rate is loaded, not through more code.
 
 ### Putting a real agency on it
 
