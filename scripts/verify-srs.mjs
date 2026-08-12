@@ -688,6 +688,91 @@ await check('Only a future travel date defers anything', () => {
     `guarded in the journal: ${guarded}; ${migrated.length} migrated document(s) have no travel date and are not deferred`];
 });
 
+/* --------------------------------------------------------- BSP reconciliation */
+/**
+ * One file exercising every verdict, driven through the real page.
+ *
+ * Two rows against real documents in the book, one of which IATA prices 1,200
+ * higher; one row for a booking nothing here has ever seen; one memo. Every
+ * assertion below is a defect this file found the first time it ran.
+ */
+const BSP_CSV = [
+  'DocumentNumber,TRNC,AirlineCode,IssueDate,Currency,FareAmount,TaxAmount,CommissionAmount,AmountPayable,PNR,Period,PassengerName',
+  '0571234567890,TKT,BS,2026-08-12,BDT,25900,10699,0,36599,{PNR1},2026-08-P2,"RAHMAN, TANVIR MR"',
+  '0571234567891,TKT,BS,2026-08-12,BDT,25900,11899,0,37799,{PNR2},2026-08-P2,"AKTER, SHARMIN MS"',
+  '0571234567899,TKT,EK,2026-08-11,BDT,40000,12000,0,52000,ZZZ999,2026-08-P2,"UNKNOWN, PASSENGER"',
+  '0571234567898,ADM,BS,2026-08-10,BDT,0,0,0,2500,{PNR1},2026-08-P2,"RAHMAN, TANVIR MR"'
+].join('\n');
+
+async function bspReport() {
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const priced = (bk.documents ?? []).filter((d) => d.baseFare !== null && !d.documentNo);
+  if (priced.length < 2) return null;
+  const csv = BSP_CSV.replace(/\{PNR1\}/g, priced[0].pnr).replace(/\{PNR2\}/g, priced[1].pnr);
+  const html = (await (await fetch(`${APP}/accounts/bsp?csv=${encodeURIComponent(csv)}`)).text())
+    .replace(/<!--[\s\S]*?-->/g, '');
+  const rows = [...html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map((m) =>
+    [...m[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)]
+      .map((c) => c[1].replace(/<[^>]+>/g, '').replace(/&#x?\w+;/g, '').replace(/\s+/g, ' ').trim())
+  ).filter((r) => r.length >= 7);
+  return { html, rows, priced };
+}
+
+await check('A BSP file is matched against the book, verdict by verdict', async () => {
+  const r = await bspReport();
+  if (!r) return [false, 'fewer than two priced documents to match against'];
+  const kinds = r.rows.map((x) => x[0]);
+  const unknown = kinds.filter((k) => /Not in the book/.test(k)).length;
+  const provisional = kinds.filter((k) => /PNR only/.test(k)).length;
+  return [r.rows.length >= 4 && unknown >= 2 && provisional === 2,
+    `${r.rows.length} row(s): ${provisional} matched on PNR, ${unknown} billed but unknown to the book`];
+});
+
+await check('A memo never matches a ticket', async () => {
+  const r = await bspReport();
+  if (!r) return [false, 'no documents to match against'];
+  /**
+   * An ADM is a claim raised AGAINST a ticket, not the ticket. The first version
+   * matched one to a document by PNR and reported the gap between a 2,500 memo and
+   * a 36,599 fare as a pricing dispute — a number that would have been taken to an
+   * airline.
+   */
+  const admRow = r.rows.find((x) => x[1] === '0571234567898');
+  if (!admRow) return [false, 'the ADM row is not on the report at all'];
+  return [/Not in the book/.test(admRow[0]) && admRow[6] === '—',
+    `ADM verdict "${admRow[0]}" with no difference computed`];
+});
+
+await check('One document is never matched twice', async () => {
+  const r = await bspReport();
+  if (!r) return [false, 'no documents to match against'];
+  // Two BSP rows share a PNR in the file above. Before the used-set guarded the
+  // PNR pass, both matched the same document and one sale looked like two.
+  const matchedPnrs = r.rows.filter((x) => /PNR only/.test(x[0])).map((x) => x[2]);
+  return [new Set(matchedPnrs).size === matchedPnrs.length,
+    `${matchedPnrs.length} provisional match(es), ${new Set(matchedPnrs).size} distinct document(s)`];
+});
+
+await check('A difference on a PNR-only match is shown but not called a dispute', async () => {
+  const r = await bspReport();
+  if (!r) return [false, 'no documents to match against'];
+  /**
+   * Provisional differences are not disputes — the join is a PNR and may be wrong,
+   * so sending somebody to argue with an airline over it would be worse than
+   * silence. But a tile reading "in dispute: 0" beside a row showing a 1,200 gap
+   * reads as a bug, which is exactly how the first run looked.
+   */
+  const sub = /Amounts in dispute<\/div>[\s\S]{0,220}?text-\[12px\] text-muted">([^<]+)</.exec(r.html)?.[1] ?? '';
+  return [/PNR-only/.test(sub) && /1,200/.test(sub), `dispute tile reads: ${sub || '(nothing)'}`];
+});
+
+await check('The BSP page never writes anything', async () => {
+  const before = readFileSync('content/accounting.json', 'utf8');
+  await bspReport();
+  const after = readFileSync('content/accounting.json', 'utf8');
+  return [before === after, before === after ? 'the book is byte-identical after a match' : 'the match wrote to the book'];
+});
+
 /* ------------------------------------------------------------ credit control */
 await check('A sale past the credit limit is refused, with a reason', async () => {
   /**
@@ -733,7 +818,25 @@ await check('A sale past the credit limit is refused, with a reason', async () =
   if (!sig) return [false, 'no fare on the page to try booking'];
 
   const over = limited[0];
-  const [last, first] = String(over.name).split(/\s+/).reverse();
+  /**
+   * The passenger name has to reconstruct the customer name EXACTLY.
+   *
+   * The booking flow finds or creates a customer from `${firstName} ${lastName}`.
+   * Splitting on whitespace and taking the last two words turned "Meridian
+   * Corporate Travel" into "Corporate Travel" — a customer that did not exist, so
+   * the flow created one, with no limit, and cheerfully sold to it. The check then
+   * correctly reported that a customer over their limit had been allowed to book,
+   * which was true of a customer this check had just invented.
+   *
+   * Split on the LAST space only, so first + last rejoins to the original.
+   */
+  const cut = String(over.name).lastIndexOf(' ');
+  const first = cut > 0 ? over.name.slice(0, cut) : over.name;
+  const last = cut > 0 ? over.name.slice(cut + 1) : '.';
+  if (`${first} ${last}`.trim() !== String(over.name).trim()) {
+    return [false, `cannot address ${over.name} as a passenger without inventing a customer`];
+  }
+  const customersBefore = bk.customers.length;
   const res = await fetch(`${APP}/api/bookings`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -748,6 +851,16 @@ await check('A sale past the credit limit is refused, with a reason', async () =
   const after = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
   const wroteNothing = before.invoices.length === after.invoices.length
     && (before.documents ?? []).length === (after.documents ?? []).length;
+
+  /**
+   * Guard the guard. This check has now polluted the book twice in two different
+   * ways — once by selling to a customer within their limit, once by inventing a
+   * customer whose name it could not reconstruct. A new customer row means the
+   * attempt did not land where it was aimed, whatever the status code says.
+   */
+  if (after.customers.length !== customersBefore) {
+    return [false, `the attempt created a customer — it did not target ${over.name} at all`];
+  }
 
   // A refusal is only useful if it is 409 with a reason and leaves no half-written
   // sale. 500 would read as an outage and get the control switched off.

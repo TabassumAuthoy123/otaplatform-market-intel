@@ -649,9 +649,75 @@ leak, and the green path is exactly where nobody looks for one. It now selects o
 a customer already over their limit, and anything other than a 409 is a failure.
 Proven by running the suite twice: 120 invoices before and after.
 
-**Still to build:** BSP reconciliation, ADM/ACM as documents, real margin once
-commission is captured, and branded travel documents — a rendering of the document
-table, impossible before it existed.
+#### BSP reconciliation — the three-way match
+
+`/accounts/bsp`. IATA's Billing and Settlement Plan issues a report each period
+listing every sale, refund and memo it believes the agency owes on, and **takes the
+net at the remittance date whether or not the agency checked**. An agency that does
+not reconcile pays whatever the file says — including airline errors it had the
+right to dispute, and its own staff issuing outside the system.
+
+Three sources: what the GDS sold, what the book recorded, what IATA will bill. The
+document table already *is* the second and was built from the first, so the
+remaining join is against the billing file. Every row lands in exactly one bucket,
+and each is a different action:
+
+| Verdict | What it means |
+|---|---|
+| **Matched** | Nothing to do |
+| **Amounts differ** | Raise it before the remittance date or it is taken anyway. This is what an ADM usually turns out to be |
+| **Not in the book** | IATA is billing something never seen here — issued outside the system, or a mistyped number. The most expensive of the five |
+| **Not on this billing** | Recorded as issued and not billed: unbilled, or a different period |
+| **Matched on PNR only** | Provisional. A PNR is not a document number and can carry several tickets — a hint, never a settlement |
+
+**Why CSV and not the HOT file.** The machine-readable BSP output is the HOT file,
+a fixed-width flat file laid out by the IATA DISH standard. We do not have that
+specification, and inferring column positions from a sample would produce a parser
+that looks finished and silently misreads a tax field the day a row is one
+character longer. The importer takes CSV with an explicit column mapping — what
+BSPlink exports — and the matcher does not care which reader produced the rows. The
+DISH reader, when the layout is in hand, feeds the same matcher.
+
+**Why it matches nothing today, said on the page rather than hidden.** BSP keys on
+the document number and no document here has one, because Galileo answers NEED
+TICKET ACCOUNT for PCC 3BX8. The screen says exactly that. Everything works the day
+issuing is switched on.
+
+**Three defects the first test file found, all mine.** Running four rows through it
+was worth more than re-reading the code:
+
+- An **ADM matched a ticket** by PNR and reported the gap between a ৳2,500 memo and
+  a ৳36,599 fare as a pricing dispute — a number that would have been taken to an
+  airline. A memo is a claim *against* a ticket, not a ticket. Sales only.
+- **One document matched twice.** Two rows sharing a PNR both matched it, so one
+  sale looked like two. The used-set now guards the PNR pass, not just the leftovers.
+- The tile read **"in dispute: ৳0" beside a row showing ৳1,200**. Provisional
+  differences are not disputes — the join may be wrong — but a screen that says zero
+  next to a visible gap reads as a bug. Surfaced under its own name.
+
+The page **never writes**: pasting a file produces a report, and that is asserted.
+
+#### A note on test hygiene, because this bit twice
+
+The credit-limit check posts a real booking to prove the refusal fires. It polluted
+the book **twice, in two different ways**:
+
+1. It picked any customer with a limit; if that customer was *within* their limit the
+   sale went through and wrote an invoice every time the check passed.
+2. Fixed, it then built the passenger name by splitting the customer name on
+   whitespace and taking the last two words — turning "Meridian Corporate Travel"
+   into "Corporate Travel", a customer that did not exist. The booking flow created
+   one, with no limit, and sold to it. The check then correctly reported that a
+   customer over their limit had been allowed to book — of a customer it had just
+   invented.
+
+It now splits on the last space so first + last rejoins exactly, and **fails if the
+attempt creates a customer at all**, whatever the status code says. Verified over
+three consecutive runs: 10 customers, 120 invoices, 62 documents, unchanged.
+
+**Still to build:** ADM/ACM as their own documents (which is what makes the memo row
+above matchable), real margin once commission is captured, branch and consultant
+attribution, and branded travel documents.
 
 ### Putting a real agency on it
 
