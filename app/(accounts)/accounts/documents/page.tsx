@@ -3,7 +3,8 @@ import { Empty, PageHead, Panel, Table, Td, Tile } from '@/components/accounts/u
 import { getBook, money, todayISO } from '@/lib/accounting';
 import {
   DOCUMENT_STATUS_LABEL, DOCUMENT_TYPE_LABEL,
-  documentGross, documentRows, documentsByCarrier, unbilledDocuments, unflown, unsettledDocuments
+  documentGross, documentRows, documents, documentsByCarrier, isMemo, memoPayable,
+  unbilledDocuments, unflown, unsettledDocuments
 } from '@/lib/documents';
 
 export const dynamic = 'force-dynamic';
@@ -34,6 +35,8 @@ export default async function DocumentsPage({
   const unsettled = unsettledDocuments(book);
   const ahead = unflown(book, today);
   const carriers = documentsByCarrier(book);
+  const memos = documents(book).filter(isMemo).filter((d) => d.status !== 'void');
+  const memoNet = memoPayable(book).total;
 
   const q = (searchParams.q ?? '').trim().toLowerCase();
   const rows = all.filter((r) => {
@@ -101,6 +104,43 @@ export default async function DocumentsPage({
           )}
         </p>
       </div>
+
+      {/*
+        Memos on their own panel. In the main table they are all dashes — no
+        invoice, no sale, no margin — and the two columns that matter for them,
+        the ticket they were raised against and the reason, do not exist there at
+        all. Those two are the whole point of modelling a memo as a document
+        rather than as an expense line with a note.
+      */}
+      {memos.length > 0 && (
+        <Panel
+          title="Airline memos"
+          sub={`${memos.length} raised · net ${money(memoNet, sym)} owed. This is the agency's own error rate, not its trading.`}
+        >
+          <Table head={['Memo', 'Type', 'Carrier', 'Raised', 'Against ticket', 'Why', 'Amount']} right={[6]}>
+            {memos.map((d) => (
+              <tr key={d.id} className="hover:bg-surface">
+                <Td mono>{d.documentNo ?? d.id}</Td>
+                <Td className={d.type === 'ADM' ? 'font-semibold text-amber-800' : 'text-teal-700'}>
+                  {DOCUMENT_TYPE_LABEL[d.type]}
+                </Td>
+                <Td mono>{d.platingCarrier || '—'}</Td>
+                <Td mono className="text-muted">{d.issueDate ?? '—'}</Td>
+                <Td mono>{d.againstDocumentNo ?? '—'}</Td>
+                <Td className="text-muted">{d.reason || '—'}</Td>
+                <Td right mono className={d.type === 'ADM' ? 'font-semibold text-amber-800' : 'text-teal-700'}>
+                  {d.type === 'ACM' ? '− ' : ''}{money(documentGross(d) ?? 0, sym)}
+                </Td>
+              </tr>
+            ))}
+          </Table>
+          <div className="border-t border-hair px-5 py-3 text-[12px] leading-relaxed text-muted">
+            A memo posts to the ledger the day it is raised — debit memos to a cost line of their own and to
+            <strong> Airline memos payable</strong>, credit memos the other way. A memo you successfully dispute is
+            marked voided and posts nothing, which is why winning an argument makes this number go down.
+          </div>
+        </Panel>
+      )}
 
       {carriers.length > 0 && (
         <Panel title="By plating carrier" sub="Who the money is actually owed to">

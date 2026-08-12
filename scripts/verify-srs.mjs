@@ -724,23 +724,43 @@ await check('A BSP file is matched against the book, verdict by verdict', async 
   const kinds = r.rows.map((x) => x[0]);
   const unknown = kinds.filter((k) => /Not in the book/.test(k)).length;
   const provisional = kinds.filter((k) => /PNR only/.test(k)).length;
-  return [r.rows.length >= 4 && unknown >= 2 && provisional === 2,
-    `${r.rows.length} row(s): ${provisional} matched on PNR, ${unknown} billed but unknown to the book`];
+  const exact = kinds.filter((k) => k === 'Matched').length;
+  /**
+   * Properties, not a tally. This read `unknown >= 2` and went red the moment step
+   * 5 gave the memo a document and it matched — a correct change failing a check
+   * that had memorised the previous step's answer. Second time in this file.
+   */
+  return [r.rows.length >= 4 && provisional === 2 && unknown >= 1,
+    `${r.rows.length} row(s): ${provisional} on PNR, ${exact} exact, ${unknown} unknown to the book`];
 });
 
-await check('A memo never matches a ticket', async () => {
+await check('A memo is never matched to a ticket', async () => {
   const r = await bspReport();
   if (!r) return [false, 'no documents to match against'];
-  /**
-   * An ADM is a claim raised AGAINST a ticket, not the ticket. The first version
-   * matched one to a document by PNR and reported the gap between a 2,500 memo and
-   * a 36,599 fare as a pricing dispute — a number that would have been taken to an
-   * airline.
-   */
   const admRow = r.rows.find((x) => x[1] === '0571234567898');
   if (!admRow) return [false, 'the ADM row is not on the report at all'];
-  return [/Not in the book/.test(admRow[0]) && admRow[6] === '—',
-    `ADM verdict "${admRow[0]}" with no difference computed`];
+  /**
+   * Before step 5 a memo had no document of its own, so "not in the book" was the
+   * right answer and this asserted exactly that. Now the memo HAS a document and
+   * matches it on the document number — the point of step 5 — which made the old
+   * assertion fail on correct behaviour.
+   *
+   * The property that holds in both states: a memo must never match a TICKET.
+   * Either it matches its own memo document or it matches nothing. What it must not
+   * do is report the gap between a 2,500 memo and a 36,599 fare as a dispute.
+   */
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const memoNos = new Set((bk.documents || [])
+    .filter((d) => d.type === 'ADM' || d.type === 'ACM')
+    .map((d) => d.documentNo));
+  if (/Not in the book/.test(admRow[0])) {
+    return [admRow[6] === '—', 'no memo document exists yet, so the memo is correctly unmatched'];
+  }
+  const ownDocument = memoNos.has('0571234567898') && admRow[4] === admRow[5];
+  return [ownDocument,
+    ownDocument
+      ? 'the memo matched its own memo document, amounts equal — never a ticket'
+      : `matched something it should not: ${admRow.join(' | ')}`];
 });
 
 await check('One document is never matched twice', async () => {
@@ -912,15 +932,30 @@ await check('Adding the document table moved no total', async () => {
     bad.length ? `out of balance: ${bad.join(' | ')}` : `${rows.length} control account(s), every difference still 0`];
 });
 
-await check('Documents never reach the journal', () => {
+await check('Only a memo may post — a ticket document still never does', () => {
   const src = readFileSync('lib/accounting.ts', 'utf8');
+  /**
+   * This check used to assert that the journal never touched the document table at
+   * all. That was step 1's additive guarantee and it was worth having: a ticket
+   * document is a sub-ledger record whose money lives on the invoice line, so a
+   * ticket that posted would double-count every sale.
+   *
+   * Step 5 breaks it deliberately for ONE type. An ADM is a real cost and a real
+   * liability the day the airline raises it, and there is no voucher behind it. So
+   * the guarantee is narrowed rather than dropped: the journal may iterate
+   * documents, exactly once, and that loop must refuse anything that is not a memo.
+   *
+   * Deleting the check instead would have removed the only thing standing between a
+   * stray posting rule and every ticket being counted twice.
+   */
+  const start = src.indexOf('/* --- airline memos');
+  const loop = start < 0 ? '' : src.slice(start, start + 2400);
+  const gatedToMemos = loop.includes("if (d.type !== 'ADM' && d.type !== 'ACM') continue;");
   const journalStart = src.indexOf('export function journal');
-  const journalSrc = journalStart < 0 ? '' : src.slice(journalStart, journalStart + 9000);
-  // A posting loop over documents is the one edit that would silently break the
-  // additive guarantee while every screen still looked right.
-  const posts = /for \(const [a-z]+ of (book\.)?documents/.test(journalSrc);
-  return [journalStart >= 0 && !posts,
-    posts ? 'the journal now iterates documents — the sub-ledger has started posting' : 'the journal builder does not touch the document table'];
+  const journalSrc = journalStart < 0 ? '' : src.slice(journalStart, journalStart + 14000);
+  const loops = (journalSrc.match(/for \(const \w+ of book\.documents/g) || []).length;
+  return [gatedToMemos && loops === 1,
+    `${loops} loop over documents in the journal, gated to memos: ${gatedToMemos}`];
 });
 
 await check('The migration invented no ticket number and no fare split', () => {

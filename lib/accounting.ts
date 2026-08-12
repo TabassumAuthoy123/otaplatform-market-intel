@@ -2,7 +2,7 @@ import path from 'node:path';
 import { todayIn } from '@/lib/clock';
 // Type only: the document sub-ledger derives FROM the book, so the runtime
 // dependency runs one way and this import cannot become a cycle.
-import { deferredIncome } from '@/lib/documents';
+import { deferredIncome, memoPayable } from '@/lib/documents';
 import type { TravelDocument } from '@/lib/documents';
 import { readJsonRequired } from '@/lib/jsonStore';
 
@@ -501,6 +501,30 @@ function summariseRange(book: Book, from?: string, to?: string) {
   const paidOut = payments.reduce((t, p) => t + p.amount, 0);
   const spent = expenses.reduce((t, e) => t + e.amount, 0);
 
+  /**
+   * Airline memos as a cost of the period they were raised in.
+   *
+   * Without this the memo posted to the ledger and never reached the profit
+   * figure: a liability would appear on the balance sheet with no matching cost in
+   * the P&L, and the two screens would quietly disagree. The balance sheet is
+   * built from the ledger so it picked the memo up on its own; the P&L is derived
+   * from vouchers, and a memo is not a voucher.
+   *
+   * Its own line rather than folded into operating expenses, for the same reason
+   * it has its own liability account — it measures the agency's error rate, not
+   * its office costs, and burying it beside the electricity bill hides exactly the
+   * number worth watching. Keeping it out of `spent` also leaves the operating
+   * expenses reconciliation row comparing the same two things it always did.
+   */
+  const memos = (book.documents ?? []).filter(
+    (d) => (d.type === 'ADM' || d.type === 'ACM') && d.status !== 'void'
+      && inRange(d.issueDate ?? d.travelDate ?? '')
+  );
+  const memoCost = Math.round(memos.reduce((t, d) => {
+    const gross = d.baseFare === null ? 0 : d.baseFare + d.taxes.reduce((x, y) => x + y.amount, 0);
+    return t + (d.type === 'ADM' ? gross : -gross);
+  }, 0));
+
   return {
     invoiceCount: invoices.length,
     grossSales,
@@ -519,7 +543,8 @@ function summariseRange(book: Book, from?: string, to?: string) {
     refunded: notes.filter(isRefunded).reduce((t, n) => t + n.amount, 0),
     paidOut,
     expenses: spent,
-    netProfit: sales - cost - spent,
+    memoCost,
+    netProfit: sales - cost - spent - memoCost,
     billed: bills.reduce((t, b) => t + billBase(b), 0)
   };
 }
@@ -806,6 +831,8 @@ export function profitAndLoss(book: Book, from?: string, to?: string) {
     grossMarginPct: s.marginPct,
     expenseRows: byCat,
     totalExpenses: s.expenses,
+    /** Airline debit memos net of credit memos, shown on its own line. */
+    memoCost: s.memoCost,
     netProfit: s.netProfit,
     netMarginPct: s.sales > 0 ? (s.netProfit / s.sales) * 100 : 0
   };
@@ -1146,6 +1173,8 @@ export const AC = {
   AP: 'AP',
   VAT: 'VAT',
   DEFERRED: 'DEFERRED_INCOME',
+  MEMOS: 'MEMO_PAYABLE',
+  MEMO_COST: 'MEMO_COST',
   ADVANCES: 'ADVANCES',
   EQUITY: 'EQUITY_OPENING',
   SALES: 'SALES',
@@ -1182,6 +1211,18 @@ function buildChart(book: Book): Account[] {
      * year.
      */
     { code: AC.DEFERRED, name: 'Deferred income — sold, not yet flown', group: 'liability' },
+    /**
+     * Airline memos, held apart from ordinary payables on purpose.
+     *
+     * They settle through BSP alongside tickets, so they could sit in Accounts
+     * payable. Two reasons not to. The control side of AP is derived from supplier
+     * BILLS, so posting memos there would break the reconciliation unless that
+     * derivation grew a second source — and an agency wants to see how much of what
+     * it owes airlines is memos, because that number is a measure of its own error
+     * rate rather than of its trading.
+     */
+    { code: AC.MEMOS, name: 'Airline memos payable (ADM/ACM)', group: 'liability' },
+    { code: AC.MEMO_COST, name: 'Airline debit memos', group: 'expense' },
     { code: AC.EQUITY, name: 'Opening balances', group: 'equity' },
     { code: AC.SALES, name: 'Sales revenue', group: 'income' },
     { code: AC.RETURNS, name: 'Credit notes and cancellations', group: 'income' },
@@ -1298,6 +1339,44 @@ function buildJournal(book: Book): JournalLine[] {
       { account: AC.SALES, credit: t.gross },
       { account: AC.VAT, credit: t.vat }
     ]);
+  }
+
+  /* --- airline memos ------------------------------------------------------ */
+  /**
+   * ADM and ACM, the first documents that move money.
+   *
+   * An Agency Debit Memo is the airline reaching back into a settled sale and
+   * taking more — a fare it says was underpriced, a commission it says was not
+   * earned, a tax it says was short. It is a real cost and a real liability, and
+   * until now it could only be typed in as an expense with a note, at which point
+   * it stops being attributable to a ticket, a carrier or a route.
+   *
+   * Held in MEMO_PAYABLE rather than in Accounts payable. The control side of AP is
+   * derived from supplier BILLS, so posting here would have required that
+   * derivation to grow a second source; and an agency wants the memo total on its
+   * own, because it measures the agency's own error rate rather than its trading.
+   *
+   * An ACM is the same movement reversed — the airline giving some back, usually
+   * after a dispute — so the pair uses one account and one cost line rather than
+   * two of each. A memo that was successfully disputed is `void` and posts nothing,
+   * which is why the liability goes DOWN when somebody wins an argument.
+   *
+   * Dated on `issueDate`, falling back to the travel date, because a memo raised in
+   * September against an August ticket is a September cost.
+   */
+  for (const d of book.documents ?? []) {
+    if (d.type !== 'ADM' && d.type !== 'ACM') continue;
+    if (d.status === 'void') continue;
+    const gross = d.baseFare === null ? 0 : Math.round(d.baseFare + d.taxes.reduce((t, x) => t + x.amount, 0));
+    if (gross <= 0) continue;
+    const when = d.issueDate ?? d.travelDate ?? book.company.financialYearStart;
+    const against = d.againstDocumentNo ? ` against ${d.againstDocumentNo}` : '';
+    const label = d.type === 'ADM' ? 'Debit memo' : 'Credit memo';
+    post(when, d.documentNo ?? d.id, label, d.platingCarrier || 'Airline',
+      `${d.reason || label}${against}`,
+      d.type === 'ADM'
+        ? [{ account: AC.MEMO_COST, debit: gross }, { account: AC.MEMOS, credit: gross }]
+        : [{ account: AC.MEMOS, debit: gross }, { account: AC.MEMO_COST, credit: gross }]);
   }
 
   /* --- revenue deferred to the travel date ------------------------------- */
@@ -1578,6 +1657,13 @@ export function reconciliation(book: Book) {
      * They agree only if the deferral dates, the recognition dates and the
      * travel-date boundary all line up.
      */
+    /**
+     * Airline memos, both routes. The control side walks the documents; the ledger
+     * side is the balance the journal is carrying. Whole-book on purpose — unlike
+     * deferred income, a memo does not unwind with time, so there is nothing a date
+     * bound would reveal.
+     */
+    { name: 'Airline memos payable', control: memoPayable(book).total, ledger: bal(AC.MEMOS) },
     {
       name: 'Deferred income (as at today)',
       control: deferredIncome(book, todayISO(book)).total,

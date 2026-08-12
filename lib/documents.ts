@@ -107,6 +107,17 @@ export type TravelDocument = {
   branchId: string | null;
   /** An employee id. What makes profit-by-consultant possible at all. */
   consultantId: string | null;
+  /**
+   * For an ADM or ACM: the ticket the airline raised it against.
+   *
+   * The whole value of modelling a memo as a document rather than as an expense
+   * line. Without it a clawback is an unexplained cost; with it, it points at a
+   * ticket, a carrier, a route and — once step 6 lands — the consultant who issued
+   * it. That is the difference between knowing you lost money and knowing why.
+   */
+  againstDocumentNo?: string | null;
+  /** Why the airline raised it. Free text, because their reason codes are not ours. */
+  reason?: string;
   notes: string;
 };
 
@@ -289,6 +300,29 @@ export function deferredIncome(book: Book, onISO: string): { rows: DocumentRow[]
     return r.doc.travelDate > ref.invoice.date && r.doc.travelDate > onISO;
   });
   return { rows, total: rows.reduce((t, r) => t + (r.sold ?? 0), 0) };
+}
+
+/** ADM and ACM only. */
+export const isMemo = (d: TravelDocument) => d.type === 'ADM' || d.type === 'ACM';
+
+/**
+ * What the airline memos come to, as a liability, by the control route.
+ *
+ * An ADM increases what is owed; an ACM reduces it. Compared against the ledger's
+ * MEMO_PAYABLE balance in `reconciliation()`, the same way every other control
+ * account is — two routes to one number, and a difference means one is wrong.
+ *
+ * Void memos are excluded. A memo the airline withdrew is not owed, and counting
+ * it would overstate the liability by exactly the amount somebody successfully
+ * disputed — the one number an agency most wants to see go down.
+ */
+export function memoPayable(book: Book): { rows: TravelDocument[]; total: number } {
+  const rows = documents(book).filter((d) => isMemo(d) && d.status !== 'void');
+  const total = rows.reduce((t, d) => {
+    const amount = documentGross(d) ?? 0;
+    return t + (d.type === 'ADM' ? amount : -amount);
+  }, 0);
+  return { rows, total: Math.round(total) };
 }
 
 export function documentsByCarrier(book: Book): { carrier: string; count: number; cost: number }[] {

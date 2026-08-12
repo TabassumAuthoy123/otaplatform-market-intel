@@ -715,8 +715,70 @@ It now splits on the last space so first + last rejoins exactly, and **fails if 
 attempt creates a customer at all**, whatever the status code says. Verified over
 three consecutive runs: 10 customers, 120 invoices, 62 documents, unchanged.
 
-**Still to build:** ADM/ACM as their own documents (which is what makes the memo row
-above matchable), real margin once commission is captured, branch and consultant
+#### ADM and ACM — the first documents that move money
+
+An Agency Debit Memo is the airline reaching back into a settled sale and taking
+more: a fare it says was underpriced, a commission it says was not earned, a tax it
+says was short. Until now it could only be typed in as an expense with a note — at
+which point it stops being attributable to a ticket, a carrier or a route.
+
+A memo is now a document like any other, with two fields the others do not need:
+`againstDocumentNo` and `reason`. That is the whole difference between knowing you
+lost money and knowing why.
+
+**Held apart from ordinary payables, deliberately.** Memos settle through BSP
+alongside tickets so they could sit in Accounts payable. Two reasons not to: the
+control side of AP is derived from supplier *bills*, so posting there would have
+forced that derivation to grow a second source — and an agency wants the memo total
+on its own, because it measures the agency's own error rate rather than its trading.
+
+```
+ADM   Dr Airline debit memos      Cr Airline memos payable
+ACM   Dr Airline memos payable    Cr Airline debit memos
+```
+
+A memo you successfully dispute is marked **voided** and posts nothing, which is
+why winning an argument makes the liability go down. Both sides agree about that or
+the number stays up by exactly the amount somebody won.
+
+**A gap this nearly shipped with.** The balance sheet is built from the ledger, so
+it picked the memo up on its own. The P&L is derived from vouchers, and a memo is
+not a voucher — so a liability would have appeared with no matching cost in the
+profit figure and the two screens would have quietly disagreed. `summarise()` now
+carries a memo line and the P&L shows it separately from operating expenses, where
+burying it beside the electricity bill would hide the one cost worth watching.
+
+**It closes the loop from step 4.** The BSP page showed the memo as *not in the
+book* because it had no document to match. With one, it matches exactly:
+
+```
+Matched   0571234567898   IATA ৳2,500   book ৳2,500   diff ৳0
+```
+
+#### Three checks that had memorised yesterday's answer
+
+Step 5 turned three green checks red without breaking anything:
+
+- **"Documents never reach the journal"** was step 1's additive guarantee, and step
+  5 breaks it on purpose for one type. Narrowed rather than deleted — the journal
+  may iterate documents *exactly once*, and that loop must refuse anything that is
+  not a memo. Deleting it would have removed the only thing standing between a
+  stray posting rule and every ticket being counted twice.
+- **"A memo never matches a ticket"** asserted the memo was unmatched, which was
+  correct only while memos had no documents. Rewritten to the property that holds
+  in both states: a memo matches its own memo document or nothing, never a ticket.
+- **"verdict by verdict"** counted `unknown >= 2` and went red when the memo
+  matched. Counts properties now, not a tally.
+
+And one mistake worth recording. Rewriting those three by locating each block with
+a paren-counting scan **deleted ten unrelated checks**, including the two that scan
+for leaked secrets — regex literals and strings contain unbalanced parens, so the
+scan ran past each block's real end. Caught by the check count dropping from 147 to
+137, restored from git, and redone by matching each block's closing `});` at column
+zero. Verified by diffing the check names before and after: 131 and 131, with
+exactly the two intended renames.
+
+**Still to build:** real margin once commission is captured, branch and consultant
 attribution, and branded travel documents.
 
 ### Putting a real agency on it

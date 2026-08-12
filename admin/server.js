@@ -1531,6 +1531,15 @@ function withOptionalFields(spec, rec) {
    * customer behaves exactly as before.
    */
   if (spec.key === 'customers' && rec.creditLimit === undefined) rec.creditLimit = 0;
+  /**
+   * Memo fields on every document form. A memo raised through the admin portal is
+   * useless without the ticket it is against and the reason — those two are the
+   * whole difference between a document and an expense line with a note.
+   */
+  if (spec.key === 'documents') {
+    if (rec.againstDocumentNo === undefined) rec.againstDocumentNo = '';
+    if (rec.reason === undefined) rec.reason = '';
+  }
   if (['invoices', 'bills', 'expenses'].includes(spec.key) && !Array.isArray(rec.attachments)) {
     rec.attachments = [];
   }

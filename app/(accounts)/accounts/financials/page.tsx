@@ -204,6 +204,19 @@ export default async function FinancialsPage({
             <Line key={r.category.id} label={r.category.name} value={`− ${money(r.amount, sym)}`} muted />
           ))}
           <Line label="Total operating expenses" value={`− ${money(pl.totalExpenses, sym)}`} />
+          {/*
+            Airline memos on their own line rather than inside operating expenses.
+            An ADM measures the agency's own error rate — a fare underpriced, a
+            commission claimed that was not earned — and burying it beside the
+            electricity bill hides the one cost worth watching. Shown only when
+            there is one, so a clean book does not carry a permanent zero.
+          */}
+          {pl.memoCost !== 0 && (
+            <Line
+              label="Airline debit memos, net of credits"
+              value={`− ${money(pl.memoCost, sym)}`}
+            />
+          )}
           <div className="my-3 border-t-2 border-navy-900" />
           <Line label="Net profit" value={money(pl.netProfit, sym)} bold accent />
           <Line label="Net margin" value={`${pl.netMarginPct.toFixed(2)}%`} muted />
