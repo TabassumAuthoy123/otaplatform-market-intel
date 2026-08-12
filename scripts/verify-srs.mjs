@@ -637,6 +637,57 @@ await check('A document created from a booking knows when the passenger flies', 
       : `${fromBooking.length} document(s) from bookings, all with a travel date and sectors`];
 });
 
+await check('Revenue is deferred to the travel date, and both derivations agree', async () => {
+  /**
+   * Step 2, checked the same way as every other control account: two independent
+   * routes to one number. The control side walks the documents and sums what is
+   * sold and not yet flown; the ledger side is whatever balance the journal is
+   * carrying as at today. They agree only if the deferral dates, the recognition
+   * dates and the travel-date boundary all line up.
+   *
+   * This check earned its place immediately — the first version of the ledger side
+   * negated the balance on an assumption about sign conventions, and the row came
+   * back at double the value with the sign inverted.
+   */
+  const r = await fetch(`${APP}/api/accounts/export?format=csv&section=reconciliation`);
+  const line = (await r.text()).split(/\r?\n/).find((x) => /Deferred income/.test(x));
+  if (!line) return [false, 'the reconciliation does not check deferred income at all'];
+  const [, control, ledger, diff] = line.split('","').map((c) => c.replace(/^"|"$/g, ''));
+  return [Number(diff) === 0 && Number(control) > 0,
+    Number(control) > 0
+      ? `control ${Number(control).toLocaleString('en-IN')} vs ledger ${Number(ledger).toLocaleString('en-IN')}, difference ${diff}`
+      : 'nothing is deferred, so this proves nothing yet — book a flight with a future travel date'];
+});
+
+await check('The deferral nets to zero over the whole book', () => {
+  const src = readFileSync('lib/accounting.ts', 'utf8');
+  /**
+   * The property that let step 2 ship without touching the invoice posting every
+   * other figure depends on: revenue is moved OUT on the invoice date and back IN
+   * on the travel date, so the whole-book totals are arithmetically unchanged and
+   * the control-versus-ledger check cannot be broken by this feature.
+   *
+   * Both legs must exist. One without the other is a permanently missing or
+   * permanently double-counted revenue line that every whole-book report repeats.
+   */
+  const out = /'Deferral'[\s\S]{0,320}?account: AC\.SALES, debit: value[\s\S]{0,120}?account: AC\.DEFERRED, credit: value/.test(src);
+  const back = /'Recognition'[\s\S]{0,320}?account: AC\.DEFERRED, debit: value[\s\S]{0,120}?account: AC\.SALES, credit: value/.test(src);
+  return [out && back, `reversal posted at the invoice date: ${out}, recognition posted at the travel date: ${back}`];
+});
+
+await check('Only a future travel date defers anything', () => {
+  const src = readFileSync('lib/accounting.ts', 'utf8');
+  // A ticket sold and flown in the same period was never deferred. Without this
+  // guard the 60 migrated documents and every same-day sale would each get a pair
+  // of pointless offsetting entries.
+  const guarded = /if \(!doc\?\.travelDate \|\| doc\.travelDate <= i\.date\) continue;/.test(src);
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const migrated = (bk.documents ?? []).filter((d) => /Migrated from/.test(d.notes ?? ''));
+  const untouched = migrated.every((d) => !d.travelDate);
+  return [guarded && untouched,
+    `guarded in the journal: ${guarded}; ${migrated.length} migrated document(s) have no travel date and are not deferred`];
+});
+
 await check('Adding the document table moved no total', async () => {
   /**
    * The whole claim of this change in one assertion.

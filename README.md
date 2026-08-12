@@ -546,10 +546,63 @@ Travelport's taxes are scoped to each `AirPricingInfo`'s own body. Read from the
 whole response they would attach every fare's taxes to every offer — plausible
 looking, and nonsense.
 
-**What it unlocks, none of it built yet:** revenue on the travel date — which now
-has a date to work from — BSP reconciliation, ADM/ACM as documents, real margin
-once commission is captured, and branded travel documents, which are a rendering
-of this table and were impossible before it.
+#### Revenue on the travel date, not the invoice date
+
+A ticket sold in June for an October flight is **cash in June and revenue in
+October**. Both used to land in June, which overstated June and left October
+looking empty — and for an agency selling Hajj a year ahead, that is most of the
+reported profit sitting in the wrong year.
+
+New account: **`DEFERRED_INCOME` — sold, not yet flown**, a liability. The agency
+has been paid to carry somebody in October; until October it owes them the trip.
+
+**The implementation deliberately does not touch the invoice posting.** The obvious
+way is to credit deferred income instead of sales and credit sales on the travel
+date — it works, and it edits the one posting every other figure in the book
+depends on. Instead the revenue is moved **out** on the invoice date and back **in**
+on the travel date, as its own pair:
+
+```
+2026-08-12  SFT-INV-0119  Deferral      Dr Sales  38,099   Cr Deferred  38,099
+2026-09-26  SFT-INV-0119  Recognition   Dr Deferred 38,099  Cr Sales    38,099
+```
+
+Two consequences make the redundancy worth it:
+
+- Over the whole book the pair **nets to zero**, so the control-versus-ledger
+  reconciliation is arithmetically unchanged. Step 2 cannot break the check that
+  would catch step 2 being wrong.
+- Any view bounded to a date sees the reversal but not yet the recognition — which
+  *is* the deferral, emerging from the dates rather than from a conditional that
+  has to be kept in step with a calendar.
+
+Read off the live ledger card:
+
+| View | Deferred income closing |
+|---|---|
+| As at 2026-08-12 | **৳38,099** held as a liability, out of sales |
+| Whole book | **৳0** — the pair nets out |
+
+**It self-checks.** The reconciliation table gains a seventh row comparing deferred
+income *as at today* by two independent routes: the control figure walks the
+documents and sums what is sold and not yet flown, the ledger figure is whatever
+balance the journal is carrying. They agree only if the deferral dates, the
+recognition dates and the travel-date boundary all line up. A whole-book comparison
+would have been trivially true and would have passed just as happily with the
+recognition leg missing entirely.
+
+That row earned itself immediately: the first version negated the ledger balance on
+an assumption about sign conventions — accounts payable two rows above is also a
+liability and is compared directly — and the check came back at double the value
+with the sign inverted.
+
+Only a travel date **later than the invoice date** defers anything. A ticket sold
+and flown in the same period was never deferred, and the 60 migrated documents have
+no travel date at all, so they are untouched.
+
+**Still to build:** BSP reconciliation, ADM/ACM as documents, real margin once
+commission is captured, and branded travel documents — a rendering of this table,
+impossible before it existed.
 
 ### Putting a real agency on it
 

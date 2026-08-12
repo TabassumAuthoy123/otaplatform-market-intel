@@ -2,6 +2,7 @@ import path from 'node:path';
 import { todayIn } from '@/lib/clock';
 // Type only: the document sub-ledger derives FROM the book, so the runtime
 // dependency runs one way and this import cannot become a cycle.
+import { deferredIncome } from '@/lib/documents';
 import type { TravelDocument } from '@/lib/documents';
 import { readJsonRequired } from '@/lib/jsonStore';
 
@@ -1132,6 +1133,7 @@ export const AC = {
   AR: 'AR',
   AP: 'AP',
   VAT: 'VAT',
+  DEFERRED: 'DEFERRED_INCOME',
   ADVANCES: 'ADVANCES',
   EQUITY: 'EQUITY_OPENING',
   SALES: 'SALES',
@@ -1158,6 +1160,16 @@ function buildChart(book: Book): Account[] {
     { code: AC.ADVANCES, name: 'Advances to suppliers', group: 'asset' },
     { code: AC.AP, name: 'Accounts payable', group: 'liability' },
     { code: AC.VAT, name: 'VAT payable', group: 'liability' },
+    /**
+     * Money billed for travel that has not happened yet.
+     *
+     * A liability, not income. The agency has been paid to carry somebody in
+     * October; until October it owes them the trip. Recognising it in June
+     * overstates June and leaves October looking empty, and for an agency selling
+     * Hajj a year ahead that is most of the reported profit sitting in the wrong
+     * year.
+     */
+    { code: AC.DEFERRED, name: 'Deferred income — sold, not yet flown', group: 'liability' },
     { code: AC.EQUITY, name: 'Opening balances', group: 'equity' },
     { code: AC.SALES, name: 'Sales revenue', group: 'income' },
     { code: AC.RETURNS, name: 'Credit notes and cancellations', group: 'income' },
@@ -1274,6 +1286,57 @@ function buildJournal(book: Book): JournalLine[] {
       { account: AC.SALES, credit: t.gross },
       { account: AC.VAT, credit: t.vat }
     ]);
+  }
+
+  /* --- revenue deferred to the travel date ------------------------------- */
+  /**
+   * A ticket sold in June for an October flight is cash in June and revenue in
+   * October. Until now both landed in June, which overstated June and left
+   * October looking empty — and for an agency selling Hajj a year ahead, that is
+   * most of the reported profit sitting in the wrong year.
+   *
+   * WHY THIS IS AN EXTRA PAIR RATHER THAN A CHANGE TO THE INVOICE POSTING
+   *
+   * The obvious implementation is to credit DEFERRED instead of SALES above and
+   * credit SALES on the travel date. It works, and it means touching the one
+   * posting every other figure in the book already depends on.
+   *
+   * This instead leaves that posting exactly as it was and adds its own pair: the
+   * revenue is moved OUT on the invoice date and back IN on the travel date. Two
+   * consequences worth the slight redundancy.
+   *
+   *   Over the whole book the pair nets to zero, so the control-versus-ledger
+   *   reconciliation is arithmetically unchanged. Step 2 cannot break the check
+   *   that would catch step 2 being wrong.
+   *
+   *   Any view bounded to a date sees the reversal but not yet the recognition,
+   *   which is the deferral — emerging from the dates themselves rather than from
+   *   a conditional that has to be kept in step with a calendar.
+   *
+   * Only lines whose document carries a travel date later than the invoice date
+   * are deferred. The 60 migrated documents have no travel date and are untouched,
+   * as is every non-air sale.
+   */
+  const docsById = new Map((book.documents ?? []).map((d) => [d.id, d]));
+  for (const i of book.invoices.filter(isLive)) {
+    for (const line of i.lines) {
+      const doc = line.documentId ? docsById.get(line.documentId) : undefined;
+      if (!doc?.travelDate || doc.travelDate <= i.date) continue;
+      const value = Math.round(line.unitPrice * line.qty);
+      if (value <= 0) continue;
+
+      post(i.date, i.no, 'Deferral', cust(i.customerId),
+        `Billed for travel on ${doc.travelDate} — held until flown`, [
+          { account: AC.SALES, debit: value },
+          { account: AC.DEFERRED, credit: value }
+        ]);
+
+      post(doc.travelDate, i.no, 'Recognition', cust(i.customerId),
+        `Flown ${doc.travelDate} — earned`, [
+          { account: AC.DEFERRED, debit: value },
+          { account: AC.SALES, credit: value }
+        ]);
+    }
   }
 
   for (const r of book.receipts) {
@@ -1464,6 +1527,19 @@ export function reconciliation(book: Book) {
   const bal = (code: string) => gl.summary.find((r) => r.account.code === code)?.balance ?? 0;
   const s = summarise(book);
 
+  /**
+   * A second balance set bounded to today, for the accounts whose whole-book
+   * balance is not the interesting number. Only deferred income needs it so far.
+   *
+   * No sign flip. Accounts payable two rows above is also a liability and is
+   * compared directly, so this summary already presents credit-natured balances
+   * as positive. I negated it on the assumption that it would not, and the row
+   * came out at double the value with the sign inverted — the check catching its
+   * own author, which is the entire reason it is here.
+   */
+  const asOf = generalLedger(book, undefined, undefined, todayISO(book));
+  const asOfBalance = (code: string) => asOf.summary.find((r) => r.account.code === code)?.balance ?? 0;
+
   const checks = [
     { name: 'Cash in hand', control: cashBook(book).closing, ledger: bal(AC.CASH) },
     { name: 'Bank accounts', control: allBankBalances(book).total, ledger: book.banks.reduce((t, b) => t + bal(AC.bank(b.id)), 0) },
@@ -1476,7 +1552,25 @@ export function reconciliation(book: Book) {
       // it is added. Subtracting took the credit notes off twice.
       ledger: bal(AC.SALES) + bal(AC.RETURNS)
     },
-    { name: 'Operating expenses', control: s.expenses, ledger: book.expenseCategories.reduce((t, c) => t + bal(AC.expense(c.id)), 0) }
+    { name: 'Operating expenses', control: s.expenses, ledger: book.expenseCategories.reduce((t, c) => t + bal(AC.expense(c.id)), 0) },
+    /**
+     * Deferred income, checked AS AT TODAY rather than over the whole book.
+     *
+     * Over all time the deferral pair nets to zero on both sides, so a whole-book
+     * comparison here would be trivially true and would prove nothing — it would
+     * pass just as happily if the recognition leg were missing entirely.
+     *
+     * Bounded to the book's today it is a real check with two independent routes:
+     * the control figure walks the documents and sums what is sold and not yet
+     * flown, the ledger figure is the balance the journal happens to be carrying.
+     * They agree only if the deferral dates, the recognition dates and the
+     * travel-date boundary all line up.
+     */
+    {
+      name: 'Deferred income (as at today)',
+      control: deferredIncome(book, todayISO(book)).total,
+      ledger: asOfBalance(AC.DEFERRED)
+    }
   ].map((c) => ({ ...c, difference: Math.round(c.control - c.ledger) }));
 
   return { checks, clean: checks.every((c) => c.difference === 0) };

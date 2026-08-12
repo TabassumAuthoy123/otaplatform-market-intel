@@ -256,16 +256,38 @@ export function unsettledDocuments(book: Book): { rows: DocumentRow[]; total: nu
 }
 
 /**
- * Revenue that has been billed but not yet flown.
+ * Revenue that has been billed but not yet flown, as at a date.
  *
- * Nothing acts on this yet — it is the measurement that justifies step 2. If the
- * figure is small the deferral work can wait; if an agency is holding months of
- * Hajj money it cannot. Better to be able to look than to argue from intuition.
+ * This is the control-side derivation of deferred income, and it exists to be
+ * compared against the ledger's `DEFERRED_INCOME` balance the same way every other
+ * control account is compared against its ledger account. Two routes to the same
+ * number, and a difference means one of them is wrong.
+ *
+ * `> onISO` and not `>=`: a passenger flying today has flown. The journal uses the
+ * same boundary, and a mismatch of one day between them would show up as a
+ * difference on exactly the flights departing today, which is a bad way to find out.
  */
 export function unflown(book: Book, onISO: string): { rows: DocumentRow[]; total: number } {
   const rows = documentRows(book).filter(
     (r) => r.doc.travelDate !== null && r.doc.travelDate > onISO && r.sold !== null
   );
+  return { rows, total: rows.reduce((t, r) => t + (r.sold ?? 0), 0) };
+}
+
+/**
+ * Deferred income as at a date — the control-account version.
+ *
+ * Only counts what the journal defers: a line whose document has a travel date
+ * AFTER the invoice date. A ticket sold and flown in the same period was never
+ * deferred, so counting it here would report a liability the ledger does not have.
+ */
+export function deferredIncome(book: Book, onISO: string): { rows: DocumentRow[]; total: number } {
+  const byDoc = linesByDocument(book);
+  const rows = documentRows(book).filter((r) => {
+    const ref = byDoc.get(r.doc.id);
+    if (!ref || !r.doc.travelDate) return false;
+    return r.doc.travelDate > ref.invoice.date && r.doc.travelDate > onISO;
+  });
   return { rows, total: rows.reduce((t, r) => t + (r.sold ?? 0), 0) };
 }
 
