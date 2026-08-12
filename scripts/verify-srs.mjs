@@ -793,6 +793,80 @@ await check('The BSP page never writes anything', async () => {
   return [before === after, before === after ? 'the book is byte-identical after a match' : 'the match wrote to the book'];
 });
 
+/* ------------------------------------------------------- carrier contracts */
+await check('No commission rate is invented', () => {
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const src = readFileSync('lib/contracts.ts', 'utf8');
+  /**
+   * The hardest rule in this file to keep. A fabricated rate puts money into the
+   * margin report, the P&L and every commission figure built on them — worse than
+   * a fabricated ticket number, which at least only fails to reconcile.
+   *
+   * So the book ships with none, and the resolver returns null rather than zero:
+   * zero claims the airline allowed nothing, null says nobody has told this book
+   * what the deal is, and those lead to different conversations.
+   */
+  const seeded = (bk.contracts ?? []).length;
+  const nullsOut = src.includes('if (!contract) return null;');
+  return [seeded === 0 && nullsOut,
+    seeded === 0
+      ? `no contract seeded; an uncovered document resolves to null, not 0: ${nullsOut}`
+      : `${seeded} contract(s) are seeded into the shipped book`];
+});
+
+await check('Commission reduces the supplier cost rather than becoming income', () => {
+  const src = readFileSync('lib/bookings.ts', 'utf8');
+  /**
+   * Under BSP the agency remits fare plus tax LESS commission, so it is a reduction
+   * in what is owed and not a revenue line. Writing the bill net of it means cost of
+   * sales, gross profit and margin-by-branch all come out right without any of them
+   * being told about commission.
+   *
+   * Proven end to end with a temporary 3% contract: base 25,900 gave commission 777,
+   * the invoice line and the bill both became 35,822 instead of 36,599, and margin
+   * came to 1,777 — a 1,000 service charge plus the 777. Contract and booking were
+   * removed afterwards.
+   */
+  const nets = src.includes('booking.fare.total * pax - commissionTotal');
+  const resolved = src.includes('commissionFor(book as unknown as Book, forCommission');
+  return [nets && resolved, `bill written net of commission: ${nets}, resolved from the contract: ${resolved}`];
+});
+
+await check('A contract resolves against the issue date, not against today', () => {
+  const src = readFileSync('lib/contracts.ts', 'utf8');
+  // A rate renegotiated in September must not restate August. Resolution happens at
+  // read time so a corrected contract flows through immediately, and the date bound
+  // is what makes that safe.
+  const dated = src.includes('c.effectiveFrom <= on && (!c.effectiveTo || c.effectiveTo >= on)');
+  const fromDoc = src.includes('const on = doc.issueDate ?? doc.travelDate;');
+  return [dated && fromDoc, `date-bounded: ${dated}, keyed on the document rather than now: ${fromDoc}`];
+});
+
+await check('The what-if calculator computes without writing', async () => {
+  const before = readFileSync('content/accounting.json', 'utf8');
+  const html = (await (await fetch(`${APP}/accounts/contracts?carrier=BS&pct=3&basis=base`)).text())
+    .replace(/<!--[\s\S]*?-->/g, '');
+  const after = readFileSync('content/accounting.json', 'utf8');
+  const answered = /3% on base fare/.test(html);
+  const namesGaps = /Documents it cannot cover/.test(html);
+  /**
+   * It names the documents it cannot cover rather than dropping them. A figure
+   * quoted at an airline should not silently exclude the tickets whose fare split
+   * was never recorded.
+   */
+  return [before === after && answered && namesGaps,
+    before === after ? `answered and named its gaps, book byte-identical` : 'the calculator wrote to the book'];
+});
+
+await check('A PLB is recorded but never applied per ticket', () => {
+  const src = readFileSync('lib/contracts.ts', 'utf8');
+  // It settles quarterly against total production. Attributing a slice to each sale
+  // would report money that has not been earned and may never be.
+  const held = src.includes('incentivePct');
+  const notUsed = !/incentivePct[^;]*\*/.test(src.slice(src.indexOf('export function commissionFor')));
+  return [held && notUsed, `rate held: ${held}, kept out of the per-ticket arithmetic: ${notUsed}`];
+});
+
 /* ------------------------------------------------ branded travel document */
 async function itineraryFor(pred) {
   const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));

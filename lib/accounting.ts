@@ -3,6 +3,7 @@ import { todayIn } from '@/lib/clock';
 // Type only: the document sub-ledger derives FROM the book, so the runtime
 // dependency runs one way and this import cannot become a cycle.
 import { deferredIncome, memoPayable } from '@/lib/documents';
+import type { CarrierContract } from '@/lib/contracts';
 import type { TravelDocument } from '@/lib/documents';
 import { readJsonRequired } from '@/lib/jsonStore';
 
@@ -287,6 +288,11 @@ export type Book = {
    */
   /** Offices and the storefront. Absent on a book written before attribution. */
   branches?: Branch[];
+  /**
+   * Carrier commission contracts. Empty until real ones are loaded — no rate is
+   * ever invented, because a fabricated one puts money into the P&L.
+   */
+  contracts?: CarrierContract[];
   documents?: TravelDocument[];
   inventory: InventoryItem[];
   airlines: Airline[];

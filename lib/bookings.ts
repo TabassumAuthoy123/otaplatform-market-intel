@@ -1,6 +1,8 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import type { Book } from '@/lib/accounting';
+import { commissionFor } from '@/lib/contracts';
 import { CreditLimitError, wouldBreach } from '@/lib/credit';
+import type { TravelDocument } from '@/lib/documents';
 import { travelDateOf } from '@/lib/documents';
 import path from 'node:path';
 import type { Offer, Supplier } from '@/lib/offers';
@@ -191,6 +193,33 @@ async function postToAccounts(booking: Booking, customerName: string): Promise<s
   const baseNum = Math.round(Number(String(booking.fare.base).replace(/[^\d.]/g, '')) || 0);
   const quotedTaxes = booking.fare.taxBreakdown ?? [];
 
+  /**
+   * Commission, from the carrier contract in force on the day.
+   *
+   * Resolved against a stand-in carrying only the fields the resolver reads —
+   * carrier, fare, taxes, dates, sectors — because the real document is not built
+   * yet and the commission has to be on it when it is.
+   *
+   * It is not income arriving separately: under BSP the agency remits fare plus tax
+   * LESS commission, so it reduces what is owed. Writing the bill net of it means
+   * cost of sales, gross profit and margin-by-branch all come out right without any
+   * of them being told about commission — margin becomes the service charge plus
+   * the commission, which is what the agency actually earned.
+   *
+   * No contract, no change. Every booking taken before one is loaded costs the whole
+   * fare, exactly as it did.
+   */
+  const forCommission = {
+    type: 'TKT',
+    platingCarrier: booking.fare.platingCarrier || booking.itinerary[0]?.carrier || '',
+    baseFare: baseNum > 0 ? baseNum : null,
+    taxes: quotedTaxes.map((t) => ({ code: t.code, amount: t.amount })),
+    issueDate: null,
+    travelDate: travelDateOf(booking.itinerary.map((x) => ({ departure: x.departure }))),
+    sectors: booking.itinerary.map((x) => ({ bookingClass: booking.fare.bookingCode || '' }))
+  } as unknown as TravelDocument;
+  const commission = commissionFor(book as unknown as Book, forCommission, 'international');
+
   docs.push({
     id: docId,
     documentNo: null,
@@ -215,8 +244,10 @@ async function postToAccounts(booking: Booking, customerName: string): Promise<s
     taxes: quotedTaxes.map((t) => ({ code: t.code, amount: t.amount })),
     // The GDS quote carries no commission for these fares. Recorded as unknown
     // rather than as zero — zero is a claim that the airline allowed nothing.
-    commissionPct: null,
-    commissionAmt: null,
+    commissionPct: commission ? Number(commission.pct.toFixed(3)) : null,
+    // Null, never 0. Zero claims the airline allowed nothing; null says no contract
+    // covers this carrier on this date, and those are different conversations.
+    commissionAmt: commission ? commission.amount : null,
     formOfPayment: 'bsp_cash',
     supplierId: String(supplier.id),
     settlementRef: null,
@@ -242,7 +273,25 @@ async function postToAccounts(booking: Booking, customerName: string): Promise<s
    * on a 35,800 sale, which is obviously fiction and would flow straight into
    * the P&L. Margin here is exactly what the agency added.
    */
-  const supplierCostTotal = booking.fare.total * pax;
+  /**
+   * Commission, resolved from the carrier contract in force on the day.
+   *
+   * It is not income arriving separately: under BSP the agency remits fare plus tax
+   * LESS commission, so it reduces what is owed. Writing the bill net of it means
+   * cost of sales, gross profit and margin-by-branch all come out right without any
+   * of them being told about commission — margin becomes the service charge plus
+   * the commission, which is what the agency actually earned.
+   *
+   * No contract, no change. Every booking taken before one is loaded keeps costing
+   * the whole fare, which is exactly what it did.
+   */
+
+  /**
+   * Commission comes off the supplier cost, not out of a revenue account. See the
+   * note above the resolver: the remittance is net of it.
+   */
+  const commissionTotal = (commission?.amount ?? 0) * pax;
+  const supplierCostTotal = booking.fare.total * pax - commissionTotal;
 
   invoices.push({
     id: invId,

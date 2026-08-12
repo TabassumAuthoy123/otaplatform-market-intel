@@ -864,11 +864,61 @@ and that is checked.
 
 ---
 
-That completes the seven steps set out in the design note. The remaining item on it
-is **real margin once commission is captured** — the GDS quotes no commission on
-these fares, so `commissionAmt` is recorded as unknown rather than as zero, and
-margin is still the agency's service charge alone. That changes when a carrier
-contract with a commission rate is loaded, not through more code.
+#### Carrier contracts — the last item, and real margin
+
+`/accounts/contracts`. Every fare the GDS quotes comes back with **no commission on
+it**, because the commission lives in a contract rather than in the fare. So
+`commissionAmt` was recorded as null — unknown, not zero, since zero claims the
+airline allowed nothing — and margin has only ever been the agency's own service
+charge. For an agency on a 3% deal with its main carrier that understates the
+margin on every ticket it sells.
+
+**Commission is not income arriving separately.** Under BSP the agency remits fare
+plus tax **less** commission, so it reduces what is owed. That means it belongs in
+the supplier cost, and margin then falls out of arithmetic the book already does.
+No new account, no new posting rule — the booking flow writes the bill net of it
+and cost of sales, gross profit and margin-by-branch are all correct without being
+told about commission at all.
+
+Proven end to end with a temporary 3% BS contract, then removed:
+
+```
+document   base 25,900 + tax 10,699 = 36,599      commission 777  (3% of base)
+invoice line supplierCost                35,822   = 36,599 − 777
+bill                                     35,822
+margin  37,599 − 35,822 =                 1,777   = service charge 1,000 + commission 777
+```
+
+**Effective dates, for the reason the tax rules need them.** A contract resolves
+against the **issue date on the document**, not against today, so a rate
+renegotiated in September cannot restate August's tickets. Resolution happens at
+read time, so a corrected contract flows through immediately — and the date bound
+is what makes that safe.
+
+The table also carries a flat per-document amount (some carriers here pay a fixed
+sum per sector rather than a rate), a route band, a cabin restriction, a per-document
+cap, and a **PLB rate that is recorded and never applied per ticket** — it settles
+quarterly against total production, so slicing it across sales would report money
+that has not been earned and may never be.
+
+**Nothing is seeded, and that is the hardest rule in the file to keep.** A
+fabricated rate puts money into the margin report and the P&L — worse than a
+fabricated ticket number, which at least only fails to reconcile. The book ships
+with zero contracts and the resolver returns null for anything not covered.
+
+**So the screen has a calculator instead.** "What is 3% worth on what we already
+fly" is the question before a negotiation, and answering it in a spreadsheet is how
+a rate gets agreed that turns out to be worth less than the volume commitment
+attached to it. It reads and computes; it writes nothing, and that is asserted. It
+also **names the documents it cannot cover** — the migrated ones with no fare split
+— because a figure quoted at an airline should not silently exclude them.
+
+---
+
+That completes the design note: all seven steps and the commission item. What
+remains is not code. **Travelport must set up a ticket account on the Galileo host
+for PCC 3BX8** — booking already works — and real contract rates have to come from
+the agency's own agreements.
 
 ### Putting a real agency on it
 

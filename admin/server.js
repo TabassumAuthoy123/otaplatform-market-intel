@@ -1172,6 +1172,11 @@ const BOOK_COLLECTIONS = [
    * is deliberately null: a document carries a fare, not a value, and showing one
    * in the money column would invite somebody to reconcile against it.
    */
+  /**
+   * Carrier contracts. Deliberately empty on a fresh book — a seeded rate would put
+   * money into the margin report and the P&L, so the real ones get typed in.
+   */
+  { key: 'contracts', label: 'Carrier contracts', hint: 'What each airline allows on a fare. A contract resolves against the ISSUE date on the document, so set the dates carefully — a rate renegotiated in September must not restate August.', idPrefix: 'CTR-', noPrefix: null, title: ['name', 'carrier'], search: ['carrier', 'name', 'note'], amount: null, party: null, template: { id: '', carrier: '', name: '', commissionPct: 0, flatAmount: 0, basis: 'base', band: 'any', cabin: '', effectiveFrom: '', effectiveTo: '', capPerDocument: 0, incentivePct: 0, active: true, note: '' } },
   { key: 'documents', label: 'Airline documents', hint: 'Tickets, EMDs and memos. The fare, tax and commission an invoice line has nowhere to hold. Leave documentNo blank while only a PNR exists.', idPrefix: 'DOC-', noPrefix: null, title: ['documentNo', 'pnr'], search: ['documentNo', 'pnr', 'passengerName', 'platingCarrier'], amount: null, party: 'supplierId' },
   { key: 'customers', label: 'Customers', hint: 'Who we invoice.', idPrefix: 'CUS-', noPrefix: null, title: ['name'], search: ['name', 'phone', 'email'], amount: null, party: null },
   { key: 'suppliers', label: 'Suppliers & vendors', hint: 'Airlines, consolidators, hotels, visa handlers.', idPrefix: 'SUP-', noPrefix: null, title: ['name'], search: ['name', 'phone'], amount: null, party: null },
@@ -1219,6 +1224,15 @@ const BOOK_ENUMS = {
   payments: { method: PAYMENT_METHODS },
   expenses: { method: PAY_METHODS },
   supplierDeposits: { method: PAY_METHODS, kind: [{ value: 'deposit', label: 'Deposit' }] },
+  contracts: {
+    basis: [{ value: 'base', label: 'Base fare' }, { value: 'gross', label: 'Fare + tax' }],
+    band: [
+      { value: 'any', label: 'Any route' },
+      { value: 'domestic', label: 'Domestic' },
+      { value: 'saarc', label: 'SAARC' },
+      { value: 'international', label: 'International' }
+    ]
+  },
   /**
    * Typed dropdowns rather than free text on all three. A document type or a status
    * typed by hand drifts into `Ticket`, `TKT`, `tkt` — and the day a BSP file has to
