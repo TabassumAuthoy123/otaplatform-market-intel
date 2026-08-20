@@ -1578,6 +1578,15 @@ function bookListView(session, book, spec, q, flash) {
  * blank currency means the book's own, and fxOf() treats a missing rate as 1.
  */
 function withOptionalFields(spec, rec) {
+  /**
+   * A receipt needs a settlement currency and rate on the form, or an exchange gain
+   * can never be told apart from an overpayment — see lib/fx.ts. Blank means base
+   * currency, which is what every existing receipt is.
+   */
+  if (spec.key === 'receipts') {
+    if (rec.currency === undefined) rec.currency = '';
+    if (rec.fxRate === undefined) rec.fxRate = 0;
+  }
   if (['invoices', 'bills'].includes(spec.key)) {
     if (rec.currency === undefined) rec.currency = '';
     if (rec.fxRate === undefined) rec.fxRate = 0;

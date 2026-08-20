@@ -998,8 +998,67 @@ the admin portal look broken.
 
 ---
 
-That completes the design note — all seven steps, the commission item, and the two
-gaps the design note itself had identified but not built. What remains is not code. **Travelport must set up a ticket account on the Galileo host
+#### Exchange gain, overpayment, and the hole they were both falling into
+
+This started as "add FX gain/loss" and turned out to be **closing a latent defect**.
+
+A receipt posted `Dr bank / Cr receivables` for the whole cash amount, while the
+control side computed the amount due as `max(0, total − paid)` — **floored at zero**.
+Those two agree only while no receipt ever exceeds what its invoice is carrying.
+Nothing had, so nothing had broken.
+
+Proven rather than argued. One receipt of ৳595,200 against an invoice receivables
+was carrying at ৳588,000:
+
+```
+Accounts receivable    control 37,98,378   ledger 37,91,178   difference 7,200
+Trial balance — control basis                                 out by 7,200
+```
+
+The two-derivation check caught it, which is what it is for. But nothing in the code
+*handled* it, so the first foreign settlement or the first overpayment would have
+broken the book and left somebody hunting.
+
+**The two causes are different and must not be merged.** The same ৳595,200 can mean
+two unrelated things:
+
+| Receipt | Exchange gain | Customer credit |
+|---|---|---|
+| **4,800 USD @ 124** against an invoice carried at 122.5 | **৳7,200** | 0 |
+| **৳595,200 in taka** against a ৳588,000 debt | 0 | **৳7,200** |
+
+The first is a gain on the rate — nobody overpaid. The second is money the agency
+**owes back**, and booking it as a gain would report profit it does not have.
+
+Telling them apart needs the settlement rate, which is why `receipt.currency` and
+`receipt.fxRate` had to exist. Without them the safer reading applies: an
+overpayment, which never invents income.
+
+**The actual fix is that there is now one allocation function.** The defect existed
+because two pieces of code answered *"how much did this relieve"* differently. The
+journal builder and the control-side derivations both call `allocate` in
+`lib/fx.ts`, and one function cannot disagree with itself.
+
+Two new accounts: **Exchange gain / (loss)** as income — one account, not two,
+because a gain and a loss are the same movement in opposite directions and splitting
+them means netting two numbers by hand to answer the only question anybody asks. And
+**Customer credit balances** as a liability, because a customer who overpays is owed
+the difference and letting it sit as a negative asset is precisely what made the two
+derivations disagree.
+
+Both are compared by the same route as every other control account. Verified live
+with each receipt in turn: exchange gain 7,200 / credit 0, then the reverse, and
+every row level at zero on both.
+
+One thing this also tidied that was *not* a defect: the control-basis trial balance
+never stated the airline memos. It stayed balanced without them — they net across
+both columns — but it did not represent them. It does now.
+
+---
+
+That completes the design note — all seven steps, the commission item, the two gaps
+the design note itself identified, and one latent defect found while opening the
+next one. What remains is not code. **Travelport must set up a ticket account on the Galileo host
 for PCC 3BX8** — booking already works — and real contract rates have to come from
 the agency's own agreements.
 

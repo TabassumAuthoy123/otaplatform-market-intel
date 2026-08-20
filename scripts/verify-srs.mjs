@@ -799,6 +799,82 @@ await check('The BSP page never writes anything', async () => {
   return [before === after, before === after ? 'the book is byte-identical after a match' : 'the match wrote to the book'];
 });
 
+/* ------------------------------------ settlement: exchange gain vs overpayment */
+await check('A receipt relieves what receivables carries, not the cash that arrived', () => {
+  const src = readFileSync('lib/accounting.ts', 'utf8');
+  /**
+   * The latent defect this closed. The receipt posting credited receivables with the
+   * whole cash amount while the control side floored the amount due at zero, so the
+   * two agreed only until a receipt exceeded its invoice. Recording one receipt of
+   * 595,200 against an invoice carried at 588,000 put the receivables row 7,200
+   * apart and the control-basis trial balance with it.
+   */
+  const capped = src.includes('{ account: AC.AR, credit: relief }');
+  const usesAllocation = src.includes('const allocations = new Map(settlements(book).map');
+  return [capped && usesAllocation,
+    `relief is capped: ${capped}, and comes from the shared allocation: ${usesAllocation}`];
+});
+
+await check('One allocation function, so the two derivations cannot disagree', () => {
+  const acc = readFileSync('lib/accounting.ts', 'utf8');
+  const fx = readFileSync('lib/fx.ts', 'utf8');
+  /**
+   * The actual fix. The defect existed because two pieces of code answered "how much
+   * did this relieve" differently. The journal builder and the control-side
+   * derivations now call the same `allocate`, and one function cannot disagree with
+   * itself.
+   */
+  const journalCalls = acc.includes("from '@/lib/fx'") && acc.includes('settlements(book)');
+  const controlCalls = fx.includes('export function fxGain') && fx.includes('allocate(receipt, invoice, carrying)');
+  return [journalCalls && controlCalls,
+    `journal uses it: ${journalCalls}, control derivations use it: ${controlCalls}`];
+});
+
+await check('An exchange gain and an overpayment are told apart, not merged', () => {
+  const fx = readFileSync('lib/fx.ts', 'utf8');
+  /**
+   * The same cash can mean two unrelated things. 4,800 USD settled at 124 against an
+   * invoice carried at 122.5 is a 7,200 exchange GAIN — nobody overpaid. The same
+   * 595,200 paid in taka against a 588,000 debt is 7,200 the agency OWES BACK.
+   *
+   * Verified live during the build with both receipts in turn: the first reported
+   * exchange gain 7,200 and customer credit 0, the second the reverse, and both
+   * reconciled to zero on every row.
+   *
+   * Telling them apart needs the settlement rate. Without it the safer reading
+   * applies — an overpayment, which never invents income.
+   */
+  const needsSameCurrency = fx.includes('settlement.currency === debt.currency');
+  const needsDifferentRate = fx.includes('if (settleRate !== debtRate)');
+  const safeDefault = fx.includes('let fx = 0;');
+  return [needsSameCurrency && needsDifferentRate && safeDefault,
+    `same currency required: ${needsSameCurrency}, rates must differ: ${needsDifferentRate}, defaults to no gain: ${safeDefault}`];
+});
+
+await check('An overpayment is a liability, never negative receivables', () => {
+  const src = readFileSync('lib/accounting.ts', 'utf8');
+  // A customer who overpays is owed the difference. Letting it sit as a negative
+  // asset is what made the two derivations disagree in the first place.
+  const liability = src.includes("{ code: AC.CUSTOMER_CREDIT, name: 'Customer credit balances', group: 'liability' }");
+  const posted = src.includes('{ account: AC.CUSTOMER_CREDIT, credit: overpaid }');
+  return [liability && posted, `held as a liability: ${liability}, and posted there: ${posted}`];
+});
+
+await check('Both bases carry the settlement accounts', async () => {
+  /**
+   * The control-basis trial balance is built from vouchers and knew nothing about
+   * these accounts, so it went 7,200 out the first time a foreign receipt was
+   * recorded while the journal basis stayed level. Both now state them.
+   */
+  const text = (await (await fetch(`${APP}/api/accounts/export?format=csv&section=reconciliation`)).text())
+    .replace(new RegExp(String.fromCharCode(13), 'g'), '');
+  const rows = text.trim().split(String.fromCharCode(10));
+  const bad = rows.slice(1).filter((x) => Number(x.split('","').map((c) => c.replace(/^"|"$/g, ''))[3]) !== 0);
+  const named = rows.some((r) => /Exchange gain/.test(r)) && rows.some((r) => /Customer credit balances/.test(r));
+  return [bad.length === 0 && named,
+    bad.length ? `out of balance: ${bad.join(' | ')}` : `${rows.length - 1} control account(s) including both settlement rows, all level`];
+});
+
 /* ------------------------------------------ tax rules and the period lock */
 await check('Tax is dated data, not a number on the company record', async () => {
   const src = readFileSync('lib/taxrules.ts', 'utf8');

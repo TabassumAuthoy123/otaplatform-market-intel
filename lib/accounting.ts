@@ -3,6 +3,7 @@ import { todayIn } from '@/lib/clock';
 // Type only: the document sub-ledger derives FROM the book, so the runtime
 // dependency runs one way and this import cannot become a cycle.
 import { deferredIncome, memoPayable } from '@/lib/documents';
+import { customerCredit, fxGain, settlements } from '@/lib/fx';
 import type { CarrierContract } from '@/lib/contracts';
 import type { TaxRule } from '@/lib/taxrules';
 import type { TravelDocument } from '@/lib/documents';
@@ -140,6 +141,17 @@ export type Invoice = ForeignDoc & {
 export type Receipt = {
   id: string; no: string; date: string; customerId: string; invoiceId: string;
   method: PayMethod; bankId: string | null; amount: number; ref: string;
+  /**
+   * The currency and rate the settlement was made at.
+   *
+   * Both optional and both meaning "base currency" when absent, which is every
+   * receipt written before this existed. They exist so an exchange gain can be told
+   * apart from an overpayment at all — without the settlement rate, a receipt that
+   * exceeds what its invoice was carrying is indistinguishable from a customer who
+   * simply paid too much, and reading it as a gain would invent income. See lib/fx.ts.
+   */
+  currency?: string;
+  fxRate?: number;
 };
 
 export type Bill = ForeignDoc & {
@@ -928,17 +940,37 @@ export function trialBalance(book: Book) {
     (book.supplierDeposits ?? []).reduce((t, d) => t + d.amount, 0) -
     book.payments.filter((p) => p.method === 'supplier_deposit').reduce((t, p) => t + p.amount, 0);
 
+  /**
+   * A settlement that is not a plain relief lands on the credit side.
+   *
+   * The bank has more in it than receivables gave up, and the difference has to be
+   * somewhere or the two columns cannot level. It is an exchange gain when the rate
+   * moved and a liability when the customer paid too much — and leaving both out is
+   * what put this trial balance 7,200 out the first time a foreign receipt was
+   * recorded, while the journal basis stayed level because it had the accounts.
+   *
+   * A memo is on the debit side for the same reason: MEMO_COST is a cost the journal
+   * carries and the vouchers do not, so the control basis needs it stated too.
+   */
+  const exchange = fxGain(book).total;
+  const held = customerCredit(book).total;
+  const memos = memoPayable(book).total;
+
   const debits = [
     { account: 'Cash in hand', amount: cash },
     { account: 'Bank accounts', amount: bank },
     { account: 'Advances to suppliers', amount: advances },
     { account: 'Accounts receivable', amount: ar },
     { account: 'Purchases (supplier bills, net of refunds)', amount: purchases },
-    { account: 'Operating expenses', amount: s.expenses }
+    { account: 'Operating expenses', amount: s.expenses },
+    ...(memos !== 0 ? [{ account: 'Airline debit memos', amount: memos }] : [])
   ];
   const credits = [
     { account: 'Accounts payable', amount: ap },
     { account: 'Sales revenue (net of credit notes)', amount: s.sales },
+    ...(exchange !== 0 ? [{ account: 'Exchange gain / (loss)', amount: exchange }] : []),
+    ...(held !== 0 ? [{ account: 'Customer credit balances', amount: held }] : []),
+    ...(memos !== 0 ? [{ account: 'Airline memos payable', amount: memos }] : []),
     { account: 'Opening balances', amount: opening }
   ];
 
@@ -1219,6 +1251,8 @@ export const AC = {
   DEFERRED: 'DEFERRED_INCOME',
   MEMOS: 'MEMO_PAYABLE',
   MEMO_COST: 'MEMO_COST',
+  FX: 'FX_GAIN',
+  CUSTOMER_CREDIT: 'CUSTOMER_CREDIT',
   ADVANCES: 'ADVANCES',
   EQUITY: 'EQUITY_OPENING',
   SALES: 'SALES',
@@ -1267,6 +1301,24 @@ function buildChart(book: Book): Account[] {
      */
     { code: AC.MEMOS, name: 'Airline memos payable (ADM/ACM)', group: 'liability' },
     { code: AC.MEMO_COST, name: 'Airline debit memos', group: 'expense' },
+    /**
+     * Exchange gain and loss on settling a foreign-currency voucher.
+     *
+     * One account rather than two. A gain and a loss are the same movement in
+     * opposite directions, and splitting them means a month with both reports two
+     * numbers that have to be netted by hand to answer the only question anybody
+     * asks — did we make or lose money on the rate.
+     */
+    { code: AC.FX, name: 'Exchange gain / (loss)', group: 'income' },
+    /**
+     * Money received beyond what an invoice was carrying.
+     *
+     * Not negative receivables. A customer who overpays is owed the difference, so
+     * it is a liability — and letting it sit as a negative asset is what made the
+     * two derivations disagree, because the control side floors the amount due at
+     * zero and the ledger did not.
+     */
+    { code: AC.CUSTOMER_CREDIT, name: 'Customer credit balances', group: 'liability' },
     { code: AC.EQUITY, name: 'Opening balances', group: 'equity' },
     { code: AC.SALES, name: 'Sales revenue', group: 'income' },
     { code: AC.RETURNS, name: 'Credit notes and cancellations', group: 'income' },
@@ -1474,10 +1526,34 @@ function buildJournal(book: Book): JournalLine[] {
     }
   }
 
+  /**
+   * A receipt relieves receivables by what receivables is CARRYING, not by the cash
+   * that arrived.
+   *
+   * This posted `Cr AR` for the whole receipt while the control side floored the
+   * amount due at zero, so the two agreed only until a receipt exceeded its
+   * invoice. It did not — until it was tested, and then accounts receivable came
+   * out 7,200 apart and the control-basis trial balance with it.
+   *
+   * The excess splits two ways and they are not the same thing. If the rate moved,
+   * it is an exchange gain and belongs in income. If the customer simply paid too
+   * much, the agency owes it back and it belongs in a liability. `allocate` in
+   * lib/fx.ts decides, and the control-side derivations call the same function —
+   * which is the actual fix, because two answers to "how much did this relieve" is
+   * what caused the defect.
+   */
+  const allocations = new Map(settlements(book).map((s) => [s.receipt.id, s.alloc]));
   for (const r of book.receipts) {
+    const a = allocations.get(r.id);
+    const relief = a ? a.relief : r.amount;
+    const fxPart = a ? a.fx : 0;
+    const overpaid = a ? a.overpaid : 0;
     post(r.date, r.no, 'Receipt', cust(r.customerId), `Received — ${LABEL[r.method] ?? r.method}`, [
       { account: fundsAccount(r.method, r.bankId), debit: r.amount },
-      { account: AC.AR, credit: r.amount }
+      { account: AC.AR, credit: relief },
+      ...(fxPart > 0 ? [{ account: AC.FX, credit: fxPart }] : []),
+      ...(fxPart < 0 ? [{ account: AC.FX, debit: -fxPart }] : []),
+      ...(overpaid !== 0 ? [{ account: AC.CUSTOMER_CREDIT, credit: overpaid }] : [])
     ]);
   }
 
@@ -1708,6 +1784,13 @@ export function reconciliation(book: Book) {
      * bound would reveal.
      */
     { name: 'Airline memos payable', control: memoPayable(book).total, ledger: bal(AC.MEMOS) },
+    /**
+     * The two halves of a settlement that is not a plain relief. Both compared by
+     * the same route as everything else — and both were silently landing in
+     * receivables until they were given somewhere to go.
+     */
+    { name: 'Exchange gain / (loss)', control: fxGain(book).total, ledger: bal(AC.FX) },
+    { name: 'Customer credit balances', control: customerCredit(book).total, ledger: bal(AC.CUSTOMER_CREDIT) },
     {
       name: 'Deferred income (as at today)',
       control: deferredIncome(book, todayISO(book)).total,
