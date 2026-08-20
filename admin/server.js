@@ -47,6 +47,33 @@ const AGENCY = require('./agency-fields');
  * it: `require` here, `allowJs` import in lib/panelMenus.ts.
  */
 const { PANEL_MODULES, PANEL_GROUP_LABEL, isModuleOn } = require('../lib/panel-modules.js');
+/**
+ * The period-lock guard, the same module the app uses. Written twice it would drift
+ * into a hole — this portal accepting an edit the app rejects, silently.
+ */
+const LOCK = require('../lib/period-lock.js');
+
+/**
+ * Refuse a write that lands in a closed period.
+ *
+ * Checks the OLD dates as well as the new ones. Moving a voucher out of a locked
+ * month is the same restatement as editing it there, and a guard that only looked at
+ * the incoming value would wave it through.
+ */
+function lockRefusal(book, ...records) {
+  const dates = records.flatMap((r) => LOCK.datesOf(r));
+  const verdict = LOCK.mayWrite(book.lockedThrough || null, dates);
+  return verdict.ok ? null : verdict.reason;
+}
+
+function lockedPage(session, reason) {
+  return page({
+    title: 'Closed period',
+    session,
+    body: `<h1>That period is closed</h1><p class="sub">${esc(reason)}</p>
+      <p style="margin-top:18px"><a class="primary" href="/books">Back to records</a></p>`
+  });
+}
 const CRM = require('./crm-fields');
 /**
  * The CRM vocabularies as they are configured, not as they were coded.
@@ -1176,6 +1203,12 @@ const BOOK_COLLECTIONS = [
    * Carrier contracts. Deliberately empty on a fresh book — a seeded rate would put
    * money into the margin report and the P&L, so the real ones get typed in.
    */
+  /**
+   * Tax rules. Empty on a fresh book for the same reason the contracts are — a
+   * stale rate shipped inside a product is a wrong invoice that looks
+   * authoritative, and the bands here have been revised more than once.
+   */
+  { key: 'taxRules', label: 'Tax rules', hint: 'A code, what it is charged on, a rate OR a fixed amount per passenger, an optional route band, the services it covers or is exempt from, and the dates it runs between. Resolved against the INVOICE date, so a change never restates a filed month.', idPrefix: 'TAX-', noPrefix: null, title: ['code', 'name'], search: ['code', 'name', 'note'], amount: null, party: null, template: { id: '', code: '', name: '', basis: 'fare', ratePct: 0, fixedAmount: 0, band: 'any', serviceIds: [], exemptServiceIds: [], withholding: false, effectiveFrom: '', effectiveTo: '', active: true, note: '' } },
   { key: 'contracts', label: 'Carrier contracts', hint: 'What each airline allows on a fare. A contract resolves against the ISSUE date on the document, so set the dates carefully — a rate renegotiated in September must not restate August.', idPrefix: 'CTR-', noPrefix: null, title: ['name', 'carrier'], search: ['carrier', 'name', 'note'], amount: null, party: null, template: { id: '', carrier: '', name: '', commissionPct: 0, flatAmount: 0, basis: 'base', band: 'any', cabin: '', effectiveFrom: '', effectiveTo: '', capPerDocument: 0, incentivePct: 0, active: true, note: '' } },
   { key: 'documents', label: 'Airline documents', hint: 'Tickets, EMDs and memos. The fare, tax and commission an invoice line has nowhere to hold. Leave documentNo blank while only a PNR exists.', idPrefix: 'DOC-', noPrefix: null, title: ['documentNo', 'pnr'], search: ['documentNo', 'pnr', 'passengerName', 'platingCarrier'], amount: null, party: 'supplierId' },
   { key: 'customers', label: 'Customers', hint: 'Who we invoice.', idPrefix: 'CUS-', noPrefix: null, title: ['name'], search: ['name', 'phone', 'email'], amount: null, party: null },
@@ -1224,6 +1257,20 @@ const BOOK_ENUMS = {
   payments: { method: PAYMENT_METHODS },
   expenses: { method: PAY_METHODS },
   supplierDeposits: { method: PAY_METHODS, kind: [{ value: 'deposit', label: 'Deposit' }] },
+  taxRules: {
+    basis: [
+      { value: 'fare', label: 'Airline fare' },
+      { value: 'commission', label: 'Agency commission' },
+      { value: 'service_charge', label: 'Agency service charge' },
+      { value: 'gross', label: 'Whole line' }
+    ],
+    band: [
+      { value: 'any', label: 'Any route' },
+      { value: 'domestic', label: 'Domestic' },
+      { value: 'saarc', label: 'SAARC' },
+      { value: 'international', label: 'International' }
+    ]
+  },
   contracts: {
     basis: [{ value: 'base', label: 'Base fare' }, { value: 'gross', label: 'Fare + tax' }],
     band: [
@@ -2731,6 +2778,62 @@ function designView(session, content, tab, device, flash) {
    */
   const panelBody = panelMenuManager(session, content);
 
+  /**
+   * Closing a period, with what is inside it counted first.
+   *
+   * An operator who closes March without knowing there are eleven unpaid March
+   * invoices in it has not closed a period, they have hidden a chase list. So the
+   * counts come before the button, and the reopen path is the same form with the
+   * field cleared — one place, one audit entry either way.
+   */
+  const lockBody = (() => {
+    const book = readJson(path.join(CONTENT_DIR, 'accounting.json'), {});
+    const through = book.lockedThrough || '';
+    const upTo = (d) => Boolean(d) && String(d) <= through;
+    const count = (k) => (book[k] || []).filter((r) => upTo(r.date)).length;
+    const inside = through
+      ? count('invoices') + count('receipts') + count('bills') + count('payments') + count('expenses')
+      : 0;
+    const unpaid = through
+      ? (book.invoices || []).filter((i) => upTo(i.date) && i.status !== 'paid' && i.status !== 'cancelled').length
+      : 0;
+    const drafts = through
+      ? (book.invoices || []).filter((i) => upTo(i.date) && i.status === 'draft').length
+      : 0;
+
+    return `
+      <form method="post" action="/design/lock">
+        <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+        <div class="card">
+          <h2 style="margin:0 0 4px;font-size:14px;color:var(--navy)">Close a period</h2>
+          <p style="margin:0 0 14px;font-size:12px;color:var(--muted);line-height:1.6">
+            Everything dated on or before this closes to edits. Reports over a closed period still recompute — the
+            arithmetic was never what was unsafe, the inputs were. Correcting a closed month is done with a dated
+            adjustment in the open one, which is what leaves an audit trail.
+          </p>
+          <label class="row" style="margin:0 0 14px">
+            <span class="lab">Closed through (YYYY-MM-DD, blank to reopen)</span>
+            <input type="text" name="lockedThrough" value="${esc(through)}" placeholder="2026-07-31">
+          </label>
+          ${through ? `
+            <div style="padding:12px 14px;border-left:3px solid var(--teal);background:var(--panel);font-size:12.5px;line-height:1.7">
+              <strong style="color:var(--navy)">Inside the closed period:</strong>
+              ${inside} voucher(s) · ${unpaid} invoice(s) still unpaid · ${drafts} still draft.
+              ${unpaid ? '<br>Unpaid invoices in a closed period are still chased and still appear on statements — closing the period does not settle them.' : ''}
+              ${drafts ? '<br><strong style="color:var(--navy)">A draft in a closed period can no longer be confirmed.</strong> Confirm or cancel them before closing, or reopen to deal with them.' : ''}
+            </div>` : `
+            <div style="padding:12px 14px;border-left:3px solid var(--hair);background:var(--panel);font-size:12.5px;color:var(--muted)">
+              Nothing is closed. Every voucher in the book can be edited, which means a March figure can still change
+              months after it was reported.
+            </div>`}
+          <div class="bar" style="margin-top:16px">
+            <button class="primary" type="submit">${through ? 'Update the lock' : 'Close the period'}</button>
+            <span style="margin-left:auto;font-size:12px;color:var(--muted)">Both closing and reopening are audited.</span>
+          </div>
+        </div>
+      </form>`;
+  })();
+
   const themeBody = `
     <form method="post" action="/design/theme">
       <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
@@ -2798,11 +2901,11 @@ function designView(session, content, tab, device, flash) {
       ${flash ? `<div class="flash">${esc(flash)}</div>` : ''}
 
       <div style="display:flex;gap:6px;background:var(--panel);padding:6px;border-radius:11px;margin-bottom:16px;flex-wrap:wrap">
-        ${tabLink('sections', 'Storefront sections')}${tabLink('panel', 'Panel modules')}${tabLink('theme', 'Theme &amp; colours')}
+        ${tabLink('sections', 'Storefront sections')}${tabLink('panel', 'Panel modules')}${tabLink('lock', 'Close a period')}${tabLink('theme', 'Theme &amp; colours')}
       </div>
 
       <div style="display:grid;gap:16px;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);align-items:start">
-        <div>${tab === 'theme' ? themeBody : tab === 'panel' ? panelBody : sectionsBody}</div>
+        <div>${tab === 'theme' ? themeBody : tab === 'panel' ? panelBody : tab === 'lock' ? lockBody : sectionsBody}</div>
         <div style="position:sticky;top:20px">${tab === 'panel'
           ? `<div class="card"><h2 style="margin:0 0 6px;font-size:14px;color:var(--navy)">Where to see this</h2>
                <p style="margin:0;font-size:12.5px;color:var(--muted);line-height:1.6">
@@ -4002,6 +4105,11 @@ const server = http.createServer(async (req, res) => {
       const errors = validateBookRecord(spec, next);
       if (errors.length) return send(res, 422, bookEditView(session, book, spec, next, null, errors));
 
+      // Both the record as it stands and the record as submitted, so an edit cannot
+      // walk a voucher out of a closed month.
+      const refused = lockRefusal(book, book[spec.key][idx], next);
+      if (refused) return send(res, 409, lockedPage(session, refused));
+
       let before = null;
       try {
         await guardedSave(
@@ -4071,6 +4179,13 @@ const server = http.createServer(async (req, res) => {
       if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
       const remove = new Set([].concat(form.remove ?? []));
       if (remove.size) {
+        // Deleting a voucher out of a closed month restates it just as surely as
+        // editing one there.
+        const current = bookFile();
+        const doomed = (current[spec.key] || []).filter((r) => remove.has(r.id));
+        const refusedDelete = lockRefusal(current, ...doomed);
+        if (refusedDelete) return send(res, 409, lockedPage(session, refusedDelete));
+
         let gone = [];
         await guardedSave(path.join(CONTENT_DIR, 'accounting.json'), session, (book) => {
           gone = (book[spec.key] || []).filter((r) => remove.has(r.id));
@@ -4443,7 +4558,7 @@ const server = http.createServer(async (req, res) => {
 
     if (pathname === '/design' && req.method === 'GET') {
       const raw = url.searchParams.get('tab');
-      const tab = ['theme', 'panel'].includes(raw) ? raw : 'sections';
+      const tab = ['theme', 'panel', 'lock'].includes(raw) ? raw : 'sections';
       const device = ['mobile', 'tablet', 'desktop'].includes(url.searchParams.get('device'))
         ? url.searchParams.get('device') : 'desktop';
       return send(res, 200, designView(session, readJson(SITE_FILE, {}), tab, device,
@@ -4460,6 +4575,37 @@ const server = http.createServer(async (req, res) => {
       stampMeta(content, session);
       await writeJsonAtomic(SITE_FILE, content);
       return redirect(res, '/design?tab=sections&saved=1');
+    }
+
+    /**
+     * Close a period, or reopen one.
+     *
+     * Deliberately here rather than on any record screen, and deliberately typed
+     * rather than picked: reopening a closed month is how a filed figure gets
+     * restated, so it has to be a decision somebody made on purpose. Both
+     * directions are audited with the old and new dates, because "who reopened
+     * March" is the first question an auditor asks.
+     */
+    if (pathname === '/design/lock' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const through = String(form.lockedThrough || '').trim();
+      if (through && !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(through)) {
+        return send(res, 422, lockedPage(session, `"${through}" is not a date. Use YYYY-MM-DD, or clear the field to reopen everything.`));
+      }
+      let before = null;
+      await guardedSave(path.join(CONTENT_DIR, 'accounting.json'), session, (book) => {
+        before = book.lockedThrough ?? null;
+        book.lockedThrough = through || null;
+      });
+      await audit(session, 'update', {
+        collection: 'company', id: 'period-lock',
+        summary: through
+          ? `Closed everything on or before ${through}${before ? ` (was ${before})` : ''}`
+          : `Reopened the whole book${before ? ` (was closed through ${before})` : ''}`,
+        before: { lockedThrough: before }, after: { lockedThrough: through || null }
+      });
+      return redirect(res, '/design?tab=lock&saved=1');
     }
 
     if (pathname === '/design/panel' && req.method === 'POST') {

@@ -4,6 +4,7 @@ import { todayIn } from '@/lib/clock';
 // dependency runs one way and this import cannot become a cycle.
 import { deferredIncome, memoPayable } from '@/lib/documents';
 import type { CarrierContract } from '@/lib/contracts';
+import type { TaxRule } from '@/lib/taxrules';
 import type { TravelDocument } from '@/lib/documents';
 import { readJsonRequired } from '@/lib/jsonStore';
 
@@ -293,6 +294,19 @@ export type Book = {
    * ever invented, because a fabricated one puts money into the P&L.
    */
   contracts?: CarrierContract[];
+  /**
+   * Tax rules with effective dates, replacing a single `vatRate`. Empty until real
+   * ones are loaded — a stale rate baked into a shipped product is a wrong invoice
+   * that looks authoritative.
+   */
+  taxRules?: TaxRule[];
+  /**
+   * Everything on or before this date is closed and refuses edits.
+   *
+   * Null or absent means nothing is locked, which is every book written before this
+   * existed. A lock is opted into, one period at a time.
+   */
+  lockedThrough?: string | null;
   documents?: TravelDocument[];
   inventory: InventoryItem[];
   airlines: Airline[];

@@ -12,6 +12,7 @@
  */
 
 import http from 'node:http';
+import { createRequire } from 'node:module';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 
 const APP = process.env.APP_URL || 'http://127.0.0.1:3002';
@@ -59,6 +60,11 @@ async function page(path, ...must) {
 }
 
 const has = (arr, n) => Array.isArray(arr) && arr.length >= n;
+
+/** The shared period-lock guard, reached from this ESM script. */
+function requireShared() {
+  return createRequire(import.meta.url)('../lib/period-lock.js');
+}
 
 /* ------------------------------------------------------------- 1. Dashboard */
 section('1. Dashboard');
@@ -791,6 +797,82 @@ await check('The BSP page never writes anything', async () => {
   await bspReport();
   const after = readFileSync('content/accounting.json', 'utf8');
   return [before === after, before === after ? 'the book is byte-identical after a match' : 'the match wrote to the book'];
+});
+
+/* ------------------------------------------ tax rules and the period lock */
+await check('Tax is dated data, not a number on the company record', async () => {
+  const src = readFileSync('lib/taxrules.ts', 'utf8');
+  /**
+   * Three researched reasons a single rate could not work here: excise duty is a
+   * FIXED amount banded by route and revised more than once; VAT on a travel
+   * agent's commission was waived by the NBR; Hajj has its own exemptions. A
+   * percentage-only field cannot state the first at all.
+   */
+  const fixedAmount = src.includes('fixedAmount: number;');
+  const banded = src.includes('band: RouteBand;');
+  const exempt = src.includes('exemptServiceIds: string[];');
+  const dated = src.includes('r.effectiveFrom <= opts.on && (!r.effectiveTo || r.effectiveTo >= opts.on)');
+  const onInvoiceDate = src.includes('on: invoice.date');
+  const page = (await (await fetch(`${APP}/accounts/taxes`)).text()).replace(/<!--[\s\S]*?-->/g, '');
+  return [fixedAmount && banded && exempt && dated && onInvoiceDate && page.length > 2000,
+    `fixed amount: ${fixedAmount}, banded: ${banded}, exemptions: ${exempt}, date-bounded: ${dated}, keyed on the invoice date: ${onInvoiceDate}`];
+});
+
+await check('No tax rate is invented either', () => {
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  // Same rule as the carrier contracts, and the same reason: a stale rate shipped
+  // inside a product is a wrong invoice that looks authoritative.
+  const seeded = (bk.taxRules ?? []).length;
+  return [seeded === 0, seeded === 0 ? 'no rule seeded; each invoice keeps its own stored rate' : `${seeded} rule(s) seeded`];
+});
+
+await check('The period lock guard is shared, not written twice', () => {
+  const shared = existsSync('lib/period-lock.js');
+  const adminUses = readFileSync('admin/server.js', 'utf8').includes("require('../lib/period-lock.js')");
+  const appUses = readFileSync('lib/periodlock.ts', 'utf8').includes("from '@/lib/period-lock.js'");
+  /**
+   * Two processes write to this book and both must refuse the same dates. A guard
+   * written twice drifts, and a drifted guard is a hole — the admin accepting an
+   * edit the app rejects, silently. Same reasoning as lib/panel-modules.js.
+   */
+  return [shared && adminUses && appUses,
+    `shared module: ${shared}, admin requires it: ${adminUses}, app imports it: ${appUses}`];
+});
+
+await check('A closed period refuses an edit and an old date cannot escape it', () => {
+  const { mayWrite, datesOf } = requireShared();
+  const closed = mayWrite('2026-07-31', ['2026-06-18']);
+  const open = mayWrite('2026-07-31', ['2026-08-01']);
+  const none = mayWrite(null, ['2026-06-18']);
+  /**
+   * Checked against the guard directly as well as through the portal, because the
+   * property that matters is the OLD date being checked too: moving a voucher out
+   * of a locked month is the same restatement as editing it there, and a guard that
+   * only looked at the incoming value would wave it through.
+   *
+   * Driven end to end through the real admin form during the build: an invoice dated
+   * 2026-06-18 came back 409 with the reason, one dated 2026-08-01 saved, and the
+   * closed invoice was byte-identical afterwards.
+   */
+  const picksEvery = datesOf({ date: '2026-03-15', issueDate: '2026-03-16', junk: 1 }).length === 2;
+  const saysWhatToDo = /dated adjustment in the open period/.test(closed.reason);
+  return [!closed.ok && open.ok && none.ok && picksEvery && saysWhatToDo,
+    `closed refused: ${!closed.ok}, open allowed: ${open.ok}, unlocked allowed: ${none.ok}, every date field read: ${picksEvery}, refusal is actionable: ${saysWhatToDo}`];
+});
+
+await check('Closing a period counts what is inside it first', () => {
+  const src = readFileSync('admin/server.js', 'utf8');
+  /**
+   * An operator who closes March without knowing there are eleven unpaid March
+   * invoices in it has not closed a period, they have hidden a chase list. And a
+   * draft in a closed period can never be confirmed, which is worth saying before
+   * the button rather than after.
+   */
+  const counts = src.includes('Inside the closed period:');
+  const warnsDrafts = src.includes('can no longer be confirmed');
+  const audited = src.includes("collection: 'company', id: 'period-lock'");
+  return [counts && warnsDrafts && audited,
+    `counts before closing: ${counts}, warns about drafts: ${warnsDrafts}, both directions audited: ${audited}`];
 });
 
 /* ------------------------------------------------------- carrier contracts */

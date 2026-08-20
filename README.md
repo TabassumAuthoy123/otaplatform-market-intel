@@ -915,8 +915,91 @@ also **names the documents it cannot cover** — the migrated ones with no fare 
 
 ---
 
-That completes the design note: all seven steps and the commission item. What
-remains is not code. **Travelport must set up a ticket account on the Galileo host
+#### Tax as dated data, not a rate on the company record
+
+`/accounts/taxes`. `company.vatRate` was one number, and for this market that is
+wrong in three separate ways — every one of them checked rather than assumed:
+
+- **Excise duty on an air ticket is a fixed amount banded by route**, not a
+  percentage, and the bands have been revised more than once. A percentage-only
+  field cannot state it at all.
+- **VAT on a travel agent's commission was waived** by the NBR after ATAB's
+  representations. A product that assumes commission is VAT-able bills the agency's
+  customers wrongly.
+- **Hajj carries its own exemptions** — airfare excise duty and VAT have both been
+  waived for pilgrims, which given the Hajj volume in this dataset is not an edge
+  case.
+
+And a rate is a thing that *changes*. Held as one number, a budget-night revision
+silently restates every invoice ever raised, because the report recomputes from the
+current value. Held as dated rules, last year keeps last year's treatment — which is
+the only reason a figure on a screen can be compared with what was filed.
+
+A rule carries a code, what it is charged on (fare, commission, service charge or
+the whole line), a rate **or** a fixed amount per passenger, a route band, the
+services it covers, the services **exempt** from it, a withholding flag, and the
+dates it runs between. It resolves against the **invoice date**, never today.
+
+The Hajj waiver is modelled as an **exemption on a general rule** rather than as a
+separate Hajj rule, so the waiver being withdrawn is one edit.
+
+**Nothing is seeded**, for the same reason as the carrier contracts: the bands move,
+and a stale rate shipped inside a product is a wrong invoice that looks
+authoritative. The amounts reported in the press are here as reference, not loaded
+as data — domestic and SAARC excise bands, the 15% VAT on aeronautical charges, the
+commission waiver, the Hajj waiver. An empty table means each invoice keeps applying
+its own stored rate, so nothing already invoiced changes.
+
+The screen carries the same shape of calculator as the contracts page, for the same
+reason: an excise band is announced as a number and the question is what it costs
+across the volume already flown. ৳1,000 per passenger against this book is
+৳3,51,000 over 351 passengers.
+
+#### Closing a period
+
+Admin portal → Design → **Close a period**. One date; on or before it the book
+refuses writes.
+
+**This edge got sharper as the week went on.** Every figure here is recomputed from
+the vouchers on every request, and that has been worth having — a total cannot go
+stale. But editing a voucher dated in March silently changes March's profit,
+March's VAT and March's trial balance, months after the return was filed. A stored
+total would at least have disagreed loudly; a derived one just quietly reports a
+different past. And the more that derives from the vouchers — deferred revenue, memo
+liabilities, branch margin, commission — the more a late edit moves without anyone
+deciding it should.
+
+It does **not** freeze the derivations. Reports over a closed period still
+recompute, because the arithmetic was never what was unsafe — the inputs were. And
+it does not prevent correcting a closed month, only doing so *silently*: the
+refusal names the right move, which is a dated adjustment in the open period.
+
+**The guard checks the old dates as well as the new ones.** Moving a voucher out of
+a locked month is the same restatement as editing it there, and a guard that only
+looked at the incoming value would wave it through.
+
+It lives in `lib/period-lock.js` as plain CommonJS shared by both writers — the same
+split as `lib/panel-modules.js` and for a sharper reason. Two processes write to this
+book and both must refuse the same dates; a guard written twice drifts, and a
+drifted guard is a hole where the admin accepts what the app rejects, silently.
+
+**Closing counts what is inside first.** An operator who closes March without
+knowing there are eleven unpaid March invoices in it has not closed a period, they
+have hidden a chase list. And a draft in a closed period can never be confirmed,
+which is worth saying before the button rather than after. Driven end to end through
+the real form: closing through 2026-07-31 reported 571 vouchers, 23 still unpaid and
+3 still draft; an invoice dated 2026-06-18 then came back **409** with the reason and
+was byte-identical afterwards, while one dated 2026-08-01 saved normally. Both
+closing and reopening are audited, because "who reopened March" is the first
+question an auditor asks.
+
+The lock was released afterwards. A demo book with 571 of 580 vouchers closed makes
+the admin portal look broken.
+
+---
+
+That completes the design note — all seven steps, the commission item, and the two
+gaps the design note itself had identified but not built. What remains is not code. **Travelport must set up a ticket account on the Galileo host
 for PCC 3BX8** — booking already works — and real contract rates have to come from
 the agency's own agreements.
 
