@@ -251,7 +251,17 @@ const pair = await (async () => {
     site.panel?.accounts?.accounts === true && site.panel?.dashboard?.home === true,
     'the file states the full picture instead of relying on the reader to know which keys are special');
 
-  const app = (p) => fetch(`http://127.0.0.1:3002${p}`);
+  /**
+   * The app's own session, which is this same cookie.
+   *
+   * Cookies are not scoped by port, so the one the portal set on :4001 is sent to
+   * :3002 as well — that is exactly the mechanism the app relies on to verify a
+   * session it never issues. Before this line these four requests were anonymous, and
+   * once the panels stopped answering 200 to anybody they came back as 307s, which
+   * this check read as "the module is switched off". No second account is needed;
+   * `cookie` is already a live super_admin from the login at the top.
+   */
+  const app = (p) => fetch(`http://127.0.0.1:3002${p}`, { headers: { cookie } });
   const codes = Object.fromEntries(await Promise.all(
     ['/accounts/inventory', '/competitors', '/accounts/ledger', '/agencies']
       .map(async (p) => [p, (await app(p)).status])

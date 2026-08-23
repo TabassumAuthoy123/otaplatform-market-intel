@@ -134,6 +134,10 @@ export type Activity = {
  */
 const readJson = readJsonCached;
 
+/**
+ * Raw reader, no session check -- the page entry point is getMarket, which does check.
+ * See the note on getBookUnguarded in lib/accounting.ts.
+ */
 export const getLeads = () => readJson<Lead[]>(LEADS_FILE, []);
 export const getUsers = () => readJson<CrmUser[]>(USERS_FILE, []);
 export const getActivities = () => readJson<Activity[]>(ACTIVITIES_FILE, []);

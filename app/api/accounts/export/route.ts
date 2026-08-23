@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import {
   allBankBalances, balanceSheet, billBase, billDue, billPaid, cashBook, cashFlow, creditNoteReport, expensesByCategory,
-  generalLedger, getBook, inventory, invoiceTotals, isRefunded, journal, journalTrialBalance, LABEL,
+  generalLedger, getBookUnguarded, inventory, invoiceTotals, isRefunded, journal, journalTrialBalance, LABEL,
   payables, profitAndLoss, receivables, reconciliation, salesByService, summarise, supplierDeposits,
   trialBalance, type Book
 } from '@/lib/accounting';
@@ -523,7 +523,7 @@ export async function GET(req: Request) {
   const from = p.get('from') || undefined;
   const to = p.get('to') || undefined;
 
-  const book = await getBook();
+  const book = await getBookUnguarded();
   const all = buildSheets(book, from, to);
 
   /**

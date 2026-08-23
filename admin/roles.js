@@ -31,6 +31,24 @@ const CAPS = {
   agencies_read: 'View the researched agency dataset',
   agencies_write: 'Edit the researched agency dataset',
   books_read: 'View accounting records and reports',
+  /*
+   * Split out of books_read, because books_read turned out to mean two different
+   * things once the accounting panel became a set of screens rather than a set of
+   * record lists.
+   *
+   * Every role held books_read, which was harmless while it only gated "may this
+   * person open the invoice list". It stopped being harmless when the same capability
+   * started gating the profit and loss, the balance sheet, the trial balance and the
+   * per-service cost and margin: a Sales Executive with books_read could read what
+   * the agency pays its consolidator for a ticket it sells them. That is the single
+   * number a travel agency most wants its own counter staff not to have.
+   *
+   * So the line is drawn where the agency draws it: books_read is "the records I work
+   * with" -- invoices, receipts, bills, statements, a customer's balance. This one is
+   * "the whole business's position and what things actually cost". Accountant and
+   * Manager get it, Sales Executive, Operations and Read Only do not.
+   */
+  books_financials: 'View the whole-business position: P&L, balance sheet, ledger and cost or margin',
   books_sales: 'Create and edit invoices and customer receipts',
   books_purchase: 'Create and edit supplier bills, payments, deposits and inventory',
   books_masters: 'Edit customers, suppliers, services, banks, categories, employees',
@@ -58,7 +76,7 @@ const ROLES = {
   accountant: {
     label: 'Accountant',
     summary: 'All vouchers, reports and statements. No settings, no user management',
-    caps: ['books_read', 'books_sales', 'books_purchase', 'books_masters', 'books_credit', 'books_delete', 'leads_read', 'agencies_read', 'audit', 'alerts', 'alerts_ack']
+    caps: ['books_read', 'books_financials', 'books_sales', 'books_purchase', 'books_masters', 'books_credit', 'books_delete', 'leads_read', 'agencies_read', 'audit', 'alerts', 'alerts_ack']
   },
   sales_exec: {
     label: 'Sales Executive',
@@ -73,7 +91,7 @@ const ROLES = {
   manager: {
     label: 'Manager',
     summary: 'Read everything, reassign leads, approve cancellations',
-    caps: ['crm_read', 'crm_assign', 'crm_all', 'crm_vocab', 'books_read', 'books_credit', 'leads_read', 'agencies_read', 'integrations', 'audit', 'alerts', 'alerts_ack']
+    caps: ['crm_read', 'crm_assign', 'crm_all', 'crm_vocab', 'books_read', 'books_financials', 'books_credit', 'leads_read', 'agencies_read', 'integrations', 'audit', 'alerts', 'alerts_ack']
   },
   read_only: {
     label: 'Read Only',

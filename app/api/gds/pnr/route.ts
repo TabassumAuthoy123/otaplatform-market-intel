@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getBook, invoiceTotals } from '@/lib/accounting';
+import { getBookUnguarded, invoiceTotals } from '@/lib/accounting';
 import { retrievePnr } from '@/lib/gds';
 
 /**
@@ -21,7 +21,7 @@ import { retrievePnr } from '@/lib/gds';
 export const dynamic = 'force-dynamic';
 
 async function localLookup(locator: string) {
-  const book = await getBook();
+  const book = await getBookUnguarded();
   const hits: unknown[] = [];
 
   for (const inv of book.invoices) {

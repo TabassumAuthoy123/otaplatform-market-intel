@@ -1,3 +1,4 @@
+import { requireRead } from '@/lib/auth';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Agency, CredentialState } from '@/data/schema';
@@ -29,6 +30,12 @@ export async function getAgencies(): Promise<Agency[]> {
 }
 
 export async function getDataset(): Promise<Dataset> {
+  requireRead();
+  return getDatasetUnguarded();
+}
+
+/** No session check. See the note on getBookUnguarded in lib/accounting.ts. */
+export async function getDatasetUnguarded(): Promise<Dataset> {
   const agencies = await getAgencies();
   const targets = agencies.filter((x) => x.priority !== 'X');
   const excluded = agencies.filter((x) => x.priority === 'X');

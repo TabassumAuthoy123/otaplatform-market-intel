@@ -23,6 +23,15 @@ all of them.
 > anyone on the same wifi, and it was verified working from the LAN address
 > before it was closed. `npm run dev:lan` exposes it deliberately, and the data
 > routes then refuse any non-loopback request without `APP_ACCESS_KEY`.
+>
+> **The pages now need a session too.** For a long time only `/api` was
+> considered, and the twenty-five *pages* that render the same data were not:
+> `GET /accounts/financials` with no cookie returned the trial balance, the
+> balance sheet and every customer balance, and `GET /agencies` returned the
+> whole prospect list. Both are now refused. See
+> [Signing in to the app](#signing-in-to-the-app) — including why the guard is
+> in the data layer rather than in the layout, which is where it was first put
+> and where it did not work.
 
 ## Run it
 
@@ -1362,8 +1371,9 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 112 checks — specification, hardening, automation
-node scripts/verify-admin.mjs    # 34 checks — the admin portal, signed in
+node scripts/verify-srs.mjs      # 167 checks — specification, hardening, automation
+node scripts/verify-admin.mjs    # 44 checks — the admin portal, signed in
+node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```
 
@@ -1380,11 +1390,13 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-Seventy checks against the running app: each one loads the page and looks for
-the feature the specification asks for, or reads the book and tests that an
-identity holds. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **70 passed, 0
-failed**, and it fails loudly if a page stops carrying what it claims.
+**307 checks** across the four suites against the running app: each one loads a
+page and looks for the feature the specification asks for, reads the book and tests
+that an identity holds, or asks for something it should not be given and checks the
+bytes that come back. It is there because "it is all done" is not a claim anybody
+should accept on trust, including from me. It currently reports **167 + 44 + 39 + 57
+passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
+starts carrying something it should not.
 
 Four of those checks are integrity rather than presence: both trial balances
 must be zero, the control accounts must agree with the journal, the balance
@@ -1407,6 +1419,166 @@ byte. No test password is committed anywhere.
 
 ---
 
+---
+
+## Signing in to the app
+
+The admin portal on `:4001` had a login, six roles and a signed cookie. The app on
+`:3002` had none of it. Every accounting page and every market-intelligence page
+answered `200` to anybody who could reach the port — twenty-five pages carrying the
+trial balance, the balance sheet, every customer and supplier balance, supplier cost
+and margin, and 400 researched prospects with named decision makers and their mobile
+numbers. The `/api` routes had been thought about and closed; the pages that render
+the same data out of the same files had not.
+
+### One issuer, and the app is not it
+
+`lib/auth.ts` **verifies a session and never issues one.** There is no second login
+form, no second password store and no second place a forgery could start. The portal
+signs a cookie; the app checks it.
+
+That works because **cookies are not scoped by port.** A cookie set by
+`localhost:4001` is sent to `localhost:3002`, and `SameSite=Strict` is satisfied
+because both are the same site. So signing in on the portal signs you in to the
+panel, which is also the behaviour an agency expects: one login, not two.
+
+What the app verifies, in order — and any failure returns the same nothing:
+
+| Check | Why it is there |
+|---|---|
+| HMAC over the payload, compared with `timingSafeEqual` | The signature is the whole security boundary |
+| Length equality before the compare | `timingSafeEqual` throws on a length mismatch, which would turn a forged cookie into a 500 |
+| Expiry, from inside the signed payload | Outside it, the expiry would be editable by the holder |
+| The account still exists | A deleted account's cookie must die with it |
+| `tokenVersion` matches the account's | This is what makes a session **killable**, not merely expiring — a password change bumps it and every outstanding cookie refuses |
+
+The refusal never says which check failed, and never distinguishes "no such account"
+from "wrong password" from "expired". `viewer()` returns `null` for all of them.
+
+### The guard is in the data layer, and that was not the first attempt
+
+Two versions were built before this one, and both were wrong in the same way.
+
+**A layout and the page beneath it render in parallel.** Returning a sign-in card
+from the layout does not stop the page from running, and neither does calling
+`redirect()` from it. The page renders anyway and its output is serialised into the
+same response. Measured against the running dev server, `GET /accounts/financials`
+with no cookie:
+
+| Guard | Response | Body | What was in it |
+|---|---|---|---|
+| Layout returns a sign-in card | `200` | 49,919 b | `Accounts receivable`, `Retained …`, both trial balance headings |
+| Layout calls `redirect()` | `307` | 48,009 b | the same names, in the body of the redirect |
+| **Guard inside `getBook()`** | `307` | 9,842 b | nothing from the book |
+
+A 307 whose body carries the page it is redirecting away from. No figures surfaced in
+those particular runs, and that is the part to be uneasy about rather than reassured
+by: how far the page gets before the stream is cut is decided by render speed, file
+cache warmth and book size — not by the guard. **A leak that depends on a race still
+leaks; it just also passes a test.**
+
+Middleware would be early enough and cannot do this: it runs on the Edge runtime, and
+both the signing secret and the user record are files on disk.
+
+So the check sits in the only place a page cannot render around it — the function that
+opens the data. `getBook()`, `getMarket()`, `getDataset()` and `getCompetitors()` call
+`requireRead()` before reading anything. There is nothing to serialise if the read
+never returns, and **a page added next year gets this for free instead of having to
+remember.** A check in `verify-auth.mjs` reads all twenty-five pages in the two
+guarded groups and fails if any one of them reaches its data another way.
+
+The `/api` routes authorise differently — middleware holds them to loopback — so they
+call `getBookUnguarded()` and `getDatasetUnguarded()`. The ugly name is the point:
+every call site is a place this check is **not** running, and it should be obvious in
+a diff and trivial to grep for.
+
+### `books_financials`, split out of `books_read`
+
+Every one of the six roles held `books_read`. That was harmless while it only meant
+"may open the invoice list". It stopped being harmless when the same capability began
+gating the profit and loss, the balance sheet, the trial balance, the general ledger
+and the per-service cost and margin — **a Sales Executive with `books_read` could read
+what the agency pays its consolidator for a ticket it sells them.** That is the single
+number a travel agency most wants its own counter staff not to have.
+
+So the line is now drawn where an agency draws it:
+
+- **`books_read`** — the records I work with: invoices, receipts, bills, statements, a
+  customer's balance.
+- **`books_financials`** — the whole business's position and what things actually
+  cost. Held by Super Admin, Accountant and Manager. Not by Sales Executive,
+  Operations Staff or Read Only.
+
+`/accounts/financials`, `/accounts/reports` and `/accounts/ledger` need it.
+
+**The landing page gates figures, not the route.** `/accounts` is the group's locked
+entry point, so it cannot be closed by role — but it was showing today's profit, the
+cash and bank balances, supplier cost, gross and net profit, and a ten-day table with
+Cost and Gross profit columns. The route stays open to every role and the *figures*
+are what disappear: someone without `books_financials` keeps today's sales, what
+customers owe and what suppliers are owed, and loses cost, margin and the treasury
+position.
+
+**Three lists of the same modules, all three filtered.** The nav, the quick-action
+tiles on the landing, and the mobile menu each render the module list. Filtering the
+nav alone left Financials, Reports and General ledger sitting on the landing as tiles
+for a Sales Executive — clickable, and bounced. A link somebody cannot open reads as a
+broken product rather than a permission, and it also tells them exactly what is being
+kept from them.
+
+### Refused, and what they see
+
+A refused request lands on `/signin`, which is a route of its own and outside both
+guarded groups — it has to be, or the guard that sent them there would catch it.
+
+- **Anonymous** → "Sign in to open the book", with a link to the portal. Not a login
+  form: the portal is the only place a password is checked.
+- **Signed in, wrong role** → "Your role does not include this."
+- **The path that was refused is shown**, so the person knows what to ask for. Only if
+  it is a local path — an absolute URL in `next=` is neither rendered nor linked,
+  because a phishing URL printed on a page that looks like ours borrows our
+  credibility.
+
+**A switched-off module 404s first, before the session is even looked at.** That
+ordering is deliberate: answering "sign in to see this" for a module the installation
+was never sold would confirm the module exists, and an outsider could enumerate which
+modules an agency bought by reading the difference.
+
+**Signing out happens on the portal.** The portal's `/logout` is a POST with a CSRF
+token. The app could mint one — it has the secret and the session — but doing so would
+make the app a second place that can *act* on a session rather than only read one, and
+verifying-without-issuing is the entire reason there is exactly one issuer. So the
+nav links to the portal, where the button already is, and says so.
+
+### What `verify-auth.mjs` actually proves
+
+39 checks. **Every assertion reads the response body, not the status** — because the
+first two versions of this guard both returned a believable status while leaking, and
+a check that read only the status passed both times.
+
+- Eight guarded paths, anonymous: refused, and the body contains nothing from the book
+  or the CRM.
+- `super_admin` and `accountant` open Financials and the book really is there — a guard
+  that refuses everybody is not a working guard.
+- `sales_exec` and `read_only` are refused Financials, Reports and Ledger; still open
+  Sales; see the landing with no cost, margin, cash or bank balance; and are not
+  offered a link they cannot use.
+- A signature with one character changed, a truncated signature, a signature removed
+  altogether, and an expiry moved into the past — all refused.
+- **A live session dies the moment `tokenVersion` is bumped**, asserted as `200`
+  before and refused after with the same cookie.
+- A switched-off module 404s for an anonymous caller *and* for a Super Admin.
+- The `/api` routes still serve on loopback with no cookie, so moving the guard did not
+  quietly break the export buttons.
+- All twenty-five pages in the guarded groups read through a guarded reader.
+- `content/users.json` comes back byte for byte. Probe accounts are created per role
+  with a random password that never leaves the process, and removed on exit including
+  on a crash. **No test password is committed anywhere.**
+
+`scripts/lib/probe-session.mjs` holds that scaffolding once rather than three times,
+because it writes to the file that holds the real accounts' password hashes and a copy
+with the restore logic slightly wrong is not a flaky test — it is a lost account.
+
 ## Roles, enforced
 
 Six roles from the accounting specification. They used to be described on a
@@ -1417,18 +1589,28 @@ is the enforcement, and two rules matter:
 somebody clicking it; it does not stop them typing the URL or replaying a form
 post. Every request is checked before any handler runs.
 
+In the *app* the same rule needed one more step, because a Next.js layout cannot
+stop the page beneath it from rendering — so there the check is inside the function
+that opens the data. Same principle, one level lower; the reasoning and the
+measurements are in [Signing in to the app](#signing-in-to-the-app).
+
 **Anything not explicitly allowed is denied.** A new route is inaccessible to
 every non-super-admin until somebody maps it on purpose, which is the safe
 direction for a mistake to fall.
 
-| Role | Can |
-|---|---|
-| Super Admin | Everything, including settings and user management |
-| Accountant | All vouchers, credit notes, reports, statements and the audit log. No settings, no users |
-| Sales Executive | Prospect queue, invoices and customer receipts |
-| Operations Staff | Supplier bookings, bills, payments and stock only |
-| Manager | Read everything, reassign leads, approve cancellations, read the audit log |
-| Read Only | Reports and statements. Nothing editable anywhere |
+| Role | Can | Sees the P&L, ledger and margin |
+|---|---|---|
+| Super Admin | Everything, including settings and user management | yes |
+| Accountant | All vouchers, credit notes, reports, statements and the audit log. No settings, no users | yes |
+| Sales Executive | Prospect queue, invoices and customer receipts | **no** |
+| Operations Staff | Supplier bookings, bills, payments and stock only | **no** |
+| Manager | Read everything, reassign leads, approve cancellations, read the audit log | yes |
+| Read Only | Statements, customer balances and the records. Nothing editable anywhere | **no** |
+
+The last column is the `books_financials` capability, split out of `books_read`
+once the same capability started gating both "may open the invoice list" and "may
+read what we pay our consolidator". See
+[Signing in to the app](#signing-in-to-the-app).
 
 **A Sales Executive can raise an invoice but cannot reverse one.** Credit notes
 are a separate capability held by Accountant, Manager and Super Admin, because

@@ -1,3 +1,4 @@
+import { requireRead } from '@/lib/auth';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { CALL_STATUS, CLOSED, CONTACTED, getLeads, type Lead } from '@/lib/crm';
@@ -68,6 +69,7 @@ export const CREDENTIAL_LABEL: Record<Credential, string> = {
 export type MarketView = Awaited<ReturnType<typeof getMarket>>;
 
 export async function getMarket() {
+  requireRead();
   const leads = await getLeads();
 
   const count = (fn: (l: Lead) => boolean) => leads.filter(fn).length;
@@ -173,5 +175,6 @@ export type CompetitorFile = {
 };
 
 export async function getCompetitors(): Promise<CompetitorFile> {
+  requireRead();
   return JSON.parse(await readFile(COMPETITORS_FILE, 'utf8')) as CompetitorFile;
 }

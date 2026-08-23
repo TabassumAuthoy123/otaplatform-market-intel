@@ -1,7 +1,10 @@
-import { notFound } from 'next/navigation';
+import { notFound, redirect } from 'next/navigation';
 import Nav from '@/components/Nav';
 import { getMarket } from '@/lib/market';
-import { PANEL_MODULES, currentPath, enabledModules, isPathEnabled } from '@/lib/panelMenus';
+import { mayRead, signInUrl, viewer } from '@/lib/auth';
+import { PANEL_MODULES, currentPath, enabledModules, isPathEnabled, moduleKeyFor } from '@/lib/panelMenus';
+
+const ADMIN_URL = process.env.NEXT_PUBLIC_ADMIN_URL || process.env.ADMIN_URL || 'http://localhost:4001';
 
 // The nav shows live credential and city counts, so it re-reads the dataset on
 // every request like the pages do.
@@ -12,10 +15,25 @@ export default async function DashboardLayout({ children }: { children: React.Re
   const path = currentPath();
   if (path && !(await isPathEnabled(path))) notFound();
 
+  /**
+   * Same guard as the accounts group, and it belongs here just as much. This side
+   * holds 400 researched prospects with named decision makers and their mobile
+   * numbers — the CRM data an earlier round of this work spent effort keeping off
+   * the network, and which was then readable by anyone who could reach the port.
+   */
+  const who = viewer();
+  if (!who) redirect(signInUrl('anonymous', path));
+  const moduleKey = path ? moduleKeyFor(path) : null;
+  if (moduleKey && !mayRead(who, moduleKey)) redirect(signInUrl('forbidden', path));
+
   const m = await getMarket();
   // The disabled ones, not the enabled ones — see the note on Nav's `hidden` prop.
   const enabled = new Set((await enabledModules('dashboard')).map((x) => x.href));
-  const hidden = PANEL_MODULES.filter((x) => x.group === 'dashboard' && !enabled.has(x.href)).map((x) => x.href);
+  // Hidden if the installation does not have it OR this role may not read it — see
+  // the note on the same two filters in app/(accounts)/layout.tsx.
+  const hidden = PANEL_MODULES.filter(
+    (x) => x.group === 'dashboard' && (!enabled.has(x.href) || !mayRead(who, x.key))
+  ).map((x) => x.href);
 
   const credentialCounts: Record<string, number> = {};
   for (const c of m.byCredential) credentialCounts[c.key] = c.count;

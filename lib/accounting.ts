@@ -1,3 +1,4 @@
+import { requireRead } from '@/lib/auth';
 import path from 'node:path';
 import { todayIn } from '@/lib/clock';
 // Type only: the document sub-ledger derives FROM the book, so the runtime
@@ -339,6 +340,16 @@ const BOOK_FILE = path.join(process.cwd(), 'content', 'accounting.json');
  * which is the most misleading thing a set of accounts can say.
  */
 export async function getBook(): Promise<Book> {
+  requireRead();
+  return getBookUnguarded();
+}
+
+/**
+ * The same read with no session check. Only for callers that have authorised
+ * themselves another way — today that is the /api routes, which middleware holds to
+ * loopback. Named to be conspicuous in a diff. See requireRead in lib/auth.ts.
+ */
+export async function getBookUnguarded(): Promise<Book> {
   return readJsonRequired<Book>(BOOK_FILE, 'The accounting book');
 }
 

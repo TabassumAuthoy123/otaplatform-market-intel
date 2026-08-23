@@ -14,9 +14,25 @@
 import http from 'node:http';
 import { createRequire } from 'node:module';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { signedInProbe } from './lib/probe-session.mjs';
 
 const APP = process.env.APP_URL || 'http://127.0.0.1:3002';
 const ADMIN = process.env.ADMIN_URL || 'http://127.0.0.1:4001';
+
+/**
+ * Sign in before reading anything.
+ *
+ * The accounting and market-intelligence panels are no longer readable without a
+ * session, so thirty-five checks in here started failing at once — every one of them
+ * for the same reason and not one of them a real regression. The cookie is attached
+ * to every request at the app origin by the helper rather than passed to each call
+ * site, because there are twenty-odd call sites and a missed one does not error: it
+ * reports the feature as missing, which reads exactly like a broken feature.
+ *
+ * A probe super_admin, so role restrictions never masquerade as absent features. The
+ * roles themselves are checked in verify-auth.mjs, which is where they belong.
+ */
+const probe = await signedInProbe({ admin: ADMIN, app: APP, prefix: 'verify-srs-' });
 
 const book = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
 const site = JSON.parse(readFileSync('content/site.json', 'utf8'));

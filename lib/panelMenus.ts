@@ -134,6 +134,21 @@ export async function isPathEnabled(pathname: string): Promise<boolean> {
  * a file read. Neither half works alone, which is worth knowing before deleting
  * either.
  */
+/**
+ * Which module owns a path — longest match wins, same rule as `isPathEnabled`.
+ *
+ * Separate from that function because the two questions are different: one asks
+ * whether the installation has the module at all, the other asks which module a
+ * request belongs to so its capability can be looked up. Collapsing them would mean
+ * a disabled module and an unauthorised one giving the same answer.
+ */
+export function moduleKeyFor(pathname: string): string | null {
+  const owner = PANEL_MODULES.filter(
+    (m) => pathname === m.href || (m.href !== '/' && pathname.startsWith(`${m.href}/`))
+  ).sort((a, b) => b.href.length - a.href.length)[0];
+  return owner ? owner.key : null;
+}
+
 export function currentPath(): string | null {
   return headers().get('x-panel-path');
 }

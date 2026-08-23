@@ -17,7 +17,18 @@ export type NavItem = { href: string; label: string };
  * breakpoint and visible on the other, and the mobile one is the one nobody
  * checks.
  */
-export default function AccountsNav({ company, items }: { company: string; items: NavItem[] }) {
+export default function AccountsNav({
+  company,
+  items,
+  viewer,
+  adminUrl
+}: {
+  company: string;
+  items: NavItem[];
+  /** Who is signed in. Shown so a shared screen cannot be mistaken for somebody else's. */
+  viewer?: { name: string; role: string };
+  adminUrl?: string;
+}) {
   const path = usePathname();
   const [open, setOpen] = useState(false);
 
@@ -45,6 +56,32 @@ export default function AccountsNav({ company, items }: { company: string; items
             ← Market Intelligence
           </Link>
           <span className="text-[11px] text-white/40">{company}</span>
+          {/*
+            Who is signed in, and the way out. On a shared counter machine the most
+            expensive mistake is somebody assuming they are looking at their own
+            session, so the name and the role are stated rather than implied — and
+            the sign-out is next to them rather than buried.
+          */}
+          {viewer && (
+            <span className="ml-auto flex items-center gap-3 text-[11px]">
+              <span className="text-white/55">
+                {viewer.name} · <span className="text-white/40">{viewer.role}</span>
+              </span>
+              {/*
+                Points at the portal rather than posting a logout from here. The
+                portal's /logout is POST with a CSRF token, and this side could mint
+                one — it has the secret and the session — but doing so would make the
+                app a second place that can ACT on a session instead of only reading
+                one. Verifying and never acting is the whole reason there is one
+                issuer, so the link goes where the button already is.
+              */}
+              {adminUrl && (
+                <a href={adminUrl} className="font-semibold text-teal-300 hover:text-white">
+                  Sign out on the portal ↗
+                </a>
+              )}
+            </span>
+          )}
         </div>
       </div>
 
