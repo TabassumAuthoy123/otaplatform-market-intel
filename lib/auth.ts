@@ -1,11 +1,11 @@
-import { redirect } from 'next/navigation';
-import { currentPath, moduleKeyFor } from '@/lib/panelMenus';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 // eslint-disable-next-line import/extensions -- shared with the zero-dependency admin portal
 import { can, capsOf, normaliseRole, ROLES } from '@/admin/roles.js';
+import { currentPath, moduleKeyFor } from '@/lib/panelMenus';
 
 /**
  * Who is asking, on the Next side.

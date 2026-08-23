@@ -4,8 +4,6 @@ import { getMarket } from '@/lib/market';
 import { mayRead, signInUrl, viewer } from '@/lib/auth';
 import { PANEL_MODULES, currentPath, enabledModules, isPathEnabled, moduleKeyFor } from '@/lib/panelMenus';
 
-const ADMIN_URL = process.env.NEXT_PUBLIC_ADMIN_URL || process.env.ADMIN_URL || 'http://localhost:4001';
-
 // The nav shows live credential and city counts, so it re-reads the dataset on
 // every request like the pages do.
 export const dynamic = 'force-dynamic';
