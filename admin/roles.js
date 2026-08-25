@@ -194,6 +194,19 @@ function requiredCap(pathname, method, col) {
    * cost and margin. Posting one needs its own capability; see books_journal.
    */
   if (pathname === '/journal') return write ? 'books_journal' : 'books_financials';
+  /*
+   * Reading a reconciliation needs what reading the ledger needs: it puts every
+   * movement through a bank account on one screen, which is the treasury position by
+   * another name.
+   *
+   * Importing, deciding a match and signing a period off reuse books_journal rather
+   * than inventing books_reconcile. The same two roles should hold both - the person
+   * who reconciles is the person who posts the charges it turns up - and a capability
+   * matrix where every feature adds a row nobody can distinguish is worse than one
+   * with fewer rows that each mean something.
+   */
+  if (pathname === '/bank-statements') return write ? 'books_journal' : 'books_financials';
+  if (pathname.startsWith('/bank-statements/')) return 'books_journal';
   if (pathname.startsWith('/journal/')) return 'books_journal';
 
   if (pathname === '/leads') return 'leads_read';

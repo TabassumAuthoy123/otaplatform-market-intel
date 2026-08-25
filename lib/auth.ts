@@ -182,6 +182,12 @@ const MODULE_CAP: Record<string, string> = {
    * hold back. Writing one is a separate question, answered in the admin portal.
    */
   journal: 'books_financials',
+  /*
+   * With the ledger, not with the invoice list. A reconciliation puts every movement
+   * through a bank account on one screen, which is the treasury position by another
+   * name - and books_financials was split out to hold exactly that back.
+   */
+  reconcile: 'books_financials',
   financials: 'books_financials',
   reminders: 'books_read',
   statements: 'books_read',

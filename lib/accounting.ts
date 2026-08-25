@@ -1,3 +1,4 @@
+import type { BankReconciliation, BankStatement } from '@/lib/bankrec';
 import { chartAccounts } from '@/lib/journal-rules.js';
 import { adjustmentFor, controlAdjustments } from '@/lib/journals';
 // Type-only, so the cycle with lib/journals.ts is erased at compile time rather than
@@ -317,6 +318,23 @@ export type Book = {
    * touch a control account and what that costs.
    */
   journalEntries?: JournalVoucher[];
+  /**
+   * Imported bank statements, one per account per period. See lib/bankrec.ts.
+   *
+   * The file as received is kept alongside the parsed lines. A parse can be wrong - a
+   * column mapped the wrong way round, a date format guessed - and without the original
+   * there is nothing to re-read it from. Storing only the parse would make a mis-import
+   * permanent.
+   */
+  bankStatements?: BankStatement[];
+  /**
+   * Periods somebody signed off, with the difference that was true at the time.
+   *
+   * Everything else in this book is derived so it cannot go stale. A sign-off is the one
+   * exception on purpose: it is a claim made at a moment, and keeping the number that was
+   * true then is what lets the app notice a later edit silently invalidating it.
+   */
+  bankReconciliations?: BankReconciliation[];
   /**
    * Ledger accounts an accountant defines, on top of the ones derived from the data.
    *

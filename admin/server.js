@@ -755,7 +755,8 @@ function page({ title, session, body, active = '' }) {
         ${vis.leads ? `<a href="/leads" class="${active === 'leads' ? 'on' : ''}">Demo requests</a>` : ''}
         ${vis.books ? `<div class="sep">Accounting</div>
         <a href="/books" class="${active === 'books' ? 'on' : ''}">Records${RBAC.canWriteBooks(session.role) ? ' — add / edit / delete' : ' — read only'}</a>
-        <a href="/journal" class="${active === 'journal' ? 'on' : ''}">Journal vouchers</a>` : ''}
+        <a href="/journal" class="${active === 'journal' ? 'on' : ''}">Journal vouchers</a>
+        <a href="/bank-statements" class="${active === 'bank-statements' ? 'on' : ''}">Bank statements</a>` : ''}
         ${vis.design || vis.integrations ? '<div class="sep">Storefront</div>' : ''}
         ${vis.design ? `<a href="/design" class="${active === 'design' ? 'on' : ''}">Design &amp; layout</a>` : ''}
         ${vis.integrations ? `<a href="/integrations" class="${active === 'integrations' ? 'on' : ''}">API integrations</a>` : ''}
@@ -1490,6 +1491,356 @@ const bookFile = () => readJson(path.join(CONTENT_DIR, 'accounting.json'), {});
 /* ================================================= journal voucher screen === */
 
 const JV = require('../lib/journal-rules.js');
+/* ============================================== bank statements & reconciliation === */
+
+const BSTMT = require('../lib/bank-statement.js');
+const BMATCH = require('../lib/bank-match.js');
+const BREC = require('../lib/bank-reconcile.js');
+
+/**
+ * The book's side of one bank account, flattened.
+ *
+ * A deliberate mirror of `bookMovements` in lib/bankrec.ts, and the ONLY duplicated
+ * logic in this feature. It exists because the portal cannot import a TypeScript module
+ * and `bankBook` — which does the real work of knowing that eight different record types
+ * move bank money — lives in lib/accounting.ts.
+ *
+ * Rather than leave the two to drift silently, `verify-bank.mjs` asserts they produce
+ * identical movement sets for every account in the book. If somebody adds a ninth kind
+ * to one side, the check fails instead of the portal quietly reporting real transactions
+ * as missing from the book.
+ */
+function bookMovementsJs(book, bankId, from, to) {
+  const inRange = (d) => (!from || d >= from) && (!to || d <= to);
+  const mine = (x) => x.bankId === bankId;
+  const rows = [];
+  const push = (r, direction, kind, note) => {
+    if (!inRange(r.date)) return;
+    rows.push({
+      id: r.id,
+      ref: r.no || r.id,
+      date: r.date,
+      amount: Math.abs(r.amount),
+      direction,
+      kind,
+      note: [r.ref, r.notes, r.note, r.description].filter(Boolean).join(' ').trim()
+    });
+  };
+
+  // The same eight kinds bankBook() walks. Kept in the same order for diffability.
+  for (const r of book.receipts || []) if (mine(r)) push(r, 'in', 'receipt');
+  for (const p of book.payments || []) if (mine(p)) push(p, 'out', 'payment');
+  for (const e of book.expenses || []) if (mine(e)) push(e, 'out', 'expense');
+  for (const c of book.creditNotes || []) {
+    // isRefunded() in lib/accounting.ts: a credit note settled in money rather than
+    // against the customer's balance.
+    if (mine(c) && c.settlement !== 'credit_balance') push(c, 'out', 'refund');
+  }
+  for (const t of book.transfers || []) {
+    if (mine(t)) push(t, t.direction === 'deposit' ? 'in' : 'out', t.direction === 'deposit' ? 'transfer_in' : 'transfer_out');
+  }
+  for (const c of book.supplierCreditNotes || []) if (mine(c) && c.settlement !== 'credit_balance') push(c, 'in', 'supplier_credit');
+  for (const d of book.supplierDeposits || []) if (mine(d) && d.method !== 'cash') push(d, 'out', 'supplier_deposit');
+
+  return rows.sort((a, b) => a.date.localeCompare(b.date) || a.ref.localeCompare(b.ref));
+}
+
+/** Opening and closing for a period, the same arithmetic bankBook uses. */
+function bookBalances(book, bankId, from, to) {
+  const bank = (book.banks || []).find((b) => b.id === bankId) || { openingBalance: 0 };
+  const all = bookMovementsJs(book, bankId, null, null);
+  const net = (rows) =>
+    rows.filter((m) => m.direction === 'in').reduce((t, m) => t + m.amount, 0) -
+    rows.filter((m) => m.direction === 'out').reduce((t, m) => t + m.amount, 0);
+  return {
+    opening: bank.openingBalance + net(all.filter((m) => m.date < from)),
+    closing: bank.openingBalance + net(all.filter((m) => m.date <= to))
+  };
+}
+
+/** Build the whole reconciliation for one stored statement. */
+function reconcileStored(book, statement) {
+  const bank = (book.banks || []).find((b) => b.id === statement.bankId);
+  const movements = bookMovementsJs(book, statement.bankId, statement.from, statement.to);
+  const match = BMATCH.matchStatement({
+    lines: statement.lines,
+    movements,
+    driftDays: 5,
+    prefixes: BMATCH.bookPrefixes(book)
+  });
+
+  const taken = new Set(match.results.filter((r) => r.status === 'matched').map((r) => r.match.movementId));
+  for (const d of statement.decisions || []) {
+    if (taken.has(d.movementId)) continue;
+    const target = match.results.find((r) => r.line.sourceLine === d.sourceLine);
+    const mv = movements.find((m) => m.id === d.movementId);
+    if (!target || !mv || target.status === 'matched') continue;
+    taken.add(d.movementId);
+    target.status = 'matched';
+    target.strength = 'by_hand';
+    target.match = { movementId: mv.id, ref: mv.ref, kind: mv.kind, drift: 0, byReference: false, wordHits: 0 };
+    target.decidedBy = d.decidedBy;
+    match.unmatchedMovements = match.unmatchedMovements.filter((u) => u.movement.id !== d.movementId);
+  }
+  match.counts.matched = match.results.filter((r) => r.status === 'matched').length;
+  match.counts.ambiguous = match.results.filter((r) => r.status === 'ambiguous').length;
+  match.counts.unknownToBook = match.results.filter((r) => r.status === 'unknown_to_book').length;
+  match.counts.unpresented = match.unmatchedMovements.length;
+
+  const bal = bookBalances(book, statement.bankId, statement.from, statement.to);
+  const rec = BREC.reconcile({
+    match,
+    bookOpening: bal.opening,
+    bookClosing: bal.closing,
+    statementOpening: statement.openingBalance,
+    statementClosing: statement.closingBalance,
+    statementBalanceSource: statement.balanceSource,
+    from: statement.from,
+    to: statement.to,
+    bankId: statement.bankId,
+    bankName: bank ? bank.name : statement.bankId
+  });
+  return Object.assign({}, rec, { match, movements, statement, bookClosing: bal.closing });
+}
+
+/* ------------------------------------------------------------------- the screen */
+
+const bsMoney = (n, book) =>
+  ((book.company && book.company.currencySymbol) || '') +
+  Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+
+/**
+ * The import form, with the file picker reading into the textarea in the browser.
+ *
+ * The server takes pasted text only — it is `node:http` with no multipart parser, and
+ * adding one to accept a file it would immediately turn back into text is a lot of
+ * surface for nothing. The picker below reads the file client-side and fills the box,
+ * so an operator can upload OR paste and neither of them has to know the difference.
+ */
+function bsImportForm(session, book, state) {
+  state = state || {};
+  const banks = book.banks || [];
+  const selectedBank = state.bankId || (banks[0] && banks[0].id) || '';
+  return `
+  <form method="post" action="/bank-statements/preview" class="card">
+    <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+    <h2 style="margin-top:0">Import a statement</h2>
+    <p class="sub" style="margin-top:4px">
+      There is deliberately no built-in layout for any bank. I have not seen a real export from
+      Dutch-Bangla, BRAC, City Bank or bKash, and a layout guessed at would put money in the wrong
+      column while looking like it knew what it was doing. You map the columns once per account and
+      it is remembered.
+    </p>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;margin:14px 0">
+      <label>Account<br>
+        <select name="bankId">
+          ${banks.map((b) => `<option value="${esc(b.id)}"${b.id === selectedBank ? ' selected' : ''}>${esc(b.name)}</option>`).join('')}
+        </select></label>
+      <label>Period from<br><input type="date" name="from" value="${esc(state.from || '')}"></label>
+      <label>Period to<br><input type="date" name="to" value="${esc(state.to || '')}"></label>
+    </div>
+    <label>Paste the CSV, or choose the file<br>
+      <input type="file" accept=".csv,.txt,.tsv,text/csv,text/plain" onchange="var f=this.files[0];if(!f)return;var r=new FileReader();r.onload=function(){document.getElementById('bscsv').value=r.result};r.readAsText(f)">
+      <textarea id="bscsv" name="csv" rows="10" placeholder="Txn Date,Transaction Details,Cheque No,Withdrawal Amt.,Deposit Amt.,Closing Balance">${esc(state.csv || '')}</textarea>
+    </label>
+    <p style="margin-top:14px"><button class="primary" type="submit">Read it — nothing is saved yet</button></p>
+  </form>`;
+}
+
+/** Column pickers, pre-filled with what was suggested or last confirmed. */
+function bsMappingRow(headers, mapping) {
+  const field = (name, label, hint) => `
+    <label style="min-width:170px">${esc(label)}<br>
+      <select name="map_${name}">
+        <option value="-1">${esc(hint || 'not in this file')}</option>
+        ${headers.map((h, i) => `<option value="${i}"${mapping[name] === i ? ' selected' : ''}>${esc(h)}</option>`).join('')}
+      </select></label>`;
+  return `<div style="display:flex;gap:14px;flex-wrap:wrap;margin:12px 0">
+    ${field('date', 'Date')}
+    ${field('description', 'Narration')}
+    ${field('reference', 'Cheque / reference')}
+    ${field('debit', 'Withdrawal')}
+    ${field('credit', 'Deposit')}
+    ${field('amount', 'Signed amount', 'use Withdrawal/Deposit instead')}
+    ${field('balance', 'Running balance')}
+  </div>`;
+}
+
+function bsPreviewView(session, state) {
+  const book = bookFile();
+  const p = state.preview;
+  const banks = book.banks || [];
+  const bank = banks.find((b) => b.id === state.bankId);
+
+  if (p.error && !p.table.headers.length) {
+    return page({
+      title: 'Bank statements', session, active: 'bank-statements',
+      body: `<h1>Import a statement</h1>
+        <div class="err" style="border-left:3px solid #b91c1c;background:#fef2f2;padding:12px 14px;margin:14px 0">${esc(p.error)}</div>
+        ${bsImportForm(session, book, state)}`
+    });
+  }
+
+  const chain = p.chain || { checked: false, ok: null, breaks: [], detail: '' };
+  const lines = p.lines || [];
+
+  /**
+   * The balance-chain result, given more room than anything else on the page.
+   *
+   * It is the only automatic check that the operator's column mapping is right, and it
+   * costs nothing: the bank already printed what each line does to the balance, so if the
+   * reading is correct every consecutive pair agrees. Swap Withdrawal and Deposit and it
+   * fails on the first pair — before anything is written, rather than at year end.
+   */
+  const chainBox = chain.checked
+    ? `<div style="border-left:3px solid ${chain.ok ? '#047857' : '#b91c1c'};background:${chain.ok ? '#ecfdf5' : '#fef2f2'};padding:12px 14px;margin:14px 0">
+        <strong>${chain.ok ? 'The reading checks out.' : 'The reading does not check out.'}</strong> ${esc(chain.detail)}
+        ${chain.breaks.length ? `<ul style="margin:8px 0 0 18px">${chain.breaks.slice(0, 5).map((b) => `<li>line ${b.sourceLine}: the balance moves by ${b.by} more than this line accounts for</li>`).join('')}</ul>` : ''}
+      </div>`
+    : `<div style="border-left:3px solid #b45309;background:#fffbeb;padding:12px 14px;margin:14px 0">
+        <strong>Nothing to check the reading against.</strong> ${esc(chain.detail)}
+      </div>`;
+
+  const problems = (p.problems || []).length
+    ? `<div class="err" style="border-left:3px solid #b91c1c;background:#fef2f2;padding:12px 14px;margin:14px 0">
+        <strong>${p.problems.length} line(s) could not be read</strong>
+        <ul style="margin:8px 0 0 18px">${p.problems.slice(0, 10).map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
+       </div>`
+    : '';
+
+  const ambiguousDate = p.error && /reads equally well/.test(p.error);
+  const dateChoice = `
+    <label>Date format<br>
+      <select name="dateFormat">
+        ${['YYYY-MM-DD', 'DD-MM-YYYY', 'MM-DD-YYYY', 'DD-MON-YYYY'].map((f) => {
+          const fits = (p.dateFormats && p.dateFormats.candidates || []).includes(f);
+          return `<option value="${f}"${f === state.dateFormat || f === p.dateFormat ? ' selected' : ''}${fits ? '' : ' disabled'}>${f}${fits ? '' : ' — does not fit this column'}</option>`;
+        }).join('')}
+      </select></label>`;
+
+  const rows = lines.slice(0, 25).map((l) => `<tr>
+      <td>${esc(l.date)}</td>
+      <td>${esc(l.description)}</td>
+      <td>${esc(l.reference)}</td>
+      <td class="num">${l.direction === 'out' ? esc(String(l.amount)) : ''}</td>
+      <td class="num">${l.direction === 'in' ? esc(String(l.amount)) : ''}</td>
+      <td class="num">${l.balance === null || l.balance === undefined ? '' : esc(String(l.balance))}</td>
+    </tr>`).join('');
+
+  const s = p.summary || {};
+  const readyToSave = !p.error && !(p.problems || []).length && lines.length > 0;
+
+  return page({
+    title: 'Bank statements', session, active: 'bank-statements',
+    body: `
+      <h1>What was read</h1>
+      <p class="sub">${esc(bank ? bank.name : state.bankId)} · nothing has been saved yet</p>
+
+      ${p.error ? `<div class="err" style="border-left:3px solid #b91c1c;background:#fef2f2;padding:12px 14px;margin:14px 0">${esc(p.error)}</div>` : ''}
+      ${problems}
+      ${p.error ? '' : chainBox}
+
+      <form method="post" action="${readyToSave ? '/bank-statements/import' : '/bank-statements/preview'}" class="card">
+        <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+        <input type="hidden" name="csv" value="${esc(state.csv)}">
+        <input type="hidden" name="bankId" value="${esc(state.bankId)}">
+        <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:6px">
+          <label>Period from<br><input type="date" name="from" value="${esc(state.from || s.from || '')}" required></label>
+          <label>Period to<br><input type="date" name="to" value="${esc(state.to || s.to || '')}" required></label>
+          ${dateChoice}
+        </div>
+        <h3 style="margin:14px 0 0">Which column is which</h3>
+        ${bsMappingRow(p.table.headers, p.mapping || {})}
+        <p style="margin-top:6px">
+          <button type="submit" ${readyToSave ? '' : 'class="primary"'}>Re-read with these settings</button>
+          ${readyToSave ? `<button class="primary" type="submit" formaction="/bank-statements/import">Save ${lines.length} lines</button>` : ''}
+        </p>
+      </form>
+
+      ${readyToSave ? `
+      <div class="card">
+        <h3 style="margin-top:0">${lines.length} lines · ${esc(String(s.from))} to ${esc(String(s.to))}</h3>
+        <p class="sub">in ${bsMoney(s.totalIn, book)} · out ${bsMoney(s.totalOut, book)} · net ${bsMoney(s.net, book)}${s.openingPrinted !== null && s.openingPrinted !== undefined ? ` · opens at ${bsMoney(s.openingPrinted, book)}, closes at ${bsMoney(s.closingPrinted, book)}` : ' · the file carries no balance column'}</p>
+        <table class="grid"><thead><tr><th>Date</th><th>Narration</th><th>Ref</th><th class="num">Out</th><th class="num">In</th><th class="num">Balance</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+        ${lines.length > 25 ? `<p class="sub" style="margin-top:8px">first 25 of ${lines.length}</p>` : ''}
+      </div>` : ''}
+
+      <p style="margin-top:18px"><a href="/bank-statements">Start again</a></p>`
+  });
+}
+
+function bankStatementsView(session, params) {
+  const book = bookFile();
+  const all = book.bankStatements || [];
+  const signed = book.bankReconciliations || [];
+  const banks = book.banks || [];
+  const may = RBAC.can(session.role, 'books_journal');
+  const notice = params && params.get('saved');
+  const err = params && params.get('error');
+
+  const cards = all
+    .slice()
+    .sort((a, b) => String(b.to).localeCompare(String(a.to)))
+    .map((st) => {
+      const rec = reconcileStored(book, st);
+      const bank = banks.find((b) => b.id === st.bankId);
+      const sign = signed.find((x) => x.statementId === st.id);
+      const tone = rec.settled ? '#047857' : rec.reconciled ? '#b45309' : '#b91c1c';
+      return `
+      <div class="card" style="border-left:3px solid ${tone}">
+        <h3 style="margin:0">${esc(bank ? bank.name : st.bankId)} · ${esc(st.from)} to ${esc(st.to)}</h3>
+        <p class="sub" style="margin:4px 0 10px">
+          ${st.lines.length} lines · ${rec.counts.matched} matched · ${rec.counts.ambiguous} need a decision ·
+          ${rec.counts.bankOnly} not in the book · ${rec.counts.bookOnly} not on the statement ·
+          difference <strong>${bsMoney(rec.difference, book)}</strong>
+          ${sign ? ` · signed off by ${esc(sign.closedBy)} on ${esc(String(sign.closedAt).slice(0, 10))}` : ''}
+        </p>
+        ${rec.blockers.length ? `<ul class="sub" style="margin:0 0 10px 18px">${rec.blockers.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>` : ''}
+
+        ${rec.counts.ambiguous && may ? rec.match.results.filter((r) => r.status === 'ambiguous').map((r) => `
+          <form method="post" action="/bank-statements/decide" style="display:flex;gap:8px;align-items:end;margin:8px 0;padding:8px;background:#fffbeb">
+            <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+            <input type="hidden" name="statement" value="${esc(st.id)}">
+            <input type="hidden" name="line" value="${r.line.sourceLine}">
+            <div style="flex:1"><strong>${esc(r.line.date)} ${bsMoney(r.line.amount, book)}</strong><br><span class="sub">${esc(r.line.description)}</span></div>
+            <label>is<br><select name="movementId">
+              <option value="">leave undecided</option>
+              ${r.candidates.map((c) => `<option value="${esc(c.movementId)}">${esc(c.ref)} — ${esc(c.kind)}</option>`).join('')}
+            </select></label>
+            <button type="submit">Match it</button>
+          </form>`).join('') : ''}
+
+        <p style="margin-top:10px">
+          ${may && rec.settled && !sign ? `
+            <form method="post" action="/bank-statements/signoff" style="display:inline">
+              <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+              <input type="hidden" name="statement" value="${esc(st.id)}">
+              <button class="primary" type="submit">Sign this period off</button>
+            </form>` : ''}
+          ${may ? `
+            <form method="post" action="/bank-statements/delete" style="display:inline;margin-left:8px"
+                  onsubmit="return confirm('Remove this imported statement? The book itself is untouched — only the bank\\'s record of it goes.')">
+              <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+              <input type="hidden" name="statement" value="${esc(st.id)}">
+              <button type="submit">Remove the import</button>
+            </form>` : ''}
+        </p>
+      </div>`;
+    }).join('');
+
+  return page({
+    title: 'Bank statements', session, active: 'bank-statements',
+    body: `
+      <h1>Bank statements</h1>
+      <p class="sub">${all.length} imported · the reconciliation itself is rendered at <a href="${esc(APP_URL)}/accounts/reconcile">/accounts/reconcile</a></p>
+      ${notice ? `<div class="ok" style="border-left:3px solid #047857;background:#ecfdf5;padding:12px 14px;margin:14px 0">${esc(notice)}</div>` : ''}
+      ${err ? `<div class="err" style="border-left:3px solid #b91c1c;background:#fef2f2;padding:12px 14px;margin:14px 0">${esc(err)}</div>` : ''}
+      ${may ? bsImportForm(session, book, {}) : '<div class="note" style="padding:12px 14px">You can read these but not import one — that needs the journal-voucher capability, held by Super Admin and Accountant.</div>'}
+      ${cards || '<div class="note" style="padding:14px">Nothing imported yet.</div>'}`
+  });
+}
+
 
 /**
  * Line rows out of a submitted form.
@@ -4000,14 +4351,29 @@ function redirect(res, location, cookie) {
   res.end();
 }
 
+/**
+ * The cap exists so a runaway request cannot eat memory, not to police document size.
+ *
+ * It was 2 MB, which was ample until the book gained imported bank statements. The raw
+ * JSON editor posts the WHOLE book back through a form field, and form encoding roughly
+ * triples JSON — every quote becomes %22, every brace %7B, every newline %0A — so a
+ * 314 KB book arrives as a 2.1 MB body and was refused. Nothing was wrong with the book
+ * or the request; the limit had simply been sized against a smaller product.
+ *
+ * 32 MB, because a year of statements for three accounts is roughly 1 MB of parsed lines
+ * plus the original files kept beside them, and a limit that has to be revisited every
+ * time the product grows is a limit that will be hit at the worst moment.
+ */
+const MAX_BODY = 32 * 1024 * 1024;
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
     const parts = [];
     req.on('data', (c) => {
       size += c.length;
-      if (size > 2 * 1024 * 1024) {
-        reject(new Error('Body too large'));
+      if (size > MAX_BODY) {
+        reject(new Error(`Body too large — over ${Math.round(MAX_BODY / 1024 / 1024)} MB`));
         req.destroy();
         return;
       }
@@ -4277,6 +4643,207 @@ const server = http.createServer(async (req, res) => {
      * The rules themselves live in lib/journal-rules.js, shared verbatim with the app
      * on :3002. Neither side gets its own opinion about what a valid voucher is.
      */
+
+    /* ============================================ bank statements & reconciliation ===
+     *
+     * Import is a THREE-step flow — read, confirm, save — and the middle step is not
+     * politeness. A statement is somebody else's record of your money, and the one way to
+     * ruin it is a column mapped the wrong way round: every transaction keeps its amount
+     * and reverses its direction, the totals stay plausible, and nothing says a word. The
+     * preview shows what was read and checks it against the running balance the bank
+     * itself printed before anything is written.
+     */
+
+    if (pathname === '/bank-statements' && req.method === 'GET') {
+      return send(res, 200, bankStatementsView(session, url.searchParams));
+    }
+
+    if (pathname === '/bank-statements/preview' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+
+      const csv = String(form.csv || '');
+      const bankId = String(form.bankId || '');
+      if (!csv.trim()) return redirect(res, '/bank-statements?error=' + encodeURIComponent('Paste the statement, or choose the file.'));
+
+      // A mapping only counts once the operator has actually seen the pickers, so it is
+      // taken from the form when the form carried one and left to the suggester otherwise.
+      const hasMapping = Object.keys(form).some((k) => k.indexOf('map_') === 0);
+      const mapping = hasMapping
+        ? {
+            date: Number(form.map_date), description: Number(form.map_description),
+            reference: Number(form.map_reference), debit: Number(form.map_debit),
+            credit: Number(form.map_credit), amount: Number(form.map_amount),
+            balance: Number(form.map_balance)
+          }
+        : null;
+
+      const preview = BSTMT.preview(csv, mapping, form.dateFormat || null);
+      return send(res, preview.error ? 422 : 200, bsPreviewView(session, {
+        csv, bankId, from: form.from, to: form.to, dateFormat: form.dateFormat, preview
+      }));
+    }
+
+    if (pathname === '/bank-statements/import' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+
+      const csv = String(form.csv || '');
+      const bankId = String(form.bankId || '');
+      const from = String(form.from || '').trim();
+      const to = String(form.to || '').trim();
+      const mapping = {
+        date: Number(form.map_date), description: Number(form.map_description),
+        reference: Number(form.map_reference), debit: Number(form.map_debit),
+        credit: Number(form.map_credit), amount: Number(form.map_amount),
+        balance: Number(form.map_balance)
+      };
+      const preview = BSTMT.preview(csv, mapping, form.dateFormat || null);
+
+      if (preview.error || (preview.problems || []).length || !(preview.lines || []).length) {
+        return send(res, 422, bsPreviewView(session, { csv, bankId, from, to, dateFormat: form.dateFormat, preview }));
+      }
+      if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(from) || !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(to)) {
+        preview.error = 'Give the period the statement covers. It decides which book entries are compared, and guessing it from the lines would quietly exclude anything the bank has not shown yet.';
+        return send(res, 422, bsPreviewView(session, { csv, bankId, from, to, dateFormat: form.dateFormat, preview }));
+      }
+
+      /**
+       * Lines outside the stated period are refused rather than trimmed.
+       *
+       * Trimming looks helpful and hides the likeliest cause: the wrong period typed, or
+       * the wrong file for this account. Either way the reconciliation that follows would
+       * be built on a set nobody chose.
+       */
+      const stray = preview.lines.filter((l) => l.date < from || l.date > to);
+      if (stray.length) {
+        preview.error = `${stray.length} line(s) fall outside ${from} to ${to} — the first is ${stray[0].date}. Either the period is wrong or this is the wrong file; nothing is trimmed to make it fit.`;
+        return send(res, 422, bsPreviewView(session, { csv, bankId, from, to, dateFormat: form.dateFormat, preview }));
+      }
+
+      const id = `BST-${bankId}-${from}`;
+      let existed = false;
+      await guardedSave(path.join(CONTENT_DIR, 'accounting.json'), session, (b) => {
+        const rows = b.bankStatements || (b.bankStatements = []);
+        existed = rows.some((s) => s.id === id);
+        const keep = rows.filter((s) => s.id !== id);
+        keep.push({
+          id, bankId, from, to,
+          openingBalance: preview.summary.openingPrinted,
+          closingBalance: preview.summary.closingPrinted,
+          balanceSource: 'file',
+          dateFormat: preview.dateFormat,
+          mapping: preview.mapping,
+          lines: preview.lines,
+          // A re-import starts clean: decisions were made about the OLD reading of the
+          // file, and carrying them onto a new one would silently reattach a person's
+          // judgement to lines they never saw.
+          decisions: [],
+          importedAt: new Date().toISOString(),
+          importedBy: session.email,
+          raw: csv
+        });
+        b.bankStatements = keep;
+      });
+
+      await audit(session, existed ? 'update' : 'create', {
+        collection: 'bankStatements', id, label: `${bankId} ${from}..${to}`,
+        summary: `${existed ? 'Re-imported' : 'Imported'} ${preview.lines.length} statement lines for ${bankId}, ${from} to ${to}${existed ? ' — previous hand-made matches were cleared' : ''}`
+      });
+      return redirect(res, '/bank-statements?saved=' + encodeURIComponent(`${preview.lines.length} lines imported.${existed ? ' This replaced an earlier import, so any matches decided by hand were cleared.' : ''}`));
+    }
+
+    if (pathname === '/bank-statements/decide' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const stId = String(form.statement || '');
+      const line = Number(form.line);
+      const movementId = String(form.movementId || '');
+
+      await guardedSave(path.join(CONTENT_DIR, 'accounting.json'), session, (b) => {
+        const st = (b.bankStatements || []).find((s) => s.id === stId);
+        if (!st) return;
+        st.decisions = (st.decisions || []).filter((d) => d.sourceLine !== line);
+        // An empty choice REMOVES the decision rather than storing a blank one, so an
+        // operator can always put a line back to undecided.
+        if (movementId) {
+          st.decisions.push({ sourceLine: line, movementId, decidedBy: session.email, decidedAt: new Date().toISOString() });
+        }
+      });
+      await audit(session, 'update', {
+        collection: 'bankStatements', id: stId, label: stId,
+        summary: movementId
+          ? `Matched statement line ${line} to ${movementId} by hand — the automatic pass had refused it as ambiguous`
+          : `Put statement line ${line} back to undecided`
+      });
+      return redirect(res, '/bank-statements?saved=' + encodeURIComponent(movementId ? 'Matched by hand.' : 'Back to undecided.'));
+    }
+
+    if (pathname === '/bank-statements/signoff' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const stId = String(form.statement || '');
+      const current = bookFile();
+      const st = (current.bankStatements || []).find((s) => s.id === stId);
+      if (!st) return redirect(res, '/bank-statements');
+
+      const rec = reconcileStored(current, st);
+      /**
+       * Refused unless it is genuinely settled.
+       *
+       * A sign-off is a claim, and this is the one place the system can stop somebody
+       * making a false one by accident. "Reconciled" is not enough on its own: a period
+       * can agree perfectly while carrying charges the book has never recorded, and
+       * signing that off would freeze the omission in place with a name against it.
+       */
+      if (!rec.settled) {
+        const why = rec.blockers.concat(
+          rec.difference !== 0 ? [`The two sides differ by ${rec.difference}.`] : [],
+          rec.requiresPosting ? [`${rec.requiresPosting} item(s) on the statement have not been recorded in the book. Post them first — a signed period with unrecorded bank charges is an omission with somebody's name on it.`] : []
+        );
+        return redirect(res, '/bank-statements?error=' + encodeURIComponent(why.join(' ')));
+      }
+
+      const id = `BRC-${st.bankId}-${st.from}`;
+      await guardedSave(path.join(CONTENT_DIR, 'accounting.json'), session, (b) => {
+        const rows = b.bankReconciliations || (b.bankReconciliations = []);
+        b.bankReconciliations = rows.filter((r) => r.id !== id).concat([{
+          id, bankId: st.bankId, statementId: st.id, from: st.from, to: st.to,
+          closedAt: new Date().toISOString(),
+          closedBy: session.email,
+          // Stored on purpose. Everything else in this book is derived so it cannot go
+          // stale; a sign-off is a claim made at a moment, and keeping the number that was
+          // true then is what lets the app notice a later edit invalidating it.
+          differenceAtClose: rec.difference,
+          bookClosingAtClose: rec.bookClosing
+        }]);
+      });
+      await audit(session, 'create', {
+        collection: 'bankReconciliations', id, label: `${st.bankId} ${st.from}..${st.to}`,
+        summary: `Signed off the bank reconciliation for ${st.bankId}, ${st.from} to ${st.to}, difference ${rec.difference}`
+      });
+      return redirect(res, '/bank-statements?saved=' + encodeURIComponent('Signed off.'));
+    }
+
+    if (pathname === '/bank-statements/delete' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const stId = String(form.statement || '');
+      let gone = null;
+      await guardedSave(path.join(CONTENT_DIR, 'accounting.json'), session, (b) => {
+        gone = (b.bankStatements || []).find((s) => s.id === stId) || null;
+        b.bankStatements = (b.bankStatements || []).filter((s) => s.id !== stId);
+        // The sign-off goes with it. A sign-off without the statement it was made against
+        // is a claim nobody can check.
+        b.bankReconciliations = (b.bankReconciliations || []).filter((r) => r.statementId !== stId);
+      });
+      await audit(session, 'delete', {
+        collection: 'bankStatements', id: stId, label: stId,
+        summary: gone ? `Removed the imported statement for ${gone.bankId}, ${gone.from} to ${gone.to}, and any sign-off made against it` : 'Removed an imported statement',
+        before: gone
+      });
+      return redirect(res, '/bank-statements?saved=' + encodeURIComponent('Import removed. The book itself is unchanged.'));
+    }
 
     if (pathname === '/journal' && req.method === 'GET') {
       return send(res, 200, journalView(session, url.searchParams));

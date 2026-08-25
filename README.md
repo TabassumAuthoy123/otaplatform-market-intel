@@ -1384,6 +1384,7 @@ node scripts/verify-srs.mjs      # 169 checks — specification, hardening, auto
 node scripts/verify-admin.mjs    # 44 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 23 checks — manual vouchers, and the reconciliation surviving them
+node scripts/verify-bank.mjs     # 42 checks — a bank statement against the book, and every refusal
 node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```
 
@@ -1400,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**332 checks** across the five suites against the running app: each one loads a
+**374 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **169 + 44 + 39 + 23 + 57
+should accept on trust, including from me. It currently reports **169 + 44 + 39 + 23 + 42 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -1495,6 +1496,173 @@ included and would otherwise find out after signing.
 
 Public, with no session and no figure from anybody's book: it describes the product,
 not an installation.
+
+---
+
+## Bank reconciliation
+
+The book knew what it thought each bank account held. It had no way to ask the bank.
+That gap is where a travel agency actually loses money — a cheque nobody banked, a
+charge nobody recorded, a debit nobody authorised — and none of it is visible from
+inside the book, because from inside the book everything reconciles with itself.
+
+Import a statement at **Accounting → Bank statements** in the portal; the reconciliation
+renders at `/accounts/reconcile`.
+
+### There is no built-in layout for any bank, on purpose
+
+The obvious feature is a dropdown: Dutch-Bangla, BRAC, City Bank, bKash. It is not
+built. **I have not seen a real export from any of them**, and a layout guessed at is
+worse than none — it puts money in the wrong column while looking like it knows what it
+is doing. Same rule as the carrier contracts and the tax rates: nothing here is invented.
+
+What is built instead is a mapping stated once per account, and the checks that make a
+wrong mapping obvious immediately rather than at year end:
+
+**The running balance is the check.** The bank has already told you what each line does
+to the balance. If the reading is right, every consecutive pair satisfies
+`previous ± amount = current`. Map Withdrawal and Deposit the wrong way round and it
+fails on the first pair — measured on the test fixture, 125 breaks out of 126 lines,
+before anything is saved. A statement with no balance column is not refused; it is
+labelled as unverifiable.
+
+**A date column that reads two ways is refused, not guessed.** `03/04/2026` is the third
+of April and the fourth of March. The format is resolved against the *whole column* —
+one day over twelve settles it — and when the column is genuinely ambiguous the operator
+is asked. Guessing would move transactions by up to eleven months in a system whose
+entire purpose is agreeing with somebody else about when money moved. A date that does
+not exist (`31/02`) is refused rather than coerced into `2026-02-31`, a string that sorts
+like a date, is not one, and would sit between the 28th and the 1st in every range filter
+in the book.
+
+**Lines outside the stated period are refused, never trimmed.** Trimming looks helpful
+and hides the likeliest cause: the wrong period typed, or the wrong file for this account.
+
+### A match must be unique to be automatic
+
+Cheques clear late, so the matcher has to tolerate a few days of drift. The moment it
+does, this book's own data becomes dangerous: **twenty-nine amounts repeat on different
+days** through the Dutch-Bangla account, two payments of exactly ৳30,500 one day apart
+among them. A matcher that picks the nearest is right about half the time and silent
+either way, and the accountant finds out when a supplier calls about a bill the book says
+is settled.
+
+Three passes, strongest first, and a book entry consumed by an earlier pass is gone:
+
+| Strength | What it means |
+|---|---|
+| `reference` | the bank's narration named the voucher — `CHQ SFT-PAY-0048` |
+| `exact_date` | same day, same amount, same direction |
+| `within_window` | same amount and direction, up to five days later |
+
+**Anything not unique at its strength matches nothing** — and that cuts both ways: a line
+fitting two entries is left alone, and two lines fitting one entry both stand down.
+
+**Amounts are exact. There is no tolerance band.** A bank does not round. If the book
+says 30,500 and the statement says 30,450, that fifty is a charge, a fee or an error, and
+every one of those needs seeing. A "close enough" match would swallow exactly the
+differences this exists to find.
+
+A missed match leaves a line on a list somebody reads. A wrong match hides a real
+difference inside a matched pair. The two are not symmetric, so this does not trade them
+off evenly — it takes the visible failure every time.
+
+### The statement, and what it refuses to claim
+
+```
+Per the bank                              Per the book
+  Balance per the statement                 Balance per the book
+  + deposits in transit                     + credits not in the book
+  - unpresented payments                    - debits not in the book
+  = adjusted bank balance          ===      = adjusted book balance
+```
+
+Work it through and the two sides are algebraically identical — **but only while the two
+opening balances are the same number.** If last month was never finished, its unfinished
+business falls straight through to the difference. That is the property worth having: a
+reconciliation whose two sides always agreed would be a tautology that reassures
+everybody and proves nothing. This one agrees exactly when last month was closed and
+every line this month has been classified, and names the gap when it was not.
+
+**An unresolved ambiguity blocks the verdict.** An ambiguous line *is* in the book — we
+just do not know which entry. Counting it as "the bank did this alone" would be a lie
+that happens to balance. It is excluded from both adjustment columns and the statement is
+marked incomplete.
+
+**Reconciled is not the same as finished.** A statement can agree perfectly while
+carrying four items the book has never recorded — a maintenance fee, excise duty,
+interest, an unexplained ATM debit. The arithmetic works *because* those sit in the
+adjustment column. Nothing has been posted, the P&L is still missing the charges, and
+next month they will still be there. So `reconciled` states agreement and `settled`
+states the work, and **sign-off is refused unless it is settled** — a signed period with
+unrecorded bank charges is an omission with somebody's name on it.
+
+**Deposits in transit and unpresented cheques get no journal entry at all.** The book is
+already right; the bank is behind. Posting an adjustment for those is the classic way a
+reconciliation double-counts, which is why they live in the other column.
+
+**A sign-off records the difference that was true when it was signed.** Everything else
+in this book is derived so it cannot go stale; this is the one deliberate exception. A
+voucher back-dated into a closed reconciliation moves the book's closing balance, the
+stored number does not, and the screen says so instead of showing a tick over a figure
+that has since changed.
+
+### Two implementations, and the check that stops them drifting
+
+`bookMovements` exists twice — TypeScript in `lib/bankrec.ts` for the app, plain JS in
+`admin/server.js` for the portal, which cannot import TypeScript. **Eight** record types
+move money through a bank account: receipts, payments, expenses, refunded credit notes,
+transfers in, transfers out, supplier credit notes, and supplier deposits.
+
+That list is not obvious. Preparing this I counted the Dutch-Bangla movements twice from
+first principles and got it wrong both times — 188, then 192, against a true 192. The
+four I dropped were supplier deposits, which do not look like bank movements until you
+remember an agency wires a float to its consolidator. A matcher that forgets a kind
+reports real transactions as missing from the book, and the accountant hunts a bank error
+that never happened.
+
+So the app side delegates to `bankBook` — the same derivation the Bank screen already
+uses — `assertComplete` fails if the flattened net stops matching the bank column, and
+`verify-bank.mjs` asserts the app and the portal agree on the counts they render.
+
+### What it found while being built
+
+The book gained imported statements and the portal's raw-JSON editor started refusing to
+save: form encoding roughly triples JSON, so a 314 KB book arrives as a 2.1 MB body
+against a 2 MB cap sized for a smaller product. Raised to 32 MB with the arithmetic
+written down, because a limit that has to be revisited every time the product grows will
+be hit at the worst moment.
+
+### Known limits, stated
+
+**A foreign-currency account is not modelled.** `Bank` has no currency field, so "City
+Bank — USD" is a name and the book values it in taka. Reconciling that against a real USD
+statement would be wrong, and nothing here pretends otherwise.
+
+**bKash Merchant is treated as a bank account** and takes thirty MFS receipts. An MFS
+settlement report is not shaped like a bank statement; the column mapping will carry it,
+but none of that has been tested against a real bKash export.
+
+**Import is paste or file-picker, not upload.** The portal is `node:http` with no
+multipart parser; the picker reads the file in the browser and fills the box, so an
+operator does not have to know the difference.
+
+### `verify-bank.mjs`
+
+42 checks. The fixture is **generated from the book's own 192 movements** by
+`scripts/make-bank-statement.mjs` and then broken in seven specific ways — a cheque
+presented four days late, an unpresented payment, a deposit in transit, two bank charges,
+an interest credit and an unexplained ATM debit. A hand-written fixture tests the cases
+its author thought of; this one carries the awkwardness already in the data.
+
+It proves: the parser and the balance chain, a swapped mapping caught, an ambiguous date
+refused, an impossible date refused, preview writing nothing, a stray period refused, the
+import storing its mapping and the original file, the app rendering all four bank-only
+items, both sides agreeing at exactly zero, `settled` staying false with four items
+unposted, no entry matched twice, ambiguity refusing a verdict from both directions, a
+near amount and a wrong direction and an out-of-window date all refused, an opening gap
+surfacing by name, sign-off refused while items are unrecorded, a Manager refused at the
+route, the app and portal agreeing on their counts, and the book restored byte for byte.
 
 ## Journal vouchers, and what they cost the reconciliation
 
