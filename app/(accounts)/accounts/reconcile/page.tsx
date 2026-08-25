@@ -180,11 +180,31 @@ export default async function ReconcilePage({
           sub={rec.counts.ambiguous ? 'more than one entry fits' : 'nothing ambiguous'}
           tone={rec.counts.ambiguous ? 'warn' : 'good'}
         />
+{/*
+          Two tiles where there was one, because "no book entry fits" and "the bank did
+          this alone" are different claims and only a person may make the second.
+
+          Before they were separated, a cheque from an unreconciled month and a deposit
+          the bank had aggregated both counted as bank charges, the adjustment draft
+          offered to post them, and the money would have been recorded twice — while the
+          difference stayed at zero because the matching book entries were sitting
+          outstanding in the other column.
+        */}
         <Tile
-          label="Bank knows, book does not"
+          label="Classified as the bank's own"
           value={String(rec.counts.bankOnly)}
-          sub={rec.counts.bankOnly ? 'charges, interest, direct debits — post these' : 'nothing outstanding'}
+          sub={rec.counts.bankOnly ? 'charges, interest, direct debits — post these' : 'none'}
           tone={rec.counts.bankOnly ? 'warn' : 'good'}
+        />
+        <Tile
+          label="Unclassified"
+          value={String(rec.counts.unclassified + rec.counts.groupCandidate)}
+          sub={
+            rec.counts.unclassified + rec.counts.groupCandidate
+              ? 'left OUT of the arithmetic until somebody says what they are'
+              : 'every line accounted for'
+          }
+          tone={rec.counts.unclassified + rec.counts.groupCandidate ? 'bad' : 'good'}
         />
         <Tile
           label="Book knows, bank does not"
@@ -263,11 +283,45 @@ export default async function ReconcilePage({
         </Panel>
       )}
 
+      {/* ------------------------------------------------------ unclassified */}
+      {(rec.counts.unclassified > 0 || rec.counts.groupCandidate > 0) && (
+        <Panel
+          title="Matching nothing in the book, and not yet explained"
+          sub={`Worth ${money(rec.unclassifiedTotal, sym)}, and deliberately left out of the arithmetic above — which is why the difference is not zero. "Nothing fits" is not the same as "the bank did this alone": it could be a cheque from a month nobody has reconciled, or several entries the bank banked together.`}
+          actions={
+            <a
+              href={`${ADMIN_URL}/bank-statements`}
+              className="rounded-lg border border-hair bg-white px-3.5 py-2 text-[12.5px] font-semibold text-navy-900 hover:border-teal-500 hover:text-teal-700"
+            >
+              Explain them in the portal ↗
+            </a>
+          }
+        >
+          <Table head={['Date', 'Narration', 'Direction', 'Amount', 'What it might be']} right={[3]}>
+            {rec.match.results
+              .filter((r: { status: string; classification?: string }) => (r.status === 'unmatched' && !r.classification) || r.status === 'group_candidate')
+              .map((r: { line: { sourceLine: number; date: string; description: string; amount: number; direction: string }; status: string; why: string; groups?: { ref: string }[][] }) => (
+                <tr key={r.line.sourceLine} className="hover:bg-surface">
+                  <Td mono>{r.line.date}</Td>
+                  <Td>{r.line.description}</Td>
+                  <Td>{r.line.direction === 'in' ? 'Money in' : 'Money out'}</Td>
+                  <Td right mono className="font-semibold text-red-700">{money(r.line.amount, sym)}</Td>
+                  <Td className="text-muted">
+                    {r.status === 'group_candidate' && r.groups && r.groups.length
+                      ? `possibly ${r.groups[0].map((g) => g.ref).join(' + ')}`
+                      : r.why}
+                  </Td>
+                </tr>
+              ))}
+          </Table>
+        </Panel>
+      )}
+
       {/* -------------------------------------------------- bank knows, book does not */}
       {rec.counts.bankOnly > 0 && (
         <Panel
           title="On the statement, never recorded in the book"
-          sub="Bank charges, excise duty, interest, direct debits. Real transactions that happened; the book has simply not been told. These need a journal voucher — the counter-account is yours to choose, because only you know whether a 3,000 debit is excise duty or a standing order nobody cancelled."
+          sub="Somebody has looked at each of these and said it is the bank's own — a charge, excise duty, interest, a direct debit. Real transactions that happened; the book has simply not been told. These need a journal voucher, and the counter-account is yours to choose, because only you know whether a 3,000 debit is excise duty or a standing order nobody cancelled."
           actions={
             <a
               href={`${ADMIN_URL}/journal`}
@@ -315,7 +369,19 @@ export default async function ReconcilePage({
                   <tr key={mv.id} className="hover:bg-surface">
                     <Td mono>{mv.date}</Td>
                     <Td mono>{mv.ref}</Td>
-                    <Td className="text-muted">{mv.kind.replace(/_/g, ' ')}</Td>
+                    <Td className="text-muted">
+                    {mv.kind.replace(/_/g, ' ')}
+                    {/*
+                      A carried item is one an earlier statement already failed to show.
+                      Worth marking, because a cheque outstanding across two statements is
+                      a different conversation from one written last week.
+                    */}
+                    {mv.date < statement.from && (
+                      <span className="ml-2 rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-800">
+                        from an earlier period
+                      </span>
+                    )}
+                  </Td>
                     <Td>{mv.direction === 'in' ? 'Deposit in transit' : 'Unpresented'}</Td>
                     <Td right mono>{money(mv.amount, sym)}</Td>
                     {/*

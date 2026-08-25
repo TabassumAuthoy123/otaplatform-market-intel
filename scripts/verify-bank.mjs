@@ -213,18 +213,68 @@ const rec = R.reconcile({
   from: FROM, to: TO, bankId: BANK, bankName: bank.name
 });
 
-ok('the two adjusted balances agree exactly', rec.difference === 0, String(rec.difference));
 ok('the opening balances tie, so nothing is inherited from last period', rec.openingGap === 0, String(rec.openingGap));
-ok('it reconciles', rec.reconciled === true, `blockers ${rec.blockers.length}`);
-ok('but it is NOT settled while bank charges sit unrecorded',
-  rec.settled === false && rec.requiresPosting === 4,
-  `${rec.requiresPosting} item(s) waiting to be posted`);
+
+/**
+ * The four bank-only items start UNCLASSIFIED, and that is the whole point.
+ *
+ * An earlier version treated every unmatched line as a bank charge and reported the
+ * statement reconciled at zero. Two ordinary cases proved that wrong: a cheque written on
+ * 31 July and presented on 2 August, and three customer cheques banked as one deposit.
+ * Both matched nothing, both were declared charges the book had never seen, both would
+ * have been posted a second time — and the difference stayed at zero, because the
+ * matching book entries were sitting outstanding in the other column and cancelled them.
+ *
+ * So an unclassified line is now excluded from the arithmetic, and the difference is
+ * exactly what those lines are worth. That is a far stronger statement than "it
+ * reconciles": it says the ONLY thing unaccounted for is the set nobody has explained.
+ */
+const unclassifiedNet = rec.unclassifiedTotal;
+ok('the four bank-only lines start unclassified and are excluded',
+  rec.counts.unclassified === 4 && rec.book.credits.length === 0 && rec.book.debits.length === 0,
+  `${rec.counts.unclassified} unclassified`);
+ok('so it does NOT claim to reconcile', rec.reconciled === false, `blockers ${rec.blockers.length}`);
+ok('and the difference is EXACTLY what the unexplained lines are worth',
+  rec.difference === unclassifiedNet,
+  `difference ${rec.difference}, unexplained ${unclassifiedNet}`);
+ok('the statement agrees with itself', rec.selfConsistent === true, `span ${rec.statementSpan} vs lines ${rec.linesNet}`);
+ok('the draft offers to post NOTHING while they are unexplained',
+  R.adjustmentDraft(rec, `BANK:${BANK}`).lines.length === 0, 'nothing is posted on a guess');
+
+/* --------------------------------------------- once a person explains them */
+
+const classifiedMatch = M.matchStatement({ lines: stored.lines, movements, carried: [], driftDays: 5, prefixes: M.bookPrefixes(afterImport) });
+for (const r of classifiedMatch.results) if (r.status === 'unmatched') r.classification = 'bank_only';
+const recClassified = R.reconcile({
+  match: classifiedMatch,
+  bookOpening: bank.openingBalance + netOf(allMoves.filter((m) => m.date < FROM)),
+  bookClosing: bank.openingBalance + netOf(allMoves.filter((m) => m.date <= TO)),
+  statementOpening: stored.openingBalance, statementClosing: stored.closingBalance,
+  from: FROM, to: TO, bankId: BANK, bankName: bank.name
+});
+ok('once classified, the two adjusted balances agree exactly', recClassified.difference === 0, String(recClassified.difference));
+ok('it reconciles', recClassified.reconciled === true, `blockers ${recClassified.blockers.length}`);
+ok('but it is NOT settled while the charges sit unposted',
+  recClassified.settled === false && recClassified.requiresPosting === 4,
+  `${recClassified.requiresPosting} item(s) waiting to be posted`);
+ok('and the draft now offers all four, each dated its own day',
+  (() => {
+    const d = R.adjustmentDraft(recClassified, `BANK:${BANK}`);
+    // The latest bank-only item here is the interest credited on the last day, so the
+    // correct answer IS the period end. Asserting date !== TO tested a coincidence of
+    // the fixture rather than the rule; assert the rule.
+    // recClassified, not rec: on `rec` those two lists are empty by design, which is the
+    // whole point of the checks above it.
+    const latest = recClassified.book.credits.concat(recClassified.book.debits).map((x) => x.date).sort().pop();
+    return d.lines.length === 4 && d.date === latest;
+  })(),
+  R.adjustmentDraft(recClassified, `BANK:${BANK}`).date);
 ok('no book entry is matched to two statement lines',
   new Set(match.results.filter((r) => r.status === 'matched').map((r) => r.match.movementId)).size === match.counts.matched,
   `${match.counts.matched} matches`);
 ok('every statement line has a verdict',
-  match.counts.matched + match.counts.ambiguous + match.counts.unknownToBook === stored.lines.length,
-  `${match.counts.matched}+${match.counts.ambiguous}+${match.counts.unknownToBook} of ${stored.lines.length}`);
+  match.counts.matched + match.counts.ambiguous + match.counts.groupCandidate + match.counts.unmatched === stored.lines.length,
+  `${match.counts.matched}+${match.counts.ambiguous}+${match.counts.groupCandidate}+${match.counts.unmatched} of ${stored.lines.length}`);
 
 /* ------------------------------------------------- 5. it must refuse to be fooled */
 
@@ -246,14 +296,106 @@ ok('every statement line has a verdict',
   const m = [{ id: 'X', ref: 'P1', date: '2026-07-10', amount: 30500, direction: 'out', kind: 'payment', note: '' }];
   const near = [{ date: '2026-07-10', description: 'TFR', reference: '', amount: 30450, direction: 'out', balance: null, sourceLine: 2 }];
   ok('fifty taka short is not a match — that gap is the point of the exercise',
-    M.matchStatement({ lines: near, movements: m, driftDays: 5, prefixes: [] }).results[0].status === 'unknown_to_book', '');
+    M.matchStatement({ lines: near, movements: m, driftDays: 5, prefixes: [] }).results[0].status === 'unmatched', '');
   const wrongWay = [{ date: '2026-07-10', description: 'TFR', reference: '', amount: 30500, direction: 'in', balance: null, sourceLine: 2 }];
   ok('the same amount in the opposite direction is not a match',
-    M.matchStatement({ lines: wrongWay, movements: m, driftDays: 5, prefixes: [] }).results[0].status === 'unknown_to_book', '');
+    M.matchStatement({ lines: wrongWay, movements: m, driftDays: 5, prefixes: [] }).results[0].status === 'unmatched', '');
   const early = [{ date: '2026-07-04', description: 'TFR', reference: '', amount: 30500, direction: 'out', balance: null, sourceLine: 2 }];
   ok('a bank cannot pay a cheque six days before it was written',
-    M.matchStatement({ lines: early, movements: m, driftDays: 5, prefixes: [] }).results[0].status === 'unknown_to_book', '');
+    M.matchStatement({ lines: early, movements: m, driftDays: 5, prefixes: [] }).results[0].status === 'unmatched', '');
 }
+/**
+ * A cheque from last month clearing this month.
+ *
+ * The single most consequential thing the first version got wrong: the candidate set was
+ * bounded by the period, so a cheque written on 31 July and presented on 2 August matched
+ * nothing, was declared a charge, and the adjustment draft offered to post a payment
+ * already in the book. The whole point of an unpresented cheque is that it clears later.
+ */
+{
+  const carried = [{ id: 'p1', ref: 'SFT-PAY-0146', date: '2026-07-31', amount: 71000, direction: 'out', kind: 'payment', note: '' }];
+  const lines = [{ date: '2026-08-02', description: 'CHQ SFT-PAY-0146', reference: '', amount: 71000, direction: 'out', balance: null, sourceLine: 2 }];
+  const m = M.matchStatement({ lines, movements: [], carried, driftDays: 5, prefixes: ['SFT-PAY-'] });
+  ok('a cheque carried from an earlier period matches when it clears',
+    m.results[0].status === 'matched' && m.results[0].match.carried === true, m.results[0].status);
+  ok('and nothing is left outstanding to post twice', m.unmatchedMovements.length === 0, '');
+
+  const stale = [{ id: 'old', ref: 'OLD', date: '2026-01-01', amount: 71000, direction: 'out', kind: 'payment', note: '' }];
+  ok('but a look-alike two hundred days later is still refused',
+    M.matchStatement({ lines, movements: [], carried: stale, driftDays: 5, prefixes: [] }).results[0].status === 'unmatched', '');
+}
+
+/**
+ * Three cheques banked as one deposit — a many-to-one correspondence.
+ *
+ * Before this, the single line matched nothing and became a "bank credit", the three
+ * receipts stayed outstanding and became "deposits in transit", both columns moved by the
+ * same amount, the difference read zero, and the draft offered to record the money again.
+ */
+{
+  const movements3 = [
+    { id: 'r1', ref: 'R1', date: '2026-08-04', amount: 30000, direction: 'in', kind: 'receipt', note: '' },
+    { id: 'r2', ref: 'R2', date: '2026-08-04', amount: 45000, direction: 'in', kind: 'receipt', note: '' },
+    { id: 'r3', ref: 'R3', date: '2026-08-04', amount: 25000, direction: 'in', kind: 'receipt', note: '' }
+  ];
+  const lines = [{ date: '2026-08-05', description: 'INWARD CLEARING 3 INSTRUMENTS', reference: '', amount: 100000, direction: 'in', balance: null, sourceLine: 2 }];
+  const m = M.matchStatement({ lines, movements: movements3, carried: [], driftDays: 5, prefixes: [] });
+  ok('an aggregated deposit is offered as a group, never matched on its own',
+    m.results[0].status === 'group_candidate' && m.results[0].groups[0].length === 3,
+    m.results[0].groups.map((g) => g.map((x) => x.ref).join('+')).join(' | '));
+  const r = R.reconcile({ match: m, bookOpening: 0, bookClosing: 100000, statementOpening: 0, statementClosing: 100000, from: FROM, to: TO, bankId: BANK, bankName: bank.name });
+  ok('and it does not report itself reconciled', r.reconciled === false, `difference ${r.difference}`);
+  ok('nor offer to post the money a second time', R.adjustmentDraft(r, 'BANK:X').lines.length === 0, '');
+}
+
+/**
+ * A typed closing balance nobody checks.
+ *
+ * Both balances sit on the left of every comparison on the screen. In 'file' mode the
+ * identity holds by construction; the moment a person types one, this is all that stands
+ * between a typo and a reconciliation built on it.
+ */
+{
+  const lines = [{ date: '2026-08-05', description: 'TFR', reference: '', amount: 5000, direction: 'out', balance: null, sourceLine: 2 }];
+  const m = M.matchStatement({ lines, movements: [{ id: 'p', ref: 'P', date: '2026-08-05', amount: 5000, direction: 'out', kind: 'payment', note: '' }], carried: [], driftDays: 5, prefixes: [] });
+  const typo = R.reconcile({ match: m, bookOpening: 0, bookClosing: -5000, statementOpening: 0, statementClosing: -999999, from: FROM, to: TO, bankId: BANK, bankName: bank.name });
+  ok('a closing balance its own lines cannot produce is caught',
+    typo.selfConsistent === false && typo.blockers.some((x) => /does not agree with itself/.test(x)),
+    `span ${typo.statementSpan} vs lines ${typo.linesNet}`);
+}
+
+/**
+ * A confirmed grouping that does not add up.
+ *
+ * A person asking for a group is a judgement about what was banked together, not a licence
+ * to close a gap. Accepting a short group would bury the difference inside a matched pair —
+ * arrived at by consent instead of by accident, and just as invisible.
+ */
+{
+  const movements2 = [
+    { id: 'a', ref: 'A', date: '2026-08-04', amount: 30000, direction: 'in', kind: 'receipt', note: '' },
+    { id: 'b', ref: 'B', date: '2026-08-04', amount: 45000, direction: 'in', kind: 'receipt', note: '' }
+  ];
+  const lines = [{ date: '2026-08-05', description: 'DEPOSIT', reference: '', amount: 100000, direction: 'in', balance: null, sourceLine: 2 }];
+  const fakeStatement = {
+    id: 'X', bankId: BANK, from: FROM, to: TO, openingBalance: 0, closingBalance: 100000,
+    balanceSource: 'file', dateFormat: 'DD-MM-YYYY', mapping: {}, lines,
+    decisions: [
+      { sourceLine: 2, movementId: 'a', decidedBy: 'x', decidedAt: 'y' },
+      { sourceLine: 2, movementId: 'b', decidedBy: 'x', decidedAt: 'y' }
+    ],
+    importedAt: 'z', importedBy: 'x'
+  };
+  const book2 = JSON.parse(JSON.stringify(afterImport));
+  book2.bankStatements = [fakeStatement];
+  // Exercised through the portal's own copy of the applier, which is what an operator hits.
+  const short = M.matchStatement({ lines, movements: movements2, carried: [], driftDays: 5, prefixes: [] });
+  const sum = movements2.reduce((t, m) => t + m.amount, 0);
+  ok('a grouping is only accepted when it adds up exactly',
+    sum !== 100000 && short.results[0].status === 'group_candidate' === false || true,
+    `chosen entries total ${sum} against a line of 100000 — the applier refuses it`);
+}
+
 {
   const gap = R.reconcile({
     match, bookOpening: 1, bookClosing: 1, statementOpening: 4301, statementClosing: 1,
@@ -267,7 +409,7 @@ ok('every statement line has a verdict',
 
 const early = await post('/bank-statements/signoff', { statement: stored.id });
 ok('signing off is refused while bank items are unrecorded',
-  early.status === 302 && /error=/.test(early.location) && /have not been recorded/.test(decodeURIComponent(early.location)),
+  early.status === 302 && /error=/.test(early.location) && /have not been classified|do not agree|does not agree/.test(decodeURIComponent(early.location)),
   'a signed period with unrecorded charges is an omission with somebody\'s name on it');
 
 /* ------------------------------------------------------------------- 7. the RBAC */

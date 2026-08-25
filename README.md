@@ -1384,7 +1384,7 @@ node scripts/verify-srs.mjs      # 169 checks — specification, hardening, auto
 node scripts/verify-admin.mjs    # 44 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 23 checks — manual vouchers, and the reconciliation surviving them
-node scripts/verify-bank.mjs     # 42 checks — a bank statement against the book, and every refusal
+node scripts/verify-bank.mjs     # 56 checks — a bank statement against the book, and every refusal
 node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```
 
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**374 checks** across the six suites against the running app: each one loads a
+**388 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **169 + 44 + 39 + 23 + 42 + 57
+should accept on trust, including from me. It currently reports **169 + 44 + 39 + 23 + 56 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -1589,6 +1589,48 @@ just do not know which entry. Counting it as "the bank did this alone" would be 
 that happens to balance. It is excluded from both adjustment columns and the statement is
 marked incomplete.
 
+### What an adversarial review found, and what changed
+
+Three independent designs for this were generated and put through nine adversarial
+reviews while the implementation was being written. Two findings were real, both
+reproduced against the shipped code, and both were the same failure wearing different
+clothes: **the reconciliation reported itself reconciled, with a difference of zero, and
+offered a journal voucher that would have recorded money the book already held.**
+
+| The case | What happened | Why it was invisible |
+|---|---|---|
+| A cheque written 31 July, presented 2 August | The candidate set was bounded by the period, so it matched nothing in August, was declared a bank charge, and the draft offered to post it | The July payment sat outstanding in the *other* column, so both sides moved by 71,000 and the difference stayed at zero |
+| Three customer cheques banked as one deposit | The single credit matched nothing and became a "bank credit"; the three receipts became "deposits in transit" | Same shape — both columns moved by 100,000 and the arithmetic tied |
+
+The root cause was one overclaim. The verdict `unknown_to_book` said *the bank did this
+alone* when all the matcher actually knew was *nothing in the pool fits*. Three changes:
+
+**Unmatched is now just `unmatched`, and it does not enter the arithmetic.** A line
+becomes a bank item when a person classifies it, never by default. Unclassified lines are
+excluded, which makes the difference **exactly what they are worth** — a far stronger
+statement than "it reconciles". On the test fixture the four bank-only items start
+unexplained and the screen reads **−৳13,624**, not a green tick.
+
+**Outstanding items are carried forward.** A cheque that did not clear last month is in
+this month's candidate pool, so it matches when it does clear. The carry-forward floor is
+the *earliest imported statement* for that account: before that there is no evidence a
+movement is outstanding, only that nobody looked. Without the floor, one August import
+would declare all sixty-six payments since the book opened to be unpresented cheques. A
+carried item gets a ninety-day window rather than five — past that it is not an
+unpresented cheque, it is one nobody banked, and matching a look-alike would bury that.
+
+**Many-to-one is detected and offered, never applied.** A bounded subset search finds
+groups of outstanding entries summing exactly to a line. It produces a decision for a
+person, and **a confirmed group is still refused unless it adds up exactly** — a grouping
+is a judgement about what was banked together, not a licence to close a gap.
+
+Two smaller findings, also fixed: **the statement is now checked against itself** —
+closing minus opening must equal what the lines add up to, which is the only thing
+standing between a typed balance and a reconciliation built on a typo — and **each
+adjustment line is dated the day it happened** rather than the period end, which had been
+putting a charge taken on the 3rd into the 31st and would refuse the whole voucher if the
+period end happened to be locked.
+
 **Reconciled is not the same as finished.** A statement can agree perfectly while
 carrying four items the book has never recorded — a maintenance fee, excise duty,
 interest, an unexplained ATM debit. The arithmetic works *because* those sit in the
@@ -1649,7 +1691,7 @@ operator does not have to know the difference.
 
 ### `verify-bank.mjs`
 
-42 checks. The fixture is **generated from the book's own 192 movements** by
+56 checks. The fixture is **generated from the book's own 192 movements** by
 `scripts/make-bank-statement.mjs` and then broken in seven specific ways — a cheque
 presented four days late, an unpresented payment, a deposit in transit, two bank charges,
 an interest credit and an unexplained ATM debit. A hand-written fixture tests the cases
@@ -1658,11 +1700,15 @@ its author thought of; this one carries the awkwardness already in the data.
 It proves: the parser and the balance chain, a swapped mapping caught, an ambiguous date
 refused, an impossible date refused, preview writing nothing, a stray period refused, the
 import storing its mapping and the original file, the app rendering all four bank-only
-items, both sides agreeing at exactly zero, `settled` staying false with four items
-unposted, no entry matched twice, ambiguity refusing a verdict from both directions, a
-near amount and a wrong direction and an out-of-window date all refused, an opening gap
-surfacing by name, sign-off refused while items are unrecorded, a Manager refused at the
-route, the app and portal agreeing on their counts, and the book restored byte for byte.
+items, **the difference equalling exactly the unexplained lines**, the draft offering
+nothing while they are unexplained, both sides agreeing once they are classified,
+`settled` staying false with four items unposted, no entry matched twice, ambiguity refusing a verdict from both directions, a
+near amount and a wrong direction and an out-of-window date all refused, **a carried-forward cheque
+matching when it clears and a look-alike two hundred days later still refused**, **an
+aggregated deposit offered as a group and never posted twice**, **a confirmed group
+refused when it does not add up**, **a typed closing balance its own lines cannot produce
+caught**, an opening gap surfacing by name, sign-off refused while items are unexplained,
+a Manager refused at the route, the app and portal agreeing on their counts, and the book restored byte for byte.
 
 ## Journal vouchers, and what they cost the reconciliation
 

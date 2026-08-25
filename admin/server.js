@@ -1559,29 +1559,89 @@ function bookBalances(book, bankId, from, to) {
 }
 
 /** Build the whole reconciliation for one stored statement. */
+/**
+ * What was outstanding when this period began. Mirrors carriedForward in lib/bankrec.ts.
+ *
+ * The floor is the earliest imported statement for the account: before that there is no
+ * evidence a movement is outstanding, only that nobody has looked. Without the floor, one
+ * August import would declare every payment since the book opened to be an unpresented
+ * cheque.
+ */
+function carriedForwardJs(book, bankId, from) {
+  const earlier = (book.bankStatements || [])
+    .filter((s) => s.bankId === bankId && s.to < from)
+    .sort((a, b) => String(a.from).localeCompare(String(b.from)));
+  if (!earlier.length) return [];
+
+  const seen = new Set();
+  for (const st of earlier) {
+    const movements = bookMovementsJs(book, bankId, st.from, st.to);
+    const m = BMATCH.matchStatement({
+      lines: st.lines, movements, carried: [], driftDays: 5, prefixes: BMATCH.bookPrefixes(book)
+    });
+    for (const r of m.results) if (r.status === 'matched' && r.match) seen.add(r.match.movementId);
+    for (const d of st.decisions || []) seen.add(d.movementId);
+  }
+
+  const before = new Date(from + 'T00:00:00Z');
+  before.setUTCDate(before.getUTCDate() - 1);
+  return bookMovementsJs(book, bankId, earlier[0].from, before.toISOString().slice(0, 10))
+    .filter((m) => !seen.has(m.id));
+}
+
 function reconcileStored(book, statement) {
   const bank = (book.banks || []).find((b) => b.id === statement.bankId);
   const movements = bookMovementsJs(book, statement.bankId, statement.from, statement.to);
+  const carried = carriedForwardJs(book, statement.bankId, statement.from);
   const match = BMATCH.matchStatement({
     lines: statement.lines,
     movements,
+    carried,
     driftDays: 5,
     prefixes: BMATCH.bookPrefixes(book)
   });
 
   const taken = new Set(match.results.filter((r) => r.status === 'matched').map((r) => r.match.movementId));
+  const byLine = new Map();
   for (const d of statement.decisions || []) {
-    if (taken.has(d.movementId)) continue;
-    const target = match.results.find((r) => r.line.sourceLine === d.sourceLine);
-    const mv = movements.find((m) => m.id === d.movementId);
-    if (!target || !mv || target.status === 'matched') continue;
-    taken.add(d.movementId);
+    if (!byLine.has(d.sourceLine)) byLine.set(d.sourceLine, []);
+    byLine.get(d.sourceLine).push(d.movementId);
+  }
+  for (const [sourceLine, ids] of byLine) {
+    const target = match.results.find((r) => r.line.sourceLine === sourceLine);
+    if (!target || target.status === 'matched') continue;
+    const pool = movements.concat(carried);
+    const picked = ids.filter((id) => !taken.has(id)).map((id) => pool.find((m) => m.id === id)).filter(Boolean);
+    if (!picked.length) continue;
+
+    // The group must add up exactly. See the note in lib/bankrec.ts: a confirmed grouping
+    // is a judgement about what was banked together, not a licence to close a gap.
+    const sum = Math.round(picked.reduce((t, m) => t + m.amount, 0) * 100) / 100;
+    if (picked.length > 1 && sum !== Math.round(target.line.amount * 100) / 100) {
+      target.status = 'ambiguous';
+      target.why = `A grouping was confirmed for this line, but the ${picked.length} entries chosen add up to ${sum} against a line of ${target.line.amount}. The difference would have been buried inside the match, so it is refused.`;
+      continue;
+    }
+
+    for (const m of picked) taken.add(m.id);
     target.status = 'matched';
     target.strength = 'by_hand';
-    target.match = { movementId: mv.id, ref: mv.ref, kind: mv.kind, drift: 0, byReference: false, wordHits: 0 };
-    target.decidedBy = d.decidedBy;
-    match.unmatchedMovements = match.unmatchedMovements.filter((u) => u.movement.id !== d.movementId);
+    target.match = { movementId: picked[0].id, ref: picked.map((m) => m.ref).join(' + '), kind: picked[0].kind, drift: 0, byReference: false, wordHits: 0, carried: false };
+    target.matchedGroup = picked.map((m) => ({ id: m.id, ref: m.ref, amount: m.amount }));
+    const first = (statement.decisions || []).find((d) => d.sourceLine === sourceLine);
+    target.decidedBy = first ? first.decidedBy : null;
+    match.unmatchedMovements = match.unmatchedMovements.filter((u) => !picked.some((m) => m.id === u.movement.id));
   }
+
+  // See the note on classifications in lib/bankrec.ts: only a person may say a line
+  // matching nothing is the bank's own.
+  for (const cl of statement.classifications || []) {
+    const t = match.results.find((r) => r.line.sourceLine === cl.sourceLine);
+    if (!t || t.status !== 'unmatched') continue;
+    t.classification = cl.as;
+    t.classifiedBy = cl.by;
+  }
+
   match.counts.matched = match.results.filter((r) => r.status === 'matched').length;
   match.counts.ambiguous = match.results.filter((r) => r.status === 'ambiguous').length;
   match.counts.unknownToBook = match.results.filter((r) => r.status === 'unknown_to_book').length;
@@ -1792,24 +1852,40 @@ function bankStatementsView(session, params) {
         <h3 style="margin:0">${esc(bank ? bank.name : st.bankId)} · ${esc(st.from)} to ${esc(st.to)}</h3>
         <p class="sub" style="margin:4px 0 10px">
           ${st.lines.length} lines · ${rec.counts.matched} matched · ${rec.counts.ambiguous} need a decision ·
-          ${rec.counts.bankOnly} not in the book · ${rec.counts.bookOnly} not on the statement ·
+          ${rec.counts.bankOnly} classified as the bank's own · ${rec.counts.unclassified} unclassified · ${rec.counts.groupCandidate} look grouped · ${rec.counts.bookOnly} not on the statement ·
           difference <strong>${bsMoney(rec.difference, book)}</strong>
           ${sign ? ` · signed off by ${esc(sign.closedBy)} on ${esc(String(sign.closedAt).slice(0, 10))}` : ''}
         </p>
         ${rec.blockers.length ? `<ul class="sub" style="margin:0 0 10px 18px">${rec.blockers.map((b) => `<li>${esc(b)}</li>`).join('')}</ul>` : ''}
 
-        ${rec.counts.ambiguous && may ? rec.match.results.filter((r) => r.status === 'ambiguous').map((r) => `
-          <form method="post" action="/bank-statements/decide" style="display:flex;gap:8px;align-items:end;margin:8px 0;padding:8px;background:#fffbeb">
+        ${may ? rec.match.results.filter((r) => r.status === 'ambiguous' || r.status === 'group_candidate' || (r.status === 'unmatched' && !r.classification)).map((r) => {
+          const head = `<div style="flex:1"><strong>${esc(r.line.date)} ${bsMoney(r.line.amount, book)} ${r.line.direction === 'in' ? 'in' : 'out'}</strong><br><span class="sub">${esc(r.line.description)}</span><br><span class="sub" style="color:#b45309">${esc(r.why || '')}</span></div>`;
+          if (r.status === 'ambiguous') {
+            return `<form method="post" action="/bank-statements/decide" style="display:flex;gap:8px;align-items:end;margin:8px 0;padding:8px;background:#fffbeb">
+              <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+              <input type="hidden" name="statement" value="${esc(st.id)}">
+              <input type="hidden" name="line" value="${r.line.sourceLine}">
+              ${head}
+              <label>is<br><select name="movementId"><option value="">leave undecided</option>${(r.candidates || []).map((c) => `<option value="${esc(c.movementId)}">${esc(c.ref)} — ${esc(c.kind)}</option>`).join('')}</select></label>
+              <button type="submit">Match it</button></form>`;
+          }
+          if (r.status === 'group_candidate') {
+            return (r.groups || []).map((g, gi) => `<form method="post" action="/bank-statements/group" style="display:flex;gap:8px;align-items:end;margin:8px 0;padding:8px;background:#eff6ff">
+              <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
+              <input type="hidden" name="statement" value="${esc(st.id)}">
+              <input type="hidden" name="line" value="${r.line.sourceLine}">
+              ${gi === 0 ? head : '<div style="flex:1"><span class="sub">or</span></div>'}
+              <div>${g.map((m) => `<input type="hidden" name="movementId" value="${esc(m.movementId || m.id)}">`).join('')}<span class="sub">${esc(g.map((m) => m.ref).join(' + '))}</span></div>
+              <button type="submit">These were banked together</button></form>`).join('');
+          }
+          return `<form method="post" action="/bank-statements/classify" style="display:flex;gap:8px;align-items:end;margin:8px 0;padding:8px;background:#fef2f2">
             <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
             <input type="hidden" name="statement" value="${esc(st.id)}">
             <input type="hidden" name="line" value="${r.line.sourceLine}">
-            <div style="flex:1"><strong>${esc(r.line.date)} ${bsMoney(r.line.amount, book)}</strong><br><span class="sub">${esc(r.line.description)}</span></div>
-            <label>is<br><select name="movementId">
-              <option value="">leave undecided</option>
-              ${r.candidates.map((c) => `<option value="${esc(c.movementId)}">${esc(c.ref)} — ${esc(c.kind)}</option>`).join('')}
-            </select></label>
-            <button type="submit">Match it</button>
-          </form>`).join('') : ''}
+            <input type="hidden" name="as" value="bank_only">
+            ${head}
+            <button type="submit">This is the bank's own — a charge or interest</button></form>`;
+        }).join('') : ''}
 
         <p style="margin-top:10px">
           ${may && rec.settled && !sign ? `
@@ -4779,6 +4855,65 @@ const server = http.createServer(async (req, res) => {
       return redirect(res, '/bank-statements?saved=' + encodeURIComponent(movementId ? 'Matched by hand.' : 'Back to undecided.'));
     }
 
+
+    if (pathname === '/bank-statements/classify' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const stId = String(form.statement || '');
+      const line = Number(form.line);
+      const as = String(form.as || '');
+
+      /**
+       * Saying a line is the bank's own is a JUDGEMENT, and it is recorded as one.
+       *
+       * The matcher can establish that nothing in the book fits. It cannot establish that
+       * therefore the bank did this alone — a cheque from an unreconciled period, a deposit
+       * the bank aggregated and an actual service charge all look identical to it. Both of
+       * the first two were silently treated as charges before this existed, and the
+       * adjustment draft offered to post money that was already in the book.
+       */
+      await guardedSave(path.join(CONTENT_DIR, 'accounting.json'), session, (b) => {
+        const st = (b.bankStatements || []).find((x) => x.id === stId);
+        if (!st) return;
+        st.classifications = (st.classifications || []).filter((c) => c.sourceLine !== line);
+        if (as === 'bank_only') {
+          st.classifications.push({ sourceLine: line, as: 'bank_only', by: session.email, at: new Date().toISOString() });
+        }
+      });
+      await audit(session, 'update', {
+        collection: 'bankStatements', id: stId, label: stId,
+        summary: as === 'bank_only'
+          ? `Declared statement line ${line} to be the bank's own item — it now enters the adjustment column and needs posting`
+          : `Took back the classification of statement line ${line}`
+      });
+      return redirect(res, '/bank-statements?saved=' + encodeURIComponent(as === 'bank_only' ? 'Classified as the bank\'s own.' : 'Classification removed.'));
+    }
+
+    if (pathname === '/bank-statements/group' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      const stId = String(form.statement || '');
+      const line = Number(form.line);
+      const ids = [].concat(form.movementId === undefined ? [] : form.movementId).filter(Boolean);
+
+      // One line, several book entries. Stored as several decisions sharing a sourceLine;
+      // the applier checks they sum to the line before accepting any of them.
+      await guardedSave(path.join(CONTENT_DIR, 'accounting.json'), session, (b) => {
+        const st = (b.bankStatements || []).find((x) => x.id === stId);
+        if (!st) return;
+        st.decisions = (st.decisions || []).filter((d) => d.sourceLine !== line);
+        for (const id of ids) {
+          st.decisions.push({ sourceLine: line, movementId: String(id), decidedBy: session.email, decidedAt: new Date().toISOString() });
+        }
+      });
+      await audit(session, 'update', {
+        collection: 'bankStatements', id: stId, label: stId,
+        summary: ids.length
+          ? `Confirmed statement line ${line} is ${ids.length} book entries banked together`
+          : `Cleared the grouping on statement line ${line}`
+      });
+      return redirect(res, '/bank-statements?saved=' + encodeURIComponent(ids.length ? 'Grouping confirmed.' : 'Grouping cleared.'));
+    }
     if (pathname === '/bank-statements/signoff' && req.method === 'POST') {
       const form = parseForm(await readBody(req));
       if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));

@@ -137,6 +137,15 @@ export type BankStatement = {
    * stays re-derivable and a human decision is always visibly a human decision.
    */
   decisions?: { sourceLine: number; movementId: string; decidedBy: string; decidedAt: string }[];
+  /**
+   * Lines somebody has declared to be the bank's own — a charge, interest, a direct debit.
+   *
+   * Separate from `decisions` because they answer different questions. A decision says
+   * "this line IS that book entry"; a classification says "no book entry corresponds to
+   * this, and I am willing to say so." Only the second one lets a line into the adjustment
+   * column, and only a person can make it.
+   */
+  classifications?: { sourceLine: number; as: 'bank_only'; by: string; at: string }[];
   importedAt: string;
   importedBy: string;
   /** The file, as received. Nothing is reconstructed from a parse. */
@@ -173,6 +182,58 @@ export const signOffs = (book: Book): BankReconciliation[] => book.bankReconcili
 
 /* --------------------------------------------------------------- the whole thing */
 
+
+/**
+ * What was outstanding when this period began.
+ *
+ * A cheque written on 31 July and presented on 2 August has to be matchable in August, or
+ * the August reconciliation declares it a charge the book never saw and the adjustment
+ * draft offers to post a payment that is already recorded. The whole point of an
+ * unpresented cheque is that it clears LATER; a candidate set bounded by the period
+ * cannot see the one thing reconciliation exists for.
+ *
+ * WHERE THE FLOOR COMES FROM, AND WHY THERE HAS TO BE ONE
+ *
+ * "Outstanding" is a claim about evidence, not about age. A movement is outstanding only
+ * if a statement covering its date has been seen and did not show it. Before the earliest
+ * imported statement there is no evidence either way — those months were reconciled on
+ * paper, or not at all, and either way this system did not watch it happen.
+ *
+ * So the carry-forward starts at the earliest imported statement for the account. Without
+ * that floor, importing a single August statement would declare every payment since the
+ * book opened to be an unpresented cheque: sixty-six of them here, all of them wrong, and
+ * each one a candidate the matcher could mistake an August line for.
+ */
+export function carriedForward(book: Book, bankId: string, from: string): BookMovement[] {
+  const earlier = statements(book)
+    .filter((s) => s.bankId === bankId && s.to < from)
+    .sort((a, b) => a.from.localeCompare(b.from));
+  if (earlier.length === 0) return [];
+
+  const seen = new Set<string>();
+  for (const st of earlier) {
+    const movements = bookMovements(book, bankId, st.from, st.to);
+    const m = matchStatement({
+      lines: st.lines,
+      movements,
+      carried: [],
+      driftDays: 5,
+      prefixes: bookPrefixes(book)
+    });
+    for (const r of m.results as { status: string; match?: { movementId: string } }[]) {
+      if (r.status === 'matched' && r.match) seen.add(r.match.movementId);
+    }
+    // A hand-made decision counts as matched even though the automatic pass refused it.
+    for (const d of st.decisions ?? []) seen.add(d.movementId);
+  }
+
+  const floor = earlier[0].from;
+  const dayBefore = new Date(`${from}T00:00:00Z`);
+  dayBefore.setUTCDate(dayBefore.getUTCDate() - 1);
+  return bookMovements(book, bankId, floor, dayBefore.toISOString().slice(0, 10))
+    .filter((m) => !seen.has(m.id));
+}
+
 export type ReconciliationView = ReturnType<typeof reconcileStatement>;
 
 /**
@@ -187,9 +248,11 @@ export function reconcileStatement(book: Book, statement: BankStatement, driftDa
   const bb = bankBook(book, statement.bankId, statement.from, statement.to);
   const movements = bookMovements(book, statement.bankId, statement.from, statement.to);
 
+  const carried = carriedForward(book, statement.bankId, statement.from);
   const match = matchStatement({
     lines: statement.lines,
     movements,
+    carried,
     driftDays,
     prefixes: bookPrefixes(book)
   });
@@ -205,21 +268,62 @@ export function reconcileStatement(book: Book, statement: BankStatement, driftDa
   const taken = new Set(
     match.results.filter((r: { status: string; match?: { movementId: string } }) => r.status === 'matched').map((r: { match: { movementId: string } }) => r.match.movementId)
   );
+  const byLine = new Map<number, string[]>();
   for (const d of statement.decisions ?? []) {
-    if (taken.has(d.movementId)) continue;
-    const target = match.results.find((r: { line: StatementLine }) => r.line.sourceLine === d.sourceLine);
-    const movement = movements.find((m) => m.id === d.movementId);
-    if (!target || !movement || target.status === 'matched') continue;
-    taken.add(d.movementId);
+    if (!byLine.has(d.sourceLine)) byLine.set(d.sourceLine, []);
+    byLine.get(d.sourceLine)!.push(d.movementId);
+  }
+  for (const [sourceLine, ids] of byLine) {
+    const target = match.results.find((r: { line: StatementLine }) => r.line.sourceLine === sourceLine);
+    if (!target || target.status === 'matched') continue;
+    const picked = ids
+      .filter((id) => !taken.has(id))
+      .map((id) => movements.concat(carried).find((m) => m.id === id))
+      .filter(Boolean) as BookMovement[];
+    if (picked.length === 0) continue;
+
+    /**
+     * The group must add up EXACTLY, even though a person asked for it.
+     *
+     * A confirmed grouping is a judgement about which entries were banked together, not a
+     * licence to close a gap. If the chosen entries do not sum to the line, accepting it
+     * would put the difference inside a matched pair — the one thing this whole feature
+     * exists to prevent, arrived at by consent instead of by accident.
+     */
+    const sum = Math.round(picked.reduce((t, m) => t + m.amount, 0) * 100) / 100;
+    if (picked.length > 1 && sum !== Math.round(target.line.amount * 100) / 100) {
+      target.status = 'ambiguous';
+      target.why = `A grouping was confirmed for this line, but the ${picked.length} entries chosen add up to ${sum} against a line of ${target.line.amount}. The difference would have been buried inside the match, so it is refused.`;
+      continue;
+    }
+
+    for (const m of picked) taken.add(m.id);
     target.status = 'matched';
     target.strength = 'by_hand';
-    target.match = { movementId: movement.id, ref: movement.ref, kind: movement.kind, drift: 0, byReference: false, wordHits: 0 };
-    target.decidedBy = d.decidedBy;
-    match.unmatchedMovements = match.unmatchedMovements.filter((u: { movement: BookMovement }) => u.movement.id !== d.movementId);
+    target.match = { movementId: picked[0].id, ref: picked.map((m) => m.ref).join(' + '), kind: picked[0].kind, drift: 0, byReference: false, wordHits: 0, carried: false };
+    target.matchedGroup = picked.map((m) => ({ id: m.id, ref: m.ref, amount: m.amount }));
+    target.decidedBy = (statement.decisions ?? []).find((d) => d.sourceLine === sourceLine)?.decidedBy;
+    match.unmatchedMovements = match.unmatchedMovements.filter((u: { movement: BookMovement }) => !picked.some((m) => m.id === u.movement.id));
   }
+
+  /**
+   * Lines a person has called the bank's own.
+   *
+   * Carried on the statement alongside the match decisions, and applied here rather than
+   * inside the matcher: "no book entry fits this" is a fact the matcher can establish,
+   * and "therefore it is a bank charge" is a judgement only a person can make.
+   */
+  for (const cl of statement.classifications ?? []) {
+    const target = match.results.find((r: { line: StatementLine }) => r.line.sourceLine === cl.sourceLine);
+    if (!target || target.status !== 'unmatched') continue;
+    target.classification = cl.as;
+    target.classifiedBy = cl.by;
+  }
+
   match.counts.matched = match.results.filter((r: { status: string }) => r.status === 'matched').length;
   match.counts.ambiguous = match.results.filter((r: { status: string }) => r.status === 'ambiguous').length;
-  match.counts.unknownToBook = match.results.filter((r: { status: string }) => r.status === 'unknown_to_book').length;
+  match.counts.unmatched = match.results.filter((r: { status: string }) => r.status === 'unmatched').length;
+  match.counts.groupCandidate = match.results.filter((r: { status: string }) => r.status === 'group_candidate').length;
   match.counts.unpresented = match.unmatchedMovements.length;
 
   const rec = reconcile({
