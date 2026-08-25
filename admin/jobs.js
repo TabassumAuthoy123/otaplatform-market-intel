@@ -48,14 +48,44 @@ function jobs(ctx) {
         // use rather than a second implementation that could disagree.
         const res = await fetch(`${appUrl}/api/accounts/export?format=csv&section=reconciliation`);
         if (!res.ok) throw new Error(`the app answered HTTP ${res.status} — cannot verify the book`);
-        const rows = (await res.text()).split(/\r?\n/).slice(1).filter((l) => l.includes(','));
-        if (rows.length === 0) throw new Error('the reconciliation report came back empty');
+        const text = (await res.text()).replace(/^\uFEFF/, '');
+        const lines = text.split(/\r?\n/).filter((l) => l.includes(','));
+        if (lines.length < 2) throw new Error('the reconciliation report came back empty');
+
+        /**
+         * Read the columns BY NAME.
+         *
+         * This indexed the difference at `c[3]`, which was right until the
+         * reconciliation grew a "Manual adjustment" column between the control total
+         * and the ledger balance. After that `c[3]` was the LEDGER BALANCE — a large
+         * number on nearly every row — and this job raised a critical
+         * "does not reconcile" alert against ten accounts while every printed
+         * difference was zero.
+         *
+         * That is the worst version of this mistake. Six checks in the test suites made
+         * it too and merely went red; this one is the monitoring an operator is meant to
+         * trust, and it spent its time insisting a correct book was broken. An alerting
+         * system that cries wolf is worse than no alerting system, because the real one
+         * arrives in a list of nine false ones.
+         *
+         * Position is the wrong thing to depend on in a report that is expected to grow.
+         * A header lookup cannot fail the same way when the next column is added.
+         */
+        const cells = (line) => (line.match(/"[^"]*"/g) || []).map((x) => x.slice(1, -1));
+        const cols = cells(lines[0]);
+        const at = (c, name) => {
+          const i = cols.indexOf(name);
+          return i === -1 ? undefined : c[i];
+        };
+        if (cols.indexOf('Difference') === -1) {
+          throw new Error(`the reconciliation report has no Difference column — got: ${cols.join(', ')}`);
+        }
 
         const out = [];
-        for (const line of rows) {
-          const c = line.replace(/"/g, '').split(',');
+        for (const line of lines.slice(1)) {
+          const c = cells(line);
           const name = c[0];
-          const diff = Number(c[3]);
+          const diff = Number(at(c, 'Difference'));
           if (!name || !Number.isFinite(diff) || diff === 0) continue;
           out.push({
             id: `integrity:${name}`,

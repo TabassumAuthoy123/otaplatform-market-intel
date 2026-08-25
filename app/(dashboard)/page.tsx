@@ -1,7 +1,13 @@
 import Link from 'next/link';
 import { ModuleLink } from '@/components/ModuleLink';
 import { PANEL_MODULES, enabledModules } from '@/lib/panelMenus';
-import { getCompetitors, getMarket } from '@/lib/market';
+import { SavedViews } from '@/components/SavedViews';
+import { CREDENTIAL_LABEL, ENGINE_LABEL, credentialsOf, engineOf, getCompetitors, getMarket, type Credential } from '@/lib/market';
+import type { Lead } from '@/lib/crm';
+
+/** One class string for every field, so the row cannot drift out of alignment. */
+const FIELD =
+  'rounded-lg border border-hair bg-surface px-3 py-2 text-[13.5px] font-normal normal-case tracking-normal text-navy-900 outline-none focus:border-teal-500';
 
 // Runs off content/crm-leads.json — the same 400 records the sales floor calls
 // from, so the wall numbers and the queue can never disagree.
@@ -66,8 +72,67 @@ function Bar({ label, value, max, note, href }: { label: string; value: number; 
   );
 }
 
-export default async function Dashboard() {
-  const m = await getMarket();
+export default async function Dashboard({
+  searchParams
+}: {
+  searchParams: { q?: string; credential?: string; engine?: string; city?: string; priority?: string; hasMobile?: string };
+}) {
+  /**
+   * The wall, optionally about a subset.
+   *
+   * This page had no search, no filters and one export format, while the admin
+   * portal's lead list has had saved views, a search box, eight filters and four
+   * formats. The gap mattered most for the question this screen is actually for —
+   * "what does the picture look like for Sylhet", or "for the agencies that already
+   * hold IATA" — which previously meant reading the whole wall and doing the
+   * subtraction in your head.
+   *
+   * The filter is pushed down into `getMarket` rather than applied to a list here, so
+   * every one of the thirty-odd aggregates scopes together. A screen where the tiles
+   * say 400 and the table underneath says 62 is a screen telling two stories.
+   */
+  const q = (searchParams.q ?? '').trim().toLowerCase();
+  const wantCredential = searchParams.credential ?? '';
+  const wantEngine = searchParams.engine ?? '';
+  const wantCity = searchParams.city ?? '';
+  const wantPriority = searchParams.priority ?? '';
+  const wantMobile = searchParams.hasMobile ?? '';
+  const scoping = !!(q || wantCredential || wantEngine || wantCity || wantPriority || wantMobile);
+
+  const where = scoping
+    ? (l: Lead) => {
+        if (wantCredential && credentialsOf(l).includes(wantCredential as Credential) === false) return false;
+        if (wantEngine && engineOf(l) !== wantEngine) return false;
+        if (wantCity && l.city !== wantCity) return false;
+        if (wantPriority && l.priority !== wantPriority) return false;
+        if (wantMobile === 'yes' && !l.mobile) return false;
+        if (q) {
+          const hay = [l.company, l.decision_maker, l.city, l.segment, l.lead_id, l.address]
+            .filter(Boolean).map((v) => String(v).toLowerCase());
+          if (hay.some((v) => v.includes(q)) === false) return false;
+        }
+        return true;
+      }
+    : undefined;
+
+  const m = await getMarket(where);
+
+  /**
+   * The city list comes from the WHOLE market, not the current scope.
+   *
+   * Built from `m.byCity` it would shrink to the one city already selected, and the
+   * dropdown would become a control that cannot be changed once used — the classic
+   * way a filter traps the person using it.
+   */
+  const everything = await getMarket();
+  const cities = everything.byCity.map((c) => c.city);
+
+  // The export mirrors the scope. Same param names the CRM export already reads.
+  const exportQs = (() => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries(searchParams)) if (v) p.set(k, String(v));
+    return p.toString();
+  })();
   const comp = await getCompetitors();
 
   /**
@@ -105,6 +170,94 @@ export default async function Dashboard() {
         <div className="mb-1.5 text-[11px] font-bold uppercase tracking-[0.14em] text-teal-600">
           Softifybd · OTA Platform · B2B market intelligence
         </div>
+        {/* ------------------------------------------- saved views, search, export */}
+        <div className="mb-6 flex flex-col gap-3 rounded-xl2 border border-hair bg-white p-4">
+          <SavedViews
+            views={[
+              { label: 'Whole market', href: '/', active: !scoping, count: m.unscopedTotal, title: 'Every prospect in the database' },
+              { label: 'IATA accredited', href: '/?credential=iata', active: wantCredential === 'iata' && !q, title: 'Already ticketing — the shortest sale' },
+              { label: 'Hajj licence', href: '/?credential=hajj', active: wantCredential === 'hajj' && !q, title: 'MoRA-licensed, seasonal volume' },
+              { label: 'No platform yet', href: '/?engine=none_seen', active: wantEngine === 'none_seen' && !q, title: 'Nothing to displace' },
+              { label: 'Reachable by mobile', href: '/?hasMobile=yes', active: wantMobile === 'yes' && !q, title: 'A number to call today' },
+              { label: 'Dhaka', href: '/?city=Dhaka', active: wantCity === 'Dhaka' && !q, title: 'The largest single market' }
+            ]}
+          />
+
+          <form className="flex flex-wrap items-end gap-2.5" method="get">
+            <label className="flex min-w-[220px] flex-1 flex-col gap-1 text-[11px] font-bold uppercase tracking-wide text-muted">
+              Search
+              <input name="q" defaultValue={searchParams.q ?? ''} placeholder="company, owner, city, segment, lead id" className={FIELD} />
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] font-bold uppercase tracking-wide text-muted">
+              Credential
+              <select name="credential" defaultValue={wantCredential} className={FIELD}>
+                <option value="">Any</option>
+                {(['iata', 'hajj', 'baira', 'toab', 'none'] as const).map((c) => (
+                  <option key={c} value={c}>{CREDENTIAL_LABEL[c]}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] font-bold uppercase tracking-wide text-muted">
+              Platform
+              <select name="engine" defaultValue={wantEngine} className={FIELD}>
+                <option value="">Any</option>
+                {(['none_seen', 'brochure', 'not_checked', 'live_engine'] as const).map((e) => (
+                  <option key={e} value={e}>{ENGINE_LABEL[e]}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] font-bold uppercase tracking-wide text-muted">
+              City
+              <select name="city" defaultValue={wantCity} className={FIELD}>
+                <option value="">Anywhere</option>
+                {cities.map((c) => (
+                  <option key={c} value={c}>{c}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] font-bold uppercase tracking-wide text-muted">
+              Mobile
+              <select name="hasMobile" defaultValue={wantMobile} className={FIELD}>
+                <option value="">Either</option>
+                <option value="yes">Has one</option>
+              </select>
+            </label>
+            <button type="submit" className="rounded-lg bg-navy-900 px-4 py-2 text-[13px] font-semibold text-white hover:bg-navy-800">
+              Apply
+            </button>
+            {scoping && (
+              <Link href="/" className="rounded-lg border border-hair bg-white px-4 py-2 text-[13px] font-semibold text-navy-900 hover:border-teal-500 hover:text-teal-700">
+                Reset
+              </Link>
+            )}
+          </form>
+
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-hair pt-3">
+            <span className="text-[11px] font-bold uppercase tracking-wide text-muted">Download this view</span>
+            {(['xlsx', 'docx', 'md', 'csv'] as const).map((f) => (
+              <a
+                key={f}
+                href={`/api/crm/export?${exportQs}&format=${f}`}
+                className="rounded-lg border border-hair px-3.5 py-2 text-[12.5px] font-semibold text-navy-900 hover:border-teal-500 hover:text-teal-700"
+              >
+                {f === 'xlsx' ? 'Excel .xlsx' : f === 'docx' ? 'Word .docx' : f === 'md' ? 'Markdown .md' : 'CSV'}
+              </a>
+            ))}
+            <span className="text-[11.5px] text-muted">
+              {scoping
+                ? `Honours the filters above — ${m.scopedTotal} of ${m.unscopedTotal} agencies.`
+                : 'All four formats, built from the same records the wall counts.'}
+            </span>
+          </div>
+        </div>
+
+        {scoping && (
+          <p className="mb-4 rounded-lg border-l-[3px] border-teal-600 bg-teal-600/5 px-4 py-2.5 text-[12.5px] text-teal-800">
+            Every figure on this page is scoped to <strong>{m.scopedTotal}</strong> of {m.unscopedTotal} agencies. Percentages
+            are of the {m.scopedTotal} in scope, not of the whole market.
+          </p>
+        )}
+
         <h1 className="text-[26px] font-bold leading-tight text-navy-900 sm:text-[32px]">
           Who to sell a white-label OTA to in Bangladesh
         </h1>

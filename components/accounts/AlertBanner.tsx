@@ -1,3 +1,5 @@
+import { mayRead, viewer } from '@/lib/auth';
+import { moduleKeyFor } from '@/lib/panelMenus';
 import path from 'node:path';
 import { readJsonCached } from '@/lib/jsonStore';
 
@@ -17,6 +19,19 @@ const ADMIN = process.env.NEXT_PUBLIC_ADMIN_URL ?? 'http://127.0.0.1:4001';
  * only one of them is good news.
  */
 export async function AlertBanner() {
+  const who = viewer();
+  /**
+   * Same rule the layout guard uses, applied to a link rather than to a route — see
+   * moduleKeyFor and mayRead. A path no module claims (an external one, or the portal)
+   * is left alone; this is about not offering our own screens to somebody who cannot
+   * open them.
+   */
+  const canOpen = (href: string) => {
+    if (!href.startsWith('/')) return true;
+    const key = moduleKeyFor(href.split('?')[0]);
+    if (!key) return true;
+    return !!who && mayRead(who, key);
+  };
   const dir = path.join(process.cwd(), 'content');
   const store = await readJsonCached<{ open?: Alert[]; acknowledged?: Record<string, unknown> }>(
     path.join(dir, 'alerts.json'),
@@ -80,7 +95,16 @@ export async function AlertBanner() {
                 </span>
                 <span className="font-semibold text-navy-900">{a.title}</span>
                 <span className="text-muted"> — {a.detail}</span>
-                {a.where && (
+                {/*
+                  The link only appears if this person can actually follow it.
+                  An alert's `where` is chosen by the job that raised it and points
+                  wherever the evidence is — often /accounts/financials, which a Sales
+                  Executive may not open. Offering it anyway produced a link that
+                  bounced them to a refusal page, and told them the module exists.
+                  The alert itself still shows: knowing the book has a problem is not
+                  the same as being allowed to read the ledger behind it.
+                */}
+                {a.where && canOpen(a.where) && (
                   <a href={a.where} className="ml-1 font-semibold text-teal-700 hover:underline">
                     open →
                   </a>

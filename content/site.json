@@ -1,9 +1,9 @@
 {
   "_meta": {
     "note": "Every string on the B2C portal comes from this file. Edit it through the admin portal (http://localhost:4001) — do not hand-edit unless the admin server is stopped.",
-    "revision": 173,
+    "revision": 190,
     "lastEditedBy": "verify-probe@local",
-    "lastEditedAt": "2026-08-25 12:05:33"
+    "lastEditedAt": "2026-08-25 13:15:30"
   },
   "brand": {
     "name": "OTA Platform",
@@ -179,6 +179,59 @@
               "label": "Your own storefront",
               "href": "/portal",
               "note": "Branded, on your domain",
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "label": "Accounting",
+      "href": "/portal/accounting",
+      "enabled": true,
+      "groups": [
+        {
+          "title": "The ledger",
+          "links": [
+            {
+              "label": "What is in it",
+              "href": "/portal/accounting",
+              "note": "21 screens, double entry, statements",
+              "enabled": true
+            },
+            {
+              "label": "BSP and airline memos",
+              "href": "/portal/accounting",
+              "note": "Matched document by document",
+              "enabled": true
+            },
+            {
+              "label": "Multi-currency settlement",
+              "href": "/portal/accounting",
+              "note": "Gain and loss, never invented",
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "title": "For your accountant",
+          "links": [
+            {
+              "label": "Journal vouchers",
+              "href": "/portal/accounting",
+              "note": "Depreciation, accruals, corrections",
+              "enabled": true
+            },
+            {
+              "label": "Closing a period",
+              "href": "/portal/accounting",
+              "note": "Lock a month against every voucher type",
+              "enabled": true
+            },
+            {
+              "label": "Bring your own month",
+              "href": "/portal/contact",
+              "note": "We load a month you already closed",
               "enabled": true
             }
           ]

@@ -68,9 +68,23 @@ export const CREDENTIAL_LABEL: Record<Credential, string> = {
 
 export type MarketView = Awaited<ReturnType<typeof getMarket>>;
 
-export async function getMarket() {
+/**
+ * What the wall says, optionally about a subset.
+ *
+ * `where` scopes EVERY figure on the dashboard at once, not just a list underneath it.
+ * That matters more than it sounds: this page is thirty-odd aggregates, and a filter
+ * that narrowed a table while leaving the tiles reading 400 would be a screen telling
+ * two different stories at the same time. Because every number here comes from the one
+ * `count()` closure over `leads`, filtering the array is the whole implementation —
+ * there is no second place for a figure to escape the scope.
+ *
+ * `total` is the unfiltered count, carried alongside, so the page can say "62 of 400"
+ * rather than silently redefining what 100% means.
+ */
+export async function getMarket(where?: (l: Lead) => boolean) {
   requireRead();
-  const leads = await getLeads();
+  const all = await getLeads();
+  const leads = where ? all.filter(where) : all;
 
   const count = (fn: (l: Lead) => boolean) => leads.filter(fn).length;
   const has = (l: Lead, c: Credential) => credentialsOf(l).includes(c);
@@ -144,6 +158,10 @@ export async function getMarket() {
   const iataTargets = leads.filter((l) => has(l, 'iata'));
 
   return {
+    /** Rows in scope, and rows in the file. Equal unless `where` was passed. */
+    scopedTotal: leads.length,
+    unscopedTotal: all.length,
+    scoped: leads.length !== all.length,
     leads,
     pipeline,
     reach,

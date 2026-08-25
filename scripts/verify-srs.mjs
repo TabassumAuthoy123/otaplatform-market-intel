@@ -897,6 +897,27 @@ await check('An exchange gain and an overpayment are told apart, not merged', ()
     `same currency required: ${needsSameCurrency}, rates must differ: ${needsDifferentRate}, defaults to no gain: ${safeDefault}`];
 });
 
+await check('No monitoring job reads a report column by position', () => {
+  /**
+   * The integrity job indexed the reconciliation difference at `c[3]`. Adding a
+   * "Manual adjustment" column moved it, so the job read the LEDGER BALANCE instead
+   * and raised ten critical "does not reconcile" alerts against a book whose every
+   * printed difference was zero.
+   *
+   * Six checks in the test suites made the same mistake and merely went red. This one
+   * is the monitoring an operator is meant to trust, and it spent its time insisting a
+   * correct book was broken — which is worse than no monitoring, because the real
+   * alert then arrives inside a list of nine false ones.
+   *
+   * The guard is that the job names its columns and refuses to guess when the one it
+   * wants is absent, rather than silently reading whatever is at that index.
+   */
+  const src = readFileSync('admin/jobs.js', 'utf8');
+  const byName = src.includes("at(c, 'Difference')") && src.includes("cols.indexOf('Difference') === -1");
+  const byIndex = /c\[[0-9]\]/.test(src.slice(src.indexOf('reconciliation'), src.indexOf('reconciliation') + 2000));
+  return [byName && !byIndex, `names its columns: ${byName}, still indexes by position: ${byIndex}`];
+});
+
 await check('No default password is shipped for anybody to look up', () => {
   /**
    * `seedUsersIfMissing` used to fall back to a fixed password, and that string was

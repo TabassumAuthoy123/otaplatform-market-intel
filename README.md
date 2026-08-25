@@ -24,6 +24,15 @@ all of them.
 > before it was closed. `npm run dev:lan` exposes it deliberately, and the data
 > routes then refuse any non-loopback request without `APP_ACCESS_KEY`.
 >
+> **The default admin password was published.** `seedUsersIfMissing` fell back to a
+> fixed string, and that string was committed twice — in `admin/server.js` and again in
+> `B2C-ADMIN.md` — to this public repository. The default super-admin password of every
+> installation was readable by anyone who found the repo. Only the loopback bind kept it
+> harmless. It is now generated per install and printed once, no password appears in any
+> doc, and a check fails if either comes back. **Removing it from HEAD does not remove it
+> from git history** — if you ever ran an install on that default, change it:
+> `printf '%s' 'new' | node scripts/reset-admin-password.mjs admin@softifybd.com`.
+>
 > **The pages now need a session too.** For a long time only `/api` was
 > considered, and the twenty-five *pages* that render the same data were not:
 > `GET /accounts/financials` with no cookie returned the trial balance, the
@@ -1371,7 +1380,7 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 167 checks — specification, hardening, automation
+node scripts/verify-srs.mjs      # 169 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 44 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 23 checks — manual vouchers, and the reconciliation surviving them
@@ -1391,11 +1400,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**330 checks** across the five suites against the running app: each one loads a
+**332 checks** across the five suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **167 + 44 + 39 + 23 + 57
+should accept on trust, including from me. It currently reports **169 + 44 + 39 + 23 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -1423,6 +1432,69 @@ byte. No test password is committed anywhere.
 ---
 
 ---
+
+---
+
+## Finding things, and taking them away
+
+The admin portal's lead list has had saved views, a search box, eight filters and four
+export formats for months. The panel an agency's own staff use had almost none of it,
+and the gap was in the wrong direction — the screen used twice a year was the one that
+could be searched.
+
+| | Before | Now |
+|---|---|---|
+| `/accounts` | nothing at all | 5 saved views, search, 5 filters, 4 exports + print |
+| `/` | one export format | 6 saved views, search, 5 filters, 4 exports |
+| `/agencies` | search, filters, 3 exports | + 6 saved views, each with a count |
+
+**A saved view is a question with a name on it.** Every one is expressible in the filter
+row underneath, and that is exactly why they exist: nobody rebuilds "never touched" out
+of three dropdowns twice a day.
+
+Three decisions worth stating, because each one is a way this could have been wrong:
+
+**The accounting search reads the whole book, not the ten rows on screen.** A search
+that only looked at the visible list would answer "not found" for almost every voucher
+— worse than having no search, because it would be believed.
+
+**Filtering `/` scopes every figure on it, not a list underneath.** The filter is pushed
+down into `getMarket()` rather than applied to a table here, so all thirty-odd
+aggregates move together and the page states `62 of 400` rather than silently
+redefining what 100% means. A screen where the tiles say 400 and the table says 62 is a
+screen telling two stories.
+
+**The accounting export honours the DATES and deliberately ignores the search term.**
+That export builds twenty-six ledgers out of the book; narrowing all of them by a
+free-text search would quietly produce a trial balance that does not balance. A
+download that disagrees with itself is worse than one that ignores a filter, because
+nobody checks a spreadsheet against the screen.
+
+The city dropdown on `/` is built from the whole market rather than the current scope —
+built from the scoped data it would shrink to the one city already chosen and become a
+control that cannot be changed once used.
+
+---
+
+## `/portal/accounting` — what the module is, before anyone gets a login
+
+The storefront sold "a full ledger" in six words and the accounting module had no page
+anywhere. A prospect could not find out what was in it without being given a demo
+account, which is the wrong order round: the demo should confirm what the page already
+said.
+
+**The screen list and the role table are derived from the same declarations the product
+runs on** — `lib/panel-modules.js` and `admin/roles.js`. A marketing page that lists
+features by hand starts lying the first time a module is renamed, and it lies in the
+direction of promising more than exists. Derived, the worst that can happen is the page
+being terse.
+
+It also says what the module is **not** — not a tax filing service, not payroll, not an
+auditor — because those are the three things a Bangladeshi agency will assume are
+included and would otherwise find out after signing.
+
+Public, with no session and no figure from anybody's book: it describes the product,
+not an installation.
 
 ## Journal vouchers, and what they cost the reconciliation
 

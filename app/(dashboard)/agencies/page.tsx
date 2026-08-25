@@ -1,3 +1,4 @@
+import { SavedViews } from '@/components/SavedViews';
 import Link from 'next/link';
 import { CALL_STATUS } from '@/lib/crm';
 import { CREDENTIAL_LABEL, ENGINE_LABEL, credentialsOf, engineOf, getMarket, type Credential, type EngineState } from '@/lib/market';
@@ -28,7 +29,8 @@ export default async function AgenciesPage({
   };
 }) {
   const m = await getMarket();
-  let rows = m.leads;
+  const all = m.leads;
+  let rows = all;
 
   const term = (searchParams.q ?? '').trim().toLowerCase();
   if (term) {
@@ -42,6 +44,27 @@ export default async function AgenciesPage({
   if (searchParams.priority) rows = rows.filter((l) => l.priority === searchParams.priority);
   if (searchParams.tier) rows = rows.filter((l) => l.tier === searchParams.tier);
   if (searchParams.hasMobile === 'yes') rows = rows.filter((l) => !!l.mobile);
+
+  /**
+   * Which saved view, if any, is the one currently showing.
+   *
+   * A chip is "on" only when its filter is the ONLY filter set. Marking `P1 queue`
+   * active while a city and a search term were also applied would say the screen is
+   * showing something it is not, and the fix a person would then reach for — clicking
+   * the chip that already looks selected — does nothing.
+   */
+  const only = (key: string) => {
+    const set = Object.entries(searchParams).filter(([k, v]) => v && k !== 'page').map(([k]) => k);
+    return set.length === 1 && set[0] === key;
+  };
+  const activeView =
+    Object.entries(searchParams).filter(([k, v]) => v && k !== 'page').length === 0 ? ''
+      : only('priority') && searchParams.priority === 'P1' ? 'p1'
+      : only('credential') && searchParams.credential === 'iata' ? 'iata'
+      : only('credential') && searchParams.credential === 'hajj' ? 'hajj'
+      : only('hasMobile') ? 'mobile'
+      : only('engine') && searchParams.engine === 'none_seen' ? 'none'
+      : 'other';
 
   const PER = 50;
   const page = Math.max(1, Number(searchParams.page) || 1);
@@ -124,6 +147,30 @@ export default async function AgenciesPage({
         <button className="rounded-lg bg-teal-600 px-5 py-2.5 text-[13px] font-semibold text-white hover:bg-teal-700">Filter</button>
         <a href="/agencies" className="rounded-lg border border-hair px-4 py-2.5 text-[13px] font-semibold text-navy-900">Reset</a>
       </form>
+
+      {/*
+        The named questions, above the machinery for asking a new one.
+
+        Every one of these is expressible in the filter row underneath, and that is the
+        point: the admin portal's lead list has had them for months and nobody rebuilds
+        "never touched" out of three dropdowns twice. This screen had the dropdowns and
+        not the questions.
+
+        Counts are computed off `all`, the unfiltered set, so a chip always says how
+        many it WOULD return rather than how many survive the filter currently applied
+        — a count that changed as you filtered would be describing the screen instead of
+        the data.
+      */}
+      <SavedViews
+        views={[
+          { label: 'All agencies', href: '/agencies', active: activeView === '', count: all.length, title: 'Clear every filter' },
+          { label: 'P1 queue', href: '/agencies?priority=P1', active: activeView === 'p1', count: all.filter((l) => l.priority === 'P1').length, title: 'Highest priority first' },
+          { label: 'IATA accredited', href: '/agencies?credential=iata', active: activeView === 'iata', count: all.filter((l) => credentialsOf(l).includes('iata')).length, title: 'Already ticketing — the shortest sale' },
+          { label: 'Hajj licence', href: '/agencies?credential=hajj', active: activeView === 'hajj', count: all.filter((l) => credentialsOf(l).includes('hajj')).length, title: 'MoRA-licensed, seasonal volume' },
+          { label: 'Reachable by mobile', href: '/agencies?hasMobile=yes', active: activeView === 'mobile', count: all.filter((l) => !!l.mobile).length, title: 'A number to call today' },
+          { label: 'No platform yet', href: '/agencies?engine=none_seen', active: activeView === 'none', count: all.filter((l) => engineOf(l) === 'none_seen').length, title: 'Nothing to displace' }
+        ]}
+      />
 
       <div className="flex flex-wrap items-center gap-2 rounded-xl2 border border-hair bg-white p-4">
         <span className="text-[11px] font-bold uppercase tracking-wide text-muted">Download this list</span>

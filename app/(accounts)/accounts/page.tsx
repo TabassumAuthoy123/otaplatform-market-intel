@@ -6,7 +6,13 @@ import {
   payables, receivables, recentTransactions, salesByService, summarise, supplierDeposits, todayISO
 } from '@/lib/accounting';
 import { can, mayRead, viewer } from '@/lib/auth';
+import { ExportBar } from '@/components/accounts/ExportBar';
+import { SavedViews } from '@/components/SavedViews';
 import { enabledModules } from '@/lib/panelMenus';
+
+/** One class string for every field, so the row cannot drift out of alignment. */
+const FIELD =
+  'rounded-lg border border-hair bg-surface px-3 py-2 text-[13.5px] font-normal normal-case tracking-normal text-navy-900 outline-none focus:border-teal-500';
 
 export const dynamic = 'force-dynamic';
 
@@ -19,7 +25,11 @@ export const dynamic = 'force-dynamic';
  *
  * The root is dropped: a tile on the page you are already looking at is noise.
  */
-export default async function AccountsDashboard() {
+export default async function AccountsDashboard({
+  searchParams
+}: {
+  searchParams: { q?: string; type?: string; dir?: string; from?: string; to?: string };
+}) {
   const who = viewer();
   const fin = !!who && can(who.role, 'books_financials');
 
@@ -57,7 +67,60 @@ export default async function AccountsDashboard() {
   const banks = allBankBalances(book);
   const ar = receivables(book);
   const ap = payables(book);
-  const recent = recentTransactions(book, 10);
+  /**
+   * A search, five filters and saved views, on the one screen that had none of them.
+   *
+   * This landing showed ten most-recent transactions and nothing else. Anybody looking
+   * for a specific voucher — which is most of why an accountant opens an accounting
+   * system at all — had to guess which of the twenty other screens held it. The admin
+   * portal's lead list has had saved views, a search box, eight filters and four export
+   * formats for months; the panel an agency's own staff use had a list of ten rows.
+   *
+   * Everything is derived at request time from the same `recentTransactions` the tiles
+   * above use, so a filtered list and the totals over it can never disagree.
+   */
+  const q = (searchParams.q ?? '').trim().toLowerCase();
+  const wantType = searchParams.type ?? '';
+  const wantDir = searchParams.dir ?? '';
+  const from = searchParams.from ?? '';
+  const to = searchParams.to ?? '';
+  const filtering = !!(q || wantType || wantDir || from || to);
+
+  /**
+   * The whole book when a filter is on, ten when it is not.
+   *
+   * A search that only looked at the ten most recent rows would answer "not found" for
+   * almost every voucher in the book, which is worse than having no search at all —
+   * it would be believed.
+   */
+  const pool = recentTransactions(book, filtering ? Number.MAX_SAFE_INTEGER : 10);
+  const matches = pool.filter((r) => {
+    if (wantType && r.type !== wantType) return false;
+    if (wantDir && r.direction !== wantDir) return false;
+    if (from && r.date < from) return false;
+    if (to && r.date > to) return false;
+    if (q && `${r.ref} ${r.party} ${r.type}`.toLowerCase().includes(q) === false) return false;
+    return true;
+  });
+  const recent = filtering ? matches.slice(0, 200) : matches;
+  const allTypes = Array.from(new Set(recentTransactions(book, Number.MAX_SAFE_INTEGER).map((r) => r.type))).sort();
+  const matchedValue = matches.reduce((t, r) => t + r.amount, 0);
+
+  const qs = (over: Record<string, string | undefined>) => {
+    const p = new URLSearchParams();
+    for (const [k, v] of Object.entries({ ...searchParams, ...over })) if (v) p.set(k, String(v));
+    const str = p.toString();
+    return str ? `/accounts?${str}` : '/accounts';
+  };
+
+  const monthStart = `${today.slice(0, 7)}-01`;
+  const savedViews = [
+    { label: 'Everything', href: '/accounts', active: filtering === false, title: 'Clear every filter' },
+    { label: 'Money in', href: qs({ dir: 'in', type: undefined }), active: wantDir === 'in' && !wantType, title: 'Invoices and customer receipts' },
+    { label: 'Money out', href: qs({ dir: 'out', type: undefined }), active: wantDir === 'out' && !wantType, title: 'Supplier payments and expenses' },
+    { label: 'This month', href: qs({ from: monthStart, to: today, dir: undefined, type: undefined }), active: from === monthStart && to === today, title: `${monthStart} to ${today}` },
+    { label: 'Today', href: qs({ from: today, to: today, dir: undefined, type: undefined }), active: from === today && to === today, title: today }
+  ];
   const days = dailyRollup(book, 10);
   const byService = salesByService(book);
   const byExpense = expensesByCategory(book);
@@ -76,6 +139,81 @@ export default async function AccountsDashboard() {
       />
 
       <AlertBanner />
+
+      {/* ------------------------------------------------- find and take away */}
+      <Panel
+        title="Find a voucher"
+        sub={
+          filtering
+            ? `${matches.length} match${matches.length === 1 ? '' : 'es'} across the whole book, ${money(matchedValue, sym)} in total`
+            : 'Searches every invoice, receipt, supplier payment and expense in the book — not only the ten below'
+        }
+      >
+        <div className="flex flex-col gap-3 px-5 py-4">
+          <SavedViews views={savedViews} />
+
+          <form className="flex flex-wrap items-end gap-2.5" method="get">
+            <label className="flex min-w-[240px] flex-1 flex-col gap-1 text-[11px] font-bold uppercase tracking-wide text-muted">
+              Search
+              <input
+                name="q"
+                defaultValue={searchParams.q ?? ''}
+                placeholder="voucher number, customer, supplier, category"
+                className={FIELD}
+              />
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] font-bold uppercase tracking-wide text-muted">
+              Type
+              <select name="type" defaultValue={wantType} className={FIELD}>
+                <option value="">Any</option>
+                {allTypes.map((t) => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] font-bold uppercase tracking-wide text-muted">
+              Direction
+              <select name="dir" defaultValue={wantDir} className={FIELD}>
+                <option value="">Either</option>
+                <option value="in">Money in</option>
+                <option value="out">Money out</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] font-bold uppercase tracking-wide text-muted">
+              From
+              <input type="date" name="from" defaultValue={from} className={FIELD} />
+            </label>
+            <label className="flex flex-col gap-1 text-[11px] font-bold uppercase tracking-wide text-muted">
+              To
+              <input type="date" name="to" defaultValue={to} className={FIELD} />
+            </label>
+            <button type="submit" className="rounded-lg bg-navy-900 px-4 py-2 text-[13px] font-semibold text-white hover:bg-navy-800">
+              Filter
+            </button>
+            {filtering && (
+              <Link href="/accounts" className="rounded-lg border border-hair bg-white px-4 py-2 text-[13px] font-semibold text-navy-900 hover:border-teal-500 hover:text-teal-700">
+                Reset
+              </Link>
+            )}
+          </form>
+
+          {/*
+            The DATES are handed to the export; the search term and the type are not.
+            The export builds twenty-six ledgers out of the book, and narrowing all of
+            them by a free-text search would quietly produce a trial balance that does
+            not balance — a download that disagrees with itself is worse than one that
+            ignores a filter, because nobody checks a spreadsheet against the screen.
+          */}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-hair pt-3">
+            <ExportBar from={from || undefined} to={to || undefined} label="Download the book" />
+            <span className="text-[11.5px] text-muted">
+              {from || to
+                ? `Honours the dates above — ${from || 'start'} to ${to || 'today'}. Twenty-six ledgers in one file.`
+                : 'Twenty-six ledgers in one file. Set the dates above to narrow it.'}
+            </span>
+          </div>
+        </div>
+      </Panel>
 
       {/* -------------------------------------------------- the seven tiles */}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -131,7 +269,14 @@ export default async function AccountsDashboard() {
       </div>
 
       {/* ------------------------------------------------ recent transactions */}
-      <Panel title="Recent transactions" sub="Newest first, across every voucher type">
+      <Panel
+        title={filtering ? 'Matching transactions' : 'Recent transactions'}
+        sub={
+          filtering
+            ? `${matches.length} found${matches.length > 200 ? ', showing the first 200' : ''} — newest first`
+            : 'Newest first, across every voucher type'
+        }
+      >
         <Table head={['Date', 'Type', 'Reference', 'Party', 'Amount']} right={[4]}>
           {recent.map((r) => (
             <tr key={r.ref} className="hover:bg-surface">
