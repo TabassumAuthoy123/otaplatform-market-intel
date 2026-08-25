@@ -431,16 +431,38 @@ function buildSheets(book: Book, from?: string, to?: string): Sheet[] {
   sheets.push({
     name: '21_RECONCILIATION',
     title: 'Control accounts vs the journal',
-    head: ['Account', 'Control total', 'Ledger balance', 'Difference'],
-    widths: [40, 20, 20, 18],
+    head: ['Account', 'Control total', 'Manual adjustment', 'Ledger balance', 'Difference'],
+    widths: [40, 20, 20, 20, 18],
     note:
-      'Two independent derivations of the same vouchers. Every difference must be zero; a non-zero row means ' +
-      'the dashboard and the ledger disagree about a voucher.',
+      'Two independent derivations of the same vouchers. Control plus manual adjustments must equal the ledger; ' +
+      'a non-zero difference means the dashboard and the ledger disagree about a voucher. The adjustment column ' +
+      'is manual journal vouchers, which post to the ledger only — every one of them is listed on the next sheet.',
     rows: [
-      ...recon.checks.map((c): Row => [c.name, n0(c.control), n0(c.ledger), n0(c.difference)]),
-      ['Trial balance — control basis', n0(tb.totalDebit), n0(tb.totalCredit), n0(tb.difference)],
-      ['Trial balance — journal basis', n0(jtb.totalDebit), n0(jtb.totalCredit), n0(jtb.difference)]
+      ...recon.checks.map((c): Row => [c.name, n0(c.control), n0(c.adjustment), n0(c.ledger), n0(c.difference)]),
+      ['Trial balance — control basis', n0(tb.totalDebit), '', n0(tb.totalCredit), n0(tb.difference)],
+      ['Trial balance — journal basis', n0(jtb.totalDebit), '', n0(jtb.totalCredit), n0(jtb.difference)]
     ]
+  });
+
+  /* ------------------------------------- 21b the reconciling items themselves */
+
+  /**
+   * Printed even when empty, and never netted into the column beside it.
+   *
+   * The adjustment column is the only place in this book where a figure can move
+   * because a person said so rather than because a document exists. Showing the net
+   * without the list would mean the one number an auditor most wants itemised is the
+   * one number that is not.
+   */
+  sheets.push({
+    name: '21B_MANUAL_ADJUSTMENTS',
+    title: 'Manual journal vouchers touching a control account',
+    head: ['Voucher', 'Date', 'Account', 'Effect on balance', 'Posted by', 'Narration'],
+    widths: [16, 14, 32, 20, 22, 60],
+    note:
+      'Every manual posting that lands on an account the reconciliation cross-checks. These are the reconciling ' +
+      'items behind the adjustment column. An empty sheet means the two derivations agree with nothing in between.',
+    rows: recon.adjustments.map((a): Row => [a.no, a.date, a.accountName, n0(a.amount), a.createdBy, a.narration])
   });
 
   /* -------------------------------------------- 22 cancelled bookings */

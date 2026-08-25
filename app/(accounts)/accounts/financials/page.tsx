@@ -72,14 +72,22 @@ export default async function FinancialsPage({
           }`}
         >
           {recon.clean
-            ? 'All six control accounts agree with the ledger, and both trial balances balance. The statements below can be relied on.'
+            ? 'Every control account agrees with the ledger once manual vouchers are allowed for, and both trial balances balance. The statements below can be relied on.'
             : 'At least one control account disagrees with the ledger. A figure on this page contradicts a figure elsewhere in the app — do not file anything from it until the row below is explained.'}
         </div>
-        <Table head={['Account', 'Control total', 'Ledger balance', 'Difference']} right={[1, 2, 3]}>
+        <Table head={['Account', 'Control total', 'Manual adj.', 'Ledger balance', 'Difference']} right={[1, 2, 3, 4]}>
           {recon.checks.map((c) => (
             <tr key={c.name} className="hover:bg-surface">
               <Td>{c.name}</Td>
               <Td right mono>{money(c.control, sym)}</Td>
+              {/*
+                Muted at zero so the eye skips it, coloured when it is not — a manual
+                adjustment is the one figure here that moved because somebody decided
+                it should, and it should read differently from the derived ones.
+              */}
+              <Td right mono className={c.adjustment === 0 ? 'text-muted' : 'font-semibold text-amber-700'}>
+                {money(c.adjustment, sym)}
+              </Td>
               <Td right mono>{money(c.ledger, sym)}</Td>
               <Td right mono className={c.difference === 0 ? 'text-muted' : 'font-bold text-red-700'}>
                 {money(c.difference, sym)}
@@ -89,6 +97,7 @@ export default async function FinancialsPage({
           <tr className="border-t border-hair bg-panel">
             <Td className="font-semibold">Trial balance — control basis</Td>
             <Td right mono>{money(tb.totalDebit, sym)}</Td>
+            <Td />
             <Td right mono>{money(tb.totalCredit, sym)}</Td>
             <Td right mono className={tb.difference === 0 ? 'text-muted' : 'font-bold text-red-700'}>
               {money(tb.difference, sym)}
@@ -97,6 +106,7 @@ export default async function FinancialsPage({
           <tr className="bg-panel">
             <Td className="font-semibold">Trial balance — journal basis</Td>
             <Td right mono>{money(jtb.totalDebit, sym)}</Td>
+            <Td />
             <Td right mono>{money(jtb.totalCredit, sym)}</Td>
             <Td right mono className={jtb.difference === 0 ? 'text-muted' : 'font-bold text-red-700'}>
               {money(jtb.difference, sym)}
@@ -104,6 +114,43 @@ export default async function FinancialsPage({
           </tr>
         </Table>
       </Panel>
+
+      {/* -------------------------------------------------- the reconciling items */}
+
+      {/*
+        Rendered only when there are any, but never summarised away when there are.
+
+        The adjustment column above is the one figure on this page that moved because
+        a person decided it should rather than because a document exists. Netting it
+        into a total and leaving it there would make the single number an auditor most
+        wants itemised the only one that is not.
+      */}
+      {recon.adjustments.length > 0 && (
+        <Panel
+          title="Manual vouchers behind the adjustment column"
+          sub={`${recon.adjustments.length} posting(s) on accounts the reconciliation cross-checks — these are the reconciling items, not a separate ledger`}
+        >
+          <Table head={['Voucher', 'Date', 'Account', 'Effect on balance', 'Posted by', 'Narration']} right={[3]}>
+            {recon.adjustments.map((a, i) => (
+              <tr key={`${a.no}-${a.account}-${i}`} className="hover:bg-surface">
+                {/*
+                  Plain text, not a ModuleLink. ModuleLink renders nothing when its
+                  target is switched off, which is right for a "Full battlecards →"
+                  call to action and wrong here: the voucher number is the identifier
+                  of the row. An installation without the journal module would get a
+                  blank first column and no way to say which voucher this is.
+                */}
+                <Td mono>{a.no}</Td>
+                <Td mono>{a.date}</Td>
+                <Td>{a.accountName}</Td>
+                <Td right mono className="font-semibold text-amber-700">{money(a.amount, sym)}</Td>
+                <Td className="text-muted">{a.createdBy}</Td>
+                <Td>{a.narration}</Td>
+              </tr>
+            ))}
+          </Table>
+        </Panel>
+      )}
 
       {/* ---------------------------------------------------------- balance sheet */}
       <Panel

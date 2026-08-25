@@ -175,6 +175,13 @@ const MODULE_CAP: Record<string, string> = {
    */
   reports: 'books_financials',
   ledger: 'books_financials',
+  /*
+   * With the ledger, not with the invoice list. A journal voucher can post to any
+   * account including cost and margin, so anybody who may read it may read what the
+   * agency pays its suppliers — the exact thing books_financials was split out to
+   * hold back. Writing one is a separate question, answered in the admin portal.
+   */
+  journal: 'books_financials',
   financials: 'books_financials',
   reminders: 'books_read',
   statements: 'books_read',

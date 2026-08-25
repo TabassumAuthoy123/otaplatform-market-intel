@@ -1,3 +1,8 @@
+import { chartAccounts } from '@/lib/journal-rules.js';
+import { adjustmentFor, controlAdjustments } from '@/lib/journals';
+// Type-only, so the cycle with lib/journals.ts is erased at compile time rather than
+// existing at runtime. The voucher type lives with its rules, not with the engine.
+import type { JournalVoucher } from '@/lib/journals';
 import { requireRead } from '@/lib/auth';
 import path from 'node:path';
 import { todayIn } from '@/lib/clock';
@@ -307,6 +312,22 @@ export type Book = {
    * ever invented, because a fabricated one puts money into the P&L.
    */
   contracts?: CarrierContract[];
+  /**
+   * Manual journal vouchers. See lib/journals.ts — including why they are allowed to
+   * touch a control account and what that costs.
+   */
+  journalEntries?: JournalVoucher[];
+  /**
+   * Ledger accounts an accountant defines, on top of the ones derived from the data.
+   *
+   * The chart used to be derived in full: cash, one per bank, receivables, payables,
+   * sales, purchases, one per expense category. That is complete for trading and has
+   * nothing at all for accruals, prepayments, provisions, depreciation, retained
+   * earnings or a suspense account — so a manual voucher would have had nowhere to
+   * post. A derived chart cannot invent those, because only the accountant knows
+   * which ones this agency keeps.
+   */
+  ledgerAccounts?: LedgerAccount[];
   /**
    * Tax rules with effective dates, replacing a single `vatRate`. Empty until real
    * ones are loaded — a stale rate baked into a shipped product is a wrong invoice
@@ -1242,6 +1263,16 @@ export type AccountGroup = 'asset' | 'liability' | 'equity' | 'income' | 'expens
 
 export type Account = { code: string; name: string; group: AccountGroup };
 
+/**
+ * An account the accountant added, as opposed to one derived from the data.
+ *
+ * `code` is theirs to choose so it can match the chart they already use — an agency
+ * migrating off another system should not have to relearn its own account numbers.
+ * It is prefixed on the way into the journal (see AC.user) so a hand-typed code can
+ * never collide with a derived one such as `BANK:b1` or `AR`.
+ */
+export type LedgerAccount = { id: string; code: string; name: string; group: AccountGroup; note?: string };
+
 export type JournalLine = {
   date: string;
   /** Voucher number this posting came from. */
@@ -1270,7 +1301,13 @@ export const AC = {
   RETURNS: 'SALES_RETURNS',
   PURCHASES: 'PURCHASES',
   bank: (id: string) => `BANK:${id}`,
-  expense: (id: string) => `EXP:${id}`
+  expense: (id: string) => `EXP:${id}`,
+  /**
+   * Namespaced, so an accountant typing `AR` or `CASH` as their own account code
+   * cannot silently merge their account into a control account and take the
+   * reconciliation with it.
+   */
+  user: (code: string) => `GL:${code}`
 } as const;
 
 /** The chart of accounts, built from the book so it always matches the data. */
@@ -1283,59 +1320,39 @@ export function chartOfAccounts(book: Book): Account[] {
 }
 
 function buildChart(book: Book): Account[] {
-  return [
-    { code: AC.CASH, name: 'Cash in hand', group: 'asset' },
-    ...book.banks.map((b): Account => ({ code: AC.bank(b.id), name: b.name, group: 'asset' })),
-    { code: AC.AR, name: 'Accounts receivable', group: 'asset' },
-    { code: AC.ADVANCES, name: 'Advances to suppliers', group: 'asset' },
-    { code: AC.AP, name: 'Accounts payable', group: 'liability' },
-    { code: AC.VAT, name: 'VAT payable', group: 'liability' },
-    /**
-     * Money billed for travel that has not happened yet.
-     *
-     * A liability, not income. The agency has been paid to carry somebody in
-     * October; until October it owes them the trip. Recognising it in June
-     * overstates June and leaves October looking empty, and for an agency selling
-     * Hajj a year ahead that is most of the reported profit sitting in the wrong
-     * year.
-     */
-    { code: AC.DEFERRED, name: 'Deferred income — sold, not yet flown', group: 'liability' },
-    /**
-     * Airline memos, held apart from ordinary payables on purpose.
-     *
-     * They settle through BSP alongside tickets, so they could sit in Accounts
-     * payable. Two reasons not to. The control side of AP is derived from supplier
-     * BILLS, so posting memos there would break the reconciliation unless that
-     * derivation grew a second source — and an agency wants to see how much of what
-     * it owes airlines is memos, because that number is a measure of its own error
-     * rate rather than of its trading.
-     */
-    { code: AC.MEMOS, name: 'Airline memos payable (ADM/ACM)', group: 'liability' },
-    { code: AC.MEMO_COST, name: 'Airline debit memos', group: 'expense' },
-    /**
-     * Exchange gain and loss on settling a foreign-currency voucher.
-     *
-     * One account rather than two. A gain and a loss are the same movement in
-     * opposite directions, and splitting them means a month with both reports two
-     * numbers that have to be netted by hand to answer the only question anybody
-     * asks — did we make or lose money on the rate.
-     */
-    { code: AC.FX, name: 'Exchange gain / (loss)', group: 'income' },
-    /**
-     * Money received beyond what an invoice was carrying.
-     *
-     * Not negative receivables. A customer who overpays is owed the difference, so
-     * it is a liability — and letting it sit as a negative asset is what made the
-     * two derivations disagree, because the control side floors the amount due at
-     * zero and the ledger did not.
-     */
-    { code: AC.CUSTOMER_CREDIT, name: 'Customer credit balances', group: 'liability' },
-    { code: AC.EQUITY, name: 'Opening balances', group: 'equity' },
-    { code: AC.SALES, name: 'Sales revenue', group: 'income' },
-    { code: AC.RETURNS, name: 'Credit notes and cancellations', group: 'income' },
-    { code: AC.PURCHASES, name: 'Cost of sales — supplier bills', group: 'expense' },
-    ...book.expenseCategories.map((c): Account => ({ code: AC.expense(c.id), name: c.name, group: 'expense' }))
-  ];
+  /**
+   * Delegated, not duplicated.
+   *
+   * The admin portal validates a journal voucher against "is this account in the
+   * chart", and it cannot run TypeScript — so the list has to exist in plain JS. Two
+   * copies would agree on the day they were written and not for long after, and the
+   * failure mode is the portal offering an account this side does not know, which
+   * renders as a raw code on the ledger and reconciles against nothing.
+   *
+   * The "why this account exists" notes stay here, beside the code that reads them:
+   *
+   *   DEFERRED   Money billed for travel that has not happened yet. A liability, not
+   *              income — the agency has been paid to carry somebody in October and
+   *              until October it owes them the trip. For an agency selling Hajj a
+   *              year ahead, recognising it early puts most of the reported profit in
+   *              the wrong year.
+   *   MEMOS      Airline memos, held apart from ordinary payables. They settle through
+   *              BSP alongside tickets so they could sit in AP, but the control side of
+   *              AP is derived from supplier BILLS — posting memos there would break the
+   *              reconciliation. An agency also wants memos visible separately, because
+   *              that number measures its own error rate rather than its trading.
+   *   FX         One account, not two. A gain and a loss are the same movement in
+   *              opposite directions, and splitting them makes a month with both report
+   *              two figures that have to be netted by hand to answer the only question
+   *              anybody asks.
+   *   CUSTOMER_CREDIT
+   *              Money received beyond what an invoice carried. Not negative
+   *              receivables: a customer who overpays is owed the difference, so it is a
+   *              liability. Letting it sit as a negative asset is exactly what made the
+   *              two derivations disagree, because the control side floors the amount
+   *              due at zero and the ledger did not.
+   */
+  return chartAccounts(book) as Account[];
 }
 
 export const accountName = (code: string, chart: Account[]) =>
@@ -1635,6 +1652,26 @@ function buildJournal(book: Book): JournalLine[] {
     ]);
   }
 
+  /* --- manual journal vouchers ------------------------------------------ */
+
+  /**
+   * Posted verbatim, and last.
+   *
+   * Verbatim because there is nothing to derive: unlike every voucher type above,
+   * a journal voucher IS the double entry rather than a business document that
+   * implies one. The only rule is the one enforced before it was written — debits
+   * equal credits — and re-deriving anything here would be inventing a second
+   * opinion about a number the accountant already stated.
+   *
+   * Last only so the sort below has a stable tie-break by reference within a date;
+   * `JV` sorting after the trading vouchers keeps a day's ledger reading in the
+   * order the work actually happened, with adjustments at the end of the day.
+   */
+  for (const v of book.journalEntries ?? []) {
+    post(v.date, v.no, 'Journal', '', v.narration,
+      v.lines.map((l) => ({ account: l.account, debit: l.debit, credit: l.credit })));
+  }
+
   return lines.sort((a, b) => a.date.localeCompare(b.date) || a.ref.localeCompare(b.ref));
 }
 
@@ -1675,7 +1712,7 @@ function buildBalances(all: JournalLine[], inRange: (d: string) => boolean): Bal
 
 /** Accounts that actually moved, signed by their natural side. */
 function summariseBalances(chart: Account[], balances: Balances) {
-  return chart
+  const summary = chart
     .map((a) => {
       const b = balances.get(a.code) ?? { debit: 0, credit: 0 };
       return {
@@ -1686,6 +1723,41 @@ function summariseBalances(chart: Account[], balances: Balances) {
       };
     })
     .filter((r) => r.debit !== 0 || r.credit !== 0);
+
+  /**
+   * Postings whose account is no longer in the chart, kept rather than dropped.
+   *
+   * This walked the chart and nothing else, which was safe for as long as the chart
+   * WAS the data — every account was derived from a bank, an expense category or a
+   * fixed code, so a posting to a code the chart did not have could not exist.
+   *
+   * An accountant defining their own accounts breaks that. Delete a ledger account
+   * that a journal voucher already posted to and every line of that voucher on that
+   * account silently left the ledger: the balance vanished, and the journal trial
+   * balance stopped balancing by exactly the amount that disappeared. Measured on a
+   * book where three accounts went missing, the two sides came apart by 10,200 with
+   * nothing on screen to say why.
+   *
+   * A trial balance that balances is the one property in this file that must not
+   * depend on masters data. So an orphan is surfaced, under its raw code and a name
+   * that says what happened. It is deliberately ugly to look at — the fix is to
+   * restore the account or reverse the voucher, and it should not be possible to
+   * live with it comfortably.
+   */
+  const known = new Set(chart.map((a) => a.code));
+  for (const [code, b] of balances) {
+    if (known.has(code)) continue;
+    if (b.debit === 0 && b.credit === 0) continue;
+    const account: Account = {
+      code,
+      name: `${code} — account no longer in the chart`,
+      // Assumed debit-natured only so a balance renders; it is a fault to fix, not
+      // a classification to trust.
+      group: 'asset'
+    };
+    summary.push({ account, debit: b.debit, credit: b.credit, balance: b.debit - b.credit });
+  }
+  return summary;
 }
 
 /** The running-balance view of one account, the way a ledger card reads. */
@@ -1763,18 +1835,19 @@ export function reconciliation(book: Book) {
   const asOfBalance = (code: string) => asOf.summary.find((r) => r.account.code === code)?.balance ?? 0;
 
   const checks = [
-    { name: 'Cash in hand', control: cashBook(book).closing, ledger: bal(AC.CASH) },
-    { name: 'Bank accounts', control: allBankBalances(book).total, ledger: book.banks.reduce((t, b) => t + bal(AC.bank(b.id)), 0) },
-    { name: 'Accounts receivable', control: receivables(book).total, ledger: bal(AC.AR) },
-    { name: 'Accounts payable', control: payables(book).total, ledger: bal(AC.AP) },
+    { name: 'Cash in hand', control: cashBook(book).closing, ledger: bal(AC.CASH), codes: [AC.CASH] },
+    { name: 'Bank accounts', control: allBankBalances(book).total, ledger: book.banks.reduce((t, b) => t + bal(AC.bank(b.id)), 0), codes: book.banks.map((b) => AC.bank(b.id)) },
+    { name: 'Accounts receivable', control: receivables(book).total, ledger: bal(AC.AR), codes: [AC.AR] },
+    { name: 'Accounts payable', control: payables(book).total, ledger: bal(AC.AP), codes: [AC.AP] },
     {
       name: 'Sales revenue (net of credit notes)',
       control: s.sales,
       // RETURNS is contra-income: its natural sign already makes it negative, so
       // it is added. Subtracting took the credit notes off twice.
-      ledger: bal(AC.SALES) + bal(AC.RETURNS)
+      ledger: bal(AC.SALES) + bal(AC.RETURNS),
+      codes: [AC.SALES, AC.RETURNS]
     },
-    { name: 'Operating expenses', control: s.expenses, ledger: book.expenseCategories.reduce((t, c) => t + bal(AC.expense(c.id)), 0) },
+    { name: 'Operating expenses', control: s.expenses, ledger: book.expenseCategories.reduce((t, c) => t + bal(AC.expense(c.id)), 0), codes: book.expenseCategories.map((c) => AC.expense(c.id)) },
     /**
      * Deferred income, checked AS AT TODAY rather than over the whole book.
      *
@@ -1794,22 +1867,43 @@ export function reconciliation(book: Book) {
      * deferred income, a memo does not unwind with time, so there is nothing a date
      * bound would reveal.
      */
-    { name: 'Airline memos payable', control: memoPayable(book).total, ledger: bal(AC.MEMOS) },
+    { name: 'Airline memos payable', control: memoPayable(book).total, ledger: bal(AC.MEMOS), codes: [AC.MEMOS] },
     /**
      * The two halves of a settlement that is not a plain relief. Both compared by
      * the same route as everything else — and both were silently landing in
      * receivables until they were given somewhere to go.
      */
-    { name: 'Exchange gain / (loss)', control: fxGain(book).total, ledger: bal(AC.FX) },
-    { name: 'Customer credit balances', control: customerCredit(book).total, ledger: bal(AC.CUSTOMER_CREDIT) },
+    { name: 'Exchange gain / (loss)', control: fxGain(book).total, ledger: bal(AC.FX), codes: [AC.FX] },
+    { name: 'Customer credit balances', control: customerCredit(book).total, ledger: bal(AC.CUSTOMER_CREDIT), codes: [AC.CUSTOMER_CREDIT] },
     {
       name: 'Deferred income (as at today)',
       control: deferredIncome(book, todayISO(book)).total,
-      ledger: asOfBalance(AC.DEFERRED)
+      ledger: asOfBalance(AC.DEFERRED),
+      codes: [AC.DEFERRED]
     }
-  ].map((c) => ({ ...c, difference: Math.round(c.control - c.ledger) }));
+  ].map((c) => {
+    /**
+     * The third column, and the reason the cross-check survives manual vouchers.
+     *
+     * A journal voucher posts to the ledger and to nothing else, so the moment one
+     * touches a control account the two derivations stop agreeing — through no fault
+     * of either. Rather than teach the control side about manual entries (which would
+     * make the two routes share a term, and two routes that share a term agreeing is
+     * not evidence) the manual movement is stated and subtracted.
+     *
+     * A difference that is NOT explained by a listed voucher is still exactly as loud
+     * as it was before. That is the whole property being preserved.
+     */
+    const adjustment = c.codes.reduce((t, code) => t + adjustmentFor(book, code), 0);
+    return { ...c, adjustment, difference: Math.round(c.control + adjustment - c.ledger) };
+  });
 
-  return { checks, clean: checks.every((c) => c.difference === 0) };
+  return {
+    checks,
+    clean: checks.every((c) => c.difference === 0),
+    /** Listed, never netted away — see lib/journals.ts on what a manual voucher costs. */
+    adjustments: controlAdjustments(book)
+  };
 }
 
 /**

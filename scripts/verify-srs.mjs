@@ -65,6 +65,36 @@ async function get(path) {
   return out;
 }
 
+
+/**
+ * The reconciliation, parsed BY HEADER NAME rather than by column position.
+ *
+ * Six checks in this file used to index the difference at `[3]`. That was correct
+ * until the reconciliation grew a "Manual adjustment" column between the control
+ * total and the ledger balance — after which `[3]` was the LEDGER BALANCE, a large
+ * number on every row. All six reported the book as catastrophically out of balance
+ * while every actual difference was zero, and the export they were reading printed
+ * that zero in plain sight on every line.
+ *
+ * Position is the wrong thing to depend on for a report that is expected to grow.
+ * Naming the column costs one function and cannot fail the same way twice.
+ */
+async function reconciliationRows() {
+  const res = await fetch(`${APP}/api/accounts/export?format=csv&section=reconciliation`);
+  const text = (await res.text()).replace(/^﻿/, '').replace(new RegExp(String.fromCharCode(13), 'g'), '');
+  const cells = (line) => (line.match(/"[^"]*"/g) || []).map((c) => c.slice(1, -1));
+  const lines = text.trim().split(String.fromCharCode(10)).filter((l) => l.includes(','));
+  const cols = cells(lines[0]);
+  return lines.slice(1).map((line) => {
+    const c = cells(line);
+    const row = { raw: line.replace(/"/g, '') };
+    cols.forEach((name, i) => { row[name] = c[i]; });
+    return row;
+  });
+}
+/** Never 'the fourth cell' again. */
+const difference = (row) => Number(row.Difference);
+
 /** A page must load AND contain every phrase, or the feature is not really there. */
 async function page(path, ...must) {
   const { status, body } = await get(path);
@@ -247,9 +277,8 @@ await check('Trial balance difference is zero (both bases)', async () => {
   return [lines.length === 2 && bad.length === 0, lines.map((l) => l.replace(/"/g, '')).join(' | ')];
 });
 await check('Control accounts agree with the journal', async () => {
-  const { body } = await get('/api/accounts/export?format=csv&section=reconciliation');
-  const rows = body.split(/\r?\n/).slice(1).filter((l) => l.includes(','));
-  const bad = rows.filter((l) => { const c = l.replace(/"/g, '').split(','); return c[3] && c[3].trim() !== '0'; });
+  const rows = await reconciliationRows();
+  const bad = rows.filter((r) => difference(r) !== 0);
   return [bad.length === 0, `${rows.length} checks, ${bad.length} disagreeing`];
 });
 await check('Balance sheet balances', async () => {
@@ -671,10 +700,11 @@ await check('Revenue is deferred to the travel date, and both derivations agree'
    * negated the balance on an assumption about sign conventions, and the row came
    * back at double the value with the sign inverted.
    */
-  const r = await fetch(`${APP}/api/accounts/export?format=csv&section=reconciliation`);
-  const line = (await r.text()).split(/\r?\n/).find((x) => /Deferred income/.test(x));
-  if (!line) return [false, 'the reconciliation does not check deferred income at all'];
-  const [, control, ledger, diff] = line.split('","').map((c) => c.replace(/^"|"$/g, ''));
+  const row = (await reconciliationRows()).find((x) => /Deferred income/.test(x.Account));
+  if (!row) return [false, 'the reconciliation does not check deferred income at all'];
+  const control = row['Control total'];
+  const ledger = row['Ledger balance'];
+  const diff = row.Difference;
   return [Number(diff) === 0 && Number(control) > 0,
     Number(control) > 0
       ? `control ${Number(control).toLocaleString('en-IN')} vs ledger ${Number(ledger).toLocaleString('en-IN')}, difference ${diff}`
@@ -867,11 +897,44 @@ await check('An exchange gain and an overpayment are told apart, not merged', ()
     `same currency required: ${needsSameCurrency}, rates must differ: ${needsDifferentRate}, defaults to no gain: ${safeDefault}`];
 });
 
+await check('No default password is shipped for anybody to look up', () => {
+  /**
+   * `seedUsersIfMissing` used to fall back to a fixed password, and that string was
+   * committed twice — in admin/server.js and again in B2C-ADMIN.md — to a PUBLIC
+   * repository. The default super-admin password of every installation was readable
+   * by anyone who found the repo. It was survivable only because the portal binds
+   * 127.0.0.1; `npm run dev:lan`, a tunnel or a deploy would each have turned it into
+   * a published super-admin account.
+   *
+   * Documenting a shipped default is exactly what publishes it, so the check is that
+   * there is no default to document: the seed must generate one, and no tracked file
+   * may carry a password-shaped literal next to ADMIN_PASSWORD.
+   */
+  const src = readFileSync('admin/server.js', 'utf8');
+  const generated = /ADMIN_PASSWORD \|\| `Ota-\$\{crypto\.randomBytes/.test(src);
+  const literal = /ADMIN_PASSWORD \|\| ['"]/.test(src);
+  const doc = readFileSync('B2C-ADMIN.md', 'utf8');
+  // Anything that looks like a real password printed as fact rather than as a shape.
+  const docLeak = /password\s+(?!Ota-XXX)[A-Za-z0-9@._-]{10,}/.test(doc);
+  return [generated && !literal && !docLeak,
+    `generated: ${generated}, string literal left behind: ${literal}, doc prints one: ${docLeak}`];
+});
+
 await check('An overpayment is a liability, never negative receivables', () => {
   const src = readFileSync('lib/accounting.ts', 'utf8');
+  /**
+   * The chart moved to lib/journal-rules.js so the admin portal could validate a
+   * journal voucher against the same account list the app renders — it cannot run
+   * TypeScript, and two copies of a chart is two charts. The classification is read
+   * from wherever it now lives; the POSTING is still read from the engine.
+   *
+   * This failed on the move, which was the check doing its job in an unexpected
+   * direction: the property held the whole time and the file did not.
+   */
+  const chart = readFileSync('lib/journal-rules.js', 'utf8');
   // A customer who overpays is owed the difference. Letting it sit as a negative
   // asset is what made the two derivations disagree in the first place.
-  const liability = src.includes("{ code: AC.CUSTOMER_CREDIT, name: 'Customer credit balances', group: 'liability' }");
+  const liability = chart.includes("{ code: AC.CUSTOMER_CREDIT, name: 'Customer credit balances', group: 'liability' }");
   const posted = src.includes('{ account: AC.CUSTOMER_CREDIT, credit: overpaid }');
   return [liability && posted, `held as a liability: ${liability}, and posted there: ${posted}`];
 });
@@ -882,13 +945,11 @@ await check('Both bases carry the settlement accounts', async () => {
    * these accounts, so it went 7,200 out the first time a foreign receipt was
    * recorded while the journal basis stayed level. Both now state them.
    */
-  const text = (await (await fetch(`${APP}/api/accounts/export?format=csv&section=reconciliation`)).text())
-    .replace(new RegExp(String.fromCharCode(13), 'g'), '');
-  const rows = text.trim().split(String.fromCharCode(10));
-  const bad = rows.slice(1).filter((x) => Number(x.split('","').map((c) => c.replace(/^"|"$/g, ''))[3]) !== 0);
-  const named = rows.some((r) => /Exchange gain/.test(r)) && rows.some((r) => /Customer credit balances/.test(r));
+  const rows = await reconciliationRows();
+  const bad = rows.filter((r) => difference(r) !== 0);
+  const named = rows.some((r) => /Exchange gain/.test(r.Account)) && rows.some((r) => /Customer credit balances/.test(r.Account));
   return [bad.length === 0 && named,
-    bad.length ? `out of balance: ${bad.join(' | ')}` : `${rows.length - 1} control account(s) including both settlement rows, all level`];
+    bad.length ? `out of balance: ${bad.map((b) => b.raw).join(' | ')}` : `${rows.length} control account(s) including both settlement rows, all level`];
 });
 
 /* ------------------------------------------ tax rules and the period lock */
@@ -1109,10 +1170,8 @@ await check('Margin groups by branch and by consultant', async () => {
 await check('Attribution moved no total', async () => {
   // A branch is a label on a sale. It must not reprice one, and the whole-book
   // reconciliation is what proves it did not.
-  const r = await fetch(`${APP}/api/accounts/export?format=csv&section=reconciliation`);
-    const text = (await r.text()).replace(new RegExp(String.fromCharCode(13), 'g'), '');
-    const rows = text.trim().split(String.fromCharCode(10)).slice(1);
-  const bad = rows.filter((x) => Number(x.split('","').map((c) => c.replace(/^"|"$/g, ''))[3]) !== 0);
+  const rows = await reconciliationRows();
+  const bad = rows.filter((x) => difference(x) !== 0);
   return [bad.length === 0, `${rows.length} control account(s), ${bad.length} out of balance`];
 });
 
@@ -1285,11 +1344,10 @@ await check('Adding the document table moved no total', async () => {
    * change was done on its own rather than bundled with the deferral work that
    * genuinely does move money.
    */
-  const r = await fetch(`${APP}/api/accounts/export?format=csv&section=reconciliation`);
-  const rows = (await r.text()).trim().split(/\r?\n/).slice(1);
-  const bad = rows.filter((x) => Number(x.split('","').map((c) => c.replace(/^"|"$/g, ''))[3]) !== 0);
-  return [r.ok && rows.length >= 6 && bad.length === 0,
-    bad.length ? `out of balance: ${bad.join(' | ')}` : `${rows.length} control account(s), every difference still 0`];
+  const rows = await reconciliationRows();
+  const bad = rows.filter((x) => difference(x) !== 0);
+  return [rows.length >= 6 && bad.length === 0,
+    bad.length ? `out of balance: ${bad.map((b) => b.raw).join(' | ')}` : `${rows.length} control account(s), every difference still 0`];
 });
 
 await check('Only a memo may post — a ticket document still never does', () => {

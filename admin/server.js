@@ -377,11 +377,25 @@ function verifyPassword(password, salt, expectedHash) {
 /**
  * First boot with no users.json: create one admin so the portal is usable.
  * Override with ADMIN_EMAIL / ADMIN_PASSWORD env vars before first run.
+ *
+ * THE PASSWORD IS GENERATED, NOT A CONSTANT, AND THAT IS A FIX
+ *
+ * This used to fall back to a fixed string. That string was committed, and this
+ * repository is public — so the default super-admin password of every installation
+ * was readable by anybody who found the repo, in this file and again in B2C-ADMIN.md.
+ * It was only ever harmless because the portal binds 127.0.0.1; the day somebody runs
+ * `dev:lan`, puts it behind a tunnel or deploys it, a published default is a published
+ * super-admin account.
+ *
+ * A shipped default is worse than a generated one even when it is documented, because
+ * documenting it is exactly what publishes it. Now the value is random per install and
+ * printed to the terminal once. Nobody can commit it, because nobody but the operator
+ * ever sees it.
  */
 function seedUsersIfMissing() {
   if (fs.existsSync(USERS_FILE)) return null;
   const email = (process.env.ADMIN_EMAIL || 'admin@softifybd.com').toLowerCase();
-  const password = process.env.ADMIN_PASSWORD || 'OtaAdmin@2026';
+  const password = process.env.ADMIN_PASSWORD || `Ota-${crypto.randomBytes(9).toString('base64url')}`;
   const { salt, hash } = hashPassword(password);
   fs.mkdirSync(CONTENT_DIR, { recursive: true });
   fs.writeFileSync(
@@ -740,7 +754,8 @@ function page({ title, session, body, active = '' }) {
         <a href="/dashboard" class="${active === 'dashboard' ? 'on' : ''}">Overview</a>
         ${vis.leads ? `<a href="/leads" class="${active === 'leads' ? 'on' : ''}">Demo requests</a>` : ''}
         ${vis.books ? `<div class="sep">Accounting</div>
-        <a href="/books" class="${active === 'books' ? 'on' : ''}">Records${RBAC.canWriteBooks(session.role) ? ' — add / edit / delete' : ' — read only'}</a>` : ''}
+        <a href="/books" class="${active === 'books' ? 'on' : ''}">Records${RBAC.canWriteBooks(session.role) ? ' — add / edit / delete' : ' — read only'}</a>
+        <a href="/journal" class="${active === 'journal' ? 'on' : ''}">Journal vouchers</a>` : ''}
         ${vis.design || vis.integrations ? '<div class="sep">Storefront</div>' : ''}
         ${vis.design ? `<a href="/design" class="${active === 'design' ? 'on' : ''}">Design &amp; layout</a>` : ''}
         ${vis.integrations ? `<a href="/integrations" class="${active === 'integrations' ? 'on' : ''}">API integrations</a>` : ''}
@@ -1216,6 +1231,20 @@ const BOOK_COLLECTIONS = [
   { key: 'services', label: 'Services', hint: 'What can appear on an invoice line.', idPrefix: 'SRV-', noPrefix: null, title: ['name'], search: ['name'], amount: null, party: null },
   { key: 'banks', label: 'Bank accounts', hint: 'MFS wallets count as banks.', idPrefix: 'BNK-', noPrefix: null, title: ['name'], search: ['name', 'accountNo'], amount: null, party: null },
   { key: 'expenseCategories', label: 'Expense categories', hint: '', idPrefix: 'EXC-', noPrefix: null, title: ['name'], search: ['name'], amount: null, party: null },
+  /**
+   * Accounts the accountant adds, on top of the ones derived from the data.
+   *
+   * The chart used to be derived in full — cash, one per bank, receivables, payables,
+   * sales, purchases, one per expense category. Complete for trading, and with nothing
+   * at all for accruals, prepayments, provisions, depreciation, retained earnings or a
+   * suspense account. A journal voucher would have had nowhere to post. A derived chart
+   * cannot invent those, because only the accountant knows which ones this agency keeps.
+   *
+   * `code` is theirs to choose, so an agency migrating off another system keeps its own
+   * account numbers. It is namespaced as GL:<code> on the way into the journal, so a
+   * hand-typed `AR` or `CASH` cannot silently merge into a control account.
+   */
+  { key: 'ledgerAccounts', label: 'Ledger accounts', hint: 'Your own accounts for journal vouchers — depreciation, accruals, prepayments, provisions, retained earnings, suspense. The trading accounts are derived from the data and are always present; these are the ones only you know you keep.', idPrefix: 'GLA-', noPrefix: null, title: ['code', 'name'], search: ['code', 'name', 'note'], amount: null, party: null, template: { id: '', code: '', name: '', group: 'expense', note: '' } },
   { key: 'airlines', label: 'Airlines', hint: 'IATA and accounting codes, for ticket lines and BSP reconciliation.', idPrefix: 'AIR-', noPrefix: null, title: ['name'], search: ['name', 'iataCode'], amount: null, party: null, template: { id: '', name: '', iataCode: '', accountingCode: '', hub: '', note: '' } },
   { key: 'hotels', label: 'Hotels', hint: 'Properties that can appear on a hotel or package line.', idPrefix: 'HTL-', noPrefix: null, title: ['name'], search: ['name', 'city'], amount: null, party: null, template: { id: '', name: '', city: '', country: '', stars: '', segment: '' } },
   { key: 'visaTypes', label: 'Visa types', hint: 'Category, validity, service fee and processing window.', idPrefix: 'VIS-', noPrefix: null, title: ['name'], search: ['name', 'category'], amount: null, party: null, template: { id: '', name: '', category: '', validityDays: '', serviceFee: '', processingDays: '' } },
@@ -1269,6 +1298,15 @@ const BOOK_ENUMS = {
       { value: 'domestic', label: 'Domestic' },
       { value: 'saarc', label: 'SAARC' },
       { value: 'international', label: 'International' }
+    ]
+  },
+  ledgerAccounts: {
+    group: [
+      { value: 'asset', label: 'Asset' },
+      { value: 'liability', label: 'Liability' },
+      { value: 'equity', label: 'Equity' },
+      { value: 'income', label: 'Income' },
+      { value: 'expense', label: 'Expense' }
     ]
   },
   contracts: {
@@ -1448,6 +1486,156 @@ function bookEnums(book, spec) {
 }
 
 const bookFile = () => readJson(path.join(CONTENT_DIR, 'accounting.json'), {});
+
+/* ================================================= journal voucher screen === */
+
+const JV = require('../lib/journal-rules.js');
+
+/**
+ * Line rows out of a submitted form.
+ *
+ * `parseForm` gives a string for a field that appeared once and an array for one that
+ * appeared twice, so a two-line voucher and a one-line voucher come back as different
+ * shapes. Both are normalised here rather than at three call sites — the alternative
+ * is a voucher that validates as one line, refuses "needs at least two", and shows the
+ * accountant two rows on screen.
+ */
+function journalLinesFromForm(form) {
+  const col = (name) => [].concat(form[name] === undefined ? [] : form[name]);
+  const accounts = col('line_account');
+  const debits = col('line_debit');
+  const credits = col('line_credit');
+  const memos = col('line_memo');
+  const out = [];
+  for (let i = 0; i < accounts.length; i++) {
+    const account = String(accounts[i] || '').trim();
+    const debit = Number(String(debits[i] || '').trim() || 0);
+    const credit = Number(String(credits[i] || '').trim() || 0);
+    // A blank row is not an error — the form ships spare rows on purpose.
+    if (!account && !debit && !credit) continue;
+    out.push({ account, debit: Number.isFinite(debit) ? debit : NaN, credit: Number.isFinite(credit) ? credit : NaN, memo: String(memos[i] || '').trim() });
+  }
+  return out;
+}
+
+const JV_BLANK_ROWS = 6;
+
+function journalView(session, params, state = {}) {
+  const book = bookFile();
+  const chart = JV.chartAccounts(book);
+  const control = JV.controlAccountCodes(book);
+  const vouchers = (book.journalEntries || []).slice().sort((a, b) => String(b.date).localeCompare(String(a.date)) || String(b.no).localeCompare(String(a.no)));
+  const mayPost = RBAC.can(session.role, 'books_journal');
+  const sym = (book.company && book.company.currencySymbol) || '';
+  const posted = params && params.get('posted');
+  const error = (params && params.get('error')) || null;
+  const draft = state.draft || null;
+  const errors = state.errors || [];
+
+  const money = (n) => `${sym}${Number(n || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+
+  const options = (selected) =>
+    chart
+      .map((a) => `<option value="${esc(a.code)}"${a.code === selected ? ' selected' : ''}>${esc(a.name)}${control.has(a.code) ? ' — control' : ''}</option>`)
+      .join('');
+
+  const draftLines = draft && draft.lines && draft.lines.length ? draft.lines : [];
+  const rows = [];
+  for (let i = 0; i < Math.max(JV_BLANK_ROWS, draftLines.length + 2); i++) {
+    const l = draftLines[i] || {};
+    rows.push(`<tr>
+      <td><select name="line_account"><option value="">—</option>${options(l.account || '')}</select></td>
+      <td><input name="line_memo" value="${esc(l.memo || '')}" placeholder="optional"></td>
+      <td><input name="line_debit" type="number" step="0.01" min="0" value="${l.debit ? esc(String(l.debit)) : ''}" class="num"></td>
+      <td><input name="line_credit" type="number" step="0.01" min="0" value="${l.credit ? esc(String(l.credit)) : ''}" class="num"></td>
+    </tr>`);
+  }
+
+  /**
+   * The whole point of the screen, stated on the screen.
+   *
+   * A journal voucher is the only place in this book where a figure moves because a
+   * person said so rather than because a document exists. Somebody posting one should
+   * be told what that costs before they post it, not discover it on the financials
+   * page a month later.
+   */
+  const explainer = `
+    <div class="note" style="border-left:3px solid #b45309;background:#fffbeb;padding:12px 14px;margin-bottom:16px">
+      <strong>What a journal voucher is for.</strong>
+      Depreciation, an accrual, a prepayment, a provision, a reclassification, a correction of an
+      earlier posting, or the opening balances of an agency moving off another system — anything real
+      that no invoice, bill, receipt or payment describes.
+      <br><br>
+      <strong>Accounts marked “control” are cross-checked.</strong>
+      Posting to one is allowed and is sometimes exactly right, but it is never silent: it appears as a
+      reconciling item on the Financials screen with this voucher's number, date, narration and your
+      name against it. Everything else nets away into the ledger as usual.
+    </div>`;
+
+  const form = mayPost
+    ? `
+    <form method="post" action="/journal/new" class="card" style="margin-bottom:22px">
+      <input type="hidden" name="csrf" value="${csrfFor(session)}">
+      <h2 style="margin-top:0">Post a voucher</h2>
+      ${errors.length ? `<div class="err" style="border-left:3px solid #b91c1c;background:#fef2f2;padding:12px 14px;margin:12px 0">
+        <strong>Not posted.</strong><ul style="margin:8px 0 0 18px">${errors.map((e) => `<li>${esc(e)}</li>`).join('')}</ul></div>` : ''}
+      <div class="row" style="display:flex;gap:16px;flex-wrap:wrap;margin:12px 0">
+        <label>Date<br><input type="date" name="date" value="${esc((draft && draft.date) || todayISO())}" required></label>
+        <label style="flex:1;min-width:320px">Narration — why this entry exists<br>
+          <input name="narration" value="${esc((draft && draft.narration) || '')}" placeholder="Depreciation for August · Accrue unbilled courier · Opening receivable from Tally" required style="width:100%"></label>
+      </div>
+      <table class="grid">
+        <thead><tr><th style="width:36%">Account</th><th>Memo</th><th style="width:15%">Debit</th><th style="width:15%">Credit</th></tr></thead>
+        <tbody>${rows.join('')}</tbody>
+      </table>
+      <p class="sub" style="margin-top:10px">Leave spare rows blank. Debits must equal credits — the voucher is refused otherwise, rather than saved and reconciled later.</p>
+      <p style="margin-top:14px"><button class="primary" type="submit">Post voucher</button></p>
+    </form>`
+    : `<div class="note" style="padding:12px 14px;margin-bottom:22px">You can read journal vouchers but not post one — that needs the <em>${esc(RBAC.CAPS.books_journal)}</em> capability, held by Super Admin and Accountant.</div>`;
+
+  const list = vouchers.length
+    ? vouchers
+        .map((v) => {
+          const debit = (v.lines || []).reduce((t, l) => t + Number(l.debit || 0), 0);
+          const hits = (v.lines || []).filter((l) => control.has(l.account));
+          return `
+          <div class="card" style="margin-bottom:14px">
+            <h3 style="margin:0">${esc(v.no)} · ${esc(v.date)} · ${money(debit)}</h3>
+            <p class="sub" style="margin:4px 0 10px">${esc(v.narration)} — ${esc(v.createdBy)}${v.reversedBy ? ' · <strong>REVERSED</strong>' : ''}${v.reversalOf ? ' · this is a reversal' : ''}</p>
+            ${hits.length ? `<p class="sub" style="color:#b45309;margin:0 0 10px">Touches ${hits.length} control account(s) — listed as a reconciling item on Financials.</p>` : ''}
+            <table class="grid"><thead><tr><th>Account</th><th>Memo</th><th class="num">Debit</th><th class="num">Credit</th></tr></thead><tbody>
+              ${(v.lines || []).map((l) => {
+                const a = chart.find((x) => x.code === l.account);
+                return `<tr><td>${esc(a ? a.name : l.account)}${control.has(l.account) ? ' <span class="pill">control</span>' : ''}</td><td>${esc(l.memo || '')}</td><td class="num">${l.debit ? money(l.debit) : ''}</td><td class="num">${l.credit ? money(l.credit) : ''}</td></tr>`;
+              }).join('')}
+            </tbody></table>
+            ${mayPost && !v.reversedBy && !v.reversalOf ? `
+              <form method="post" action="/journal/reverse" style="margin-top:10px" onsubmit="return confirm('Post a reversing voucher for ${esc(v.no)}? Both are kept — nothing is deleted.')">
+                <input type="hidden" name="csrf" value="${csrfFor(session)}">
+                <input type="hidden" name="id" value="${esc(v.id)}">
+                <button type="submit">Reverse this voucher</button>
+              </form>` : ''}
+          </div>`;
+        })
+        .join('')
+    : `<div class="note" style="padding:14px">No journal vouchers yet. The book has none, so the two derivations on the Financials screen currently agree with nothing standing between them.</div>`;
+
+  return page({
+    title: 'Journal vouchers',
+    session,
+    active: 'journal',
+    body: `
+      <h1>Journal vouchers</h1>
+      <p class="sub">Manual double-entry. ${vouchers.length} posted · ${chart.length} accounts in the chart${(book.ledgerAccounts || []).length ? '' : ' · add your own under Records → Ledger accounts'}</p>
+      ${posted ? `<div class="ok" style="border-left:3px solid #047857;background:#ecfdf5;padding:12px 14px;margin:14px 0">Posted <strong>${esc(posted)}</strong>.</div>` : ''}
+      ${error ? `<div class="err" style="border-left:3px solid #b91c1c;background:#fef2f2;padding:12px 14px;margin:14px 0">${esc(error)}</div>` : ''}
+      ${explainer}
+      ${form}
+      <h2>Posted vouchers</h2>
+      ${list}`
+  });
+}
+
 const collSpec = (k) => BOOK_COLLECTIONS.find((c) => c.key === k);
 
 /** Next free id in a collection, continuing whatever numbering it already uses. */
@@ -4074,6 +4262,129 @@ const server = http.createServer(async (req, res) => {
     }
 
     /* ---- accounting records: full CRUD ---- */
+
+    /* =================================================== journal vouchers ===
+     *
+     * A dedicated screen rather than another entry in the generic /books CRUD.
+     *
+     * The generic editor builds a form by copying the shape of the last record in a
+     * collection, which works for a flat voucher and does not work here: a journal
+     * voucher is a header plus an unbounded list of account/debit/credit lines, and
+     * the one rule that makes it a journal voucher at all — debits equal credits —
+     * has no expression in a per-field editor. A voucher that saves unbalanced is not
+     * a voucher, so the validation has to be able to refuse the whole submission.
+     *
+     * The rules themselves live in lib/journal-rules.js, shared verbatim with the app
+     * on :3002. Neither side gets its own opinion about what a valid voucher is.
+     */
+
+    if (pathname === '/journal' && req.method === 'GET') {
+      return send(res, 200, journalView(session, url.searchParams));
+    }
+
+    if (pathname === '/journal/new' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+
+      const draft = {
+        date: String(form.date || '').trim(),
+        narration: String(form.narration || '').trim(),
+        lines: journalLinesFromForm(form)
+      };
+
+      const book = bookFile();
+      const verdict = JV.validateVoucher(book, draft, LOCK.isLocked);
+      /**
+       * Every failure at once, and the draft handed straight back.
+       *
+       * A form that reports one problem per submission is how a five-line voucher
+       * takes five attempts, and one that clears the boxes on a refusal is how an
+       * accountant retypes a voucher they had already typed correctly except for the
+       * date.
+       */
+      if (!verdict.ok) return send(res, 422, journalView(session, url.searchParams, { draft, errors: verdict.errors }));
+
+      let rec = null;
+      await guardedSave(path.join(CONTENT_DIR, 'accounting.json'), session, (b) => {
+        const rows = b.journalEntries || (b.journalEntries = []);
+        // Numbered inside the lock: two people clicking Post at the same moment would
+        // otherwise be handed the same number and one voucher would overwrite it.
+        rec = {
+          id: `jv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+          no: JV.nextVoucherNo(b),
+          date: draft.date,
+          narration: draft.narration,
+          lines: verdict.lines.map((l) => ({
+            account: l.account,
+            debit: JV.round(l.debit),
+            credit: JV.round(l.credit),
+            memo: String(l.memo || '')
+          })),
+          createdBy: session.email,
+          createdAt: new Date().toISOString()
+        };
+        rows.push(rec);
+      });
+
+      const control = JV.controlAccountCodes(book);
+      const hits = rec.lines.filter((l) => control.has(l.account)).map((l) => l.account);
+      await audit(session, 'create', {
+        collection: 'journalEntries', id: rec.id, label: rec.no,
+        summary: `Posted ${rec.no} for ${verdict.totalDebit.toFixed(2)}${hits.length ? ` — touches control account(s): ${hits.join(', ')}` : ''}`,
+        after: rec
+      });
+      return redirect(res, `/journal?posted=${encodeURIComponent(rec.no)}`);
+    }
+
+    if (pathname === '/journal/reverse' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+
+      const id = String(form.id || '');
+      const book = bookFile();
+      const target = (book.journalEntries || []).find((v) => v.id === id);
+      if (!target) return redirect(res, '/journal');
+      if (target.reversedBy) return redirect(res, `/journal?error=${encodeURIComponent(`${target.no} has already been reversed.`)}`);
+
+      /**
+       * Dated today, not on the original's date.
+       *
+       * Back-dating the reversal into the month being corrected would make both
+       * vouchers vanish from that month's figures, which is the opposite of what a
+       * correction is for: the mistake happened, and the month it was noticed is a
+       * fact about the book. It also means a reversal can never reach into a closed
+       * period — the lock below would refuse it, and rightly.
+       */
+      const on = todayISO();
+      const draft = { date: on, narration: `Reversal of ${target.no} — ${target.narration}`, lines: JV.reversalLines(target) };
+      const verdict = JV.validateVoucher(book, draft, LOCK.isLocked);
+      if (!verdict.ok) return send(res, 422, journalView(session, url.searchParams, { draft, errors: verdict.errors }));
+
+      let rec = null;
+      await guardedSave(path.join(CONTENT_DIR, 'accounting.json'), session, (b) => {
+        const rows = b.journalEntries || (b.journalEntries = []);
+        rec = {
+          id: `jv_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
+          no: JV.nextVoucherNo(b),
+          date: on,
+          narration: draft.narration,
+          lines: draft.lines,
+          createdBy: session.email,
+          createdAt: new Date().toISOString(),
+          reversalOf: target.id
+        };
+        rows.push(rec);
+        // Both sides of the pair are marked, so neither can be read without the other.
+        const original = rows.find((v) => v.id === target.id);
+        if (original) original.reversedBy = rec.id;
+      });
+      await audit(session, 'update', {
+        collection: 'journalEntries', id: rec.id, label: rec.no,
+        summary: `Reversed ${target.no} with ${rec.no} — both kept, nothing deleted`,
+        after: rec
+      });
+      return redirect(res, `/journal?posted=${encodeURIComponent(rec.no)}`);
+    }
 
     if (pathname === '/books' && req.method === 'GET') {
       return send(res, 200, bookIndexView(session, bookFile(), url.searchParams.get('saved') ? 'Saved.' : null));

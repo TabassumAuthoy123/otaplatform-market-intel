@@ -1374,6 +1374,7 @@ npm run verify
 node scripts/verify-srs.mjs      # 167 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 44 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
+node scripts/verify-journal.mjs  # 23 checks — manual vouchers, and the reconciliation surviving them
 node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```
 
@@ -1390,11 +1391,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**307 checks** across the four suites against the running app: each one loads a
+**330 checks** across the five suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **167 + 44 + 39 + 57
+should accept on trust, including from me. It currently reports **167 + 44 + 39 + 23 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -1420,6 +1421,121 @@ byte. No test password is committed anywhere.
 ---
 
 ---
+
+---
+
+## Journal vouchers, and what they cost the reconciliation
+
+Every posting in this book used to be derived from a business document — an invoice, a
+receipt, a bill, a payment, an expense, a credit note. That covers trading and nothing
+else. There was no way to record depreciation, an accrual, a prepayment, a provision,
+a reclassification between two accounts, a correction of a posting made last month, or
+the opening balances of an agency migrating off TRAACS or Tally.
+
+An accountant handed this book **could not close a month, and could not bring their
+existing balances in on day one** — which is the same as saying they could not adopt
+it at all. `/accounts/journal` renders them; the admin portal writes them.
+
+### The design problem, which is the interesting part
+
+The central safety property of this book is that the same figures are derived TWICE by
+independent routes — control accounts walk the vouchers, the journal builds
+double-entry from those same vouchers — and `reconciliation()` asserts the two agree.
+**That agreement is evidence precisely because neither derivation can see the other.**
+
+A manual voucher exists only on the journal side. Post one to Accounts receivable and
+the ledger moves while `receivables()` does not, and the reconciliation reports a
+difference that is not a defect. Three ways out, two of them wrong:
+
+| Option | Why not |
+|---|---|
+| Teach the control functions about manual entries | The two routes would share a term, and two derivations that share a term agreeing proves nothing. It converts the book's best evidence into a tautology. |
+| Forbid manual entries from touching a control account | The cross-check survives untouched and the feature loses its two most important uses — opening balances for receivables and payables, and correcting a mis-posted customer balance. |
+| **State the adjustment** | The routes stay independent. `reconciliation()` gains a third column: control **plus manual adjustments** must equal the ledger. A difference not explained by a listed voucher is still exactly as loud as it was. |
+
+The third is what is built, and it is also what a real reconciliation looks like —
+reconciling items are listed, not hidden, and that is the point of them.
+
+```
+Account                  Control total   Manual adj.   Ledger balance   Difference
+Cash in hand                   308,780        -1,450          307,330            0
+Accounts receivable          4,386,378             0        4,386,378            0
+```
+
+**Said plainly: a manual voucher can be used to paper over a genuine defect.** Post the
+difference to the account that disagrees and the check goes green. That risk is not
+removable — it exists in every accounting system ever written, and it is why auditors
+read journals first. What is controllable is visibility, so a voucher touching a
+control account is never silent: it is listed by number, date, narration and author on
+the Financials screen and on its own sheet in the export, rather than netted into a
+total.
+
+### The rules, and where they live
+
+`lib/journal-rules.js` is plain CommonJS because **two processes need it and only one
+of them can run TypeScript**. The app renders vouchers; the zero-dependency portal
+writes them. Two copies of "what counts as a valid voucher" would agree on the day they
+were written and not for long after — and the failure would be the portal accepting a
+posting the app cannot render. Same arrangement as `lib/panel-modules.js` and
+`lib/period-lock.js`.
+
+The chart of accounts moved there too, and `lib/accounting.ts` calls straight into it.
+An account list and a rule that says "the account must be in the list" have to come
+from one place, or the rule means nothing.
+
+A voucher is refused unless: debits equal credits, there are at least two lines, every
+account exists in the chart, no line is both a debit and a credit, nothing is negative,
+a narration is present, and the date is neither before the financial year nor inside a
+closed period. **Every failure is reported at once and the typed voucher is handed
+back** — a form that reports one problem per submission is how a five-line voucher
+takes five attempts.
+
+**A posted voucher is reversed, never edited or deleted.** A posted entry that can be
+silently altered is not an audit trail, it is a draft — and the correction of a mistake
+is itself a fact about the month somebody may need to explain. The reversal is dated
+today rather than back into the month being corrected, so both vouchers stay visible
+where they happened.
+
+### Your own accounts
+
+The chart used to be derived in full and had nothing for accruals, prepayments,
+provisions, depreciation, retained earnings or suspense — a voucher would have had
+nowhere to post. **Records → Ledger accounts** lets an accountant add their own, with
+their own codes so an agency migrating off another system keeps its account numbers.
+Codes are namespaced `GL:<code>` on the way into the journal, so a hand-typed `AR` or
+`CASH` cannot silently merge into a control account.
+
+`node scripts/seed-journal.mjs` loads nine adjustment accounts and four worked
+vouchers — depreciation, an accrual, a prepaid release, and a counter cash shortage.
+The last one posts to Cash on purpose, so the reconciling-items panel has something in
+it.
+
+### A defect this uncovered
+
+Making the chart user-editable broke an assumption that had been safe for as long as
+the chart *was* the data: `summariseBalances` walked the chart and dropped any posting
+whose account it did not find. Delete a ledger account a voucher had posted to and
+those lines silently left the ledger — **the journal trial balance came apart by 10,200
+with nothing on screen to say why.**
+
+A trial balance that balances must not depend on masters data. Orphaned postings are
+now surfaced under their raw code as `— account no longer in the chart`. It is
+deliberately ugly: the fix is to restore the account or reverse the voucher, and it
+should not be comfortable to live with.
+
+### Who may post one
+
+`books_journal`, held by **Super Admin and Accountant only** — deliberately not by
+Manager, who can already read the financials and approve a cancellation. The person who
+reviews the numbers should not also be the person who can adjust them. Reading the
+journal needs `books_financials`, the same as the ledger, because a voucher can carry
+cost and margin.
+
+`scripts/verify-journal.mjs` proves it end to end in 23 checks: every refusal, the
+period lock, a balanced voucher reaching the book with a number and an author, a
+control-account voucher showing up as an adjustment with the difference still zero, the
+reversal pair pointing at each other, the whole reconciliation still clean afterwards,
+and a Manager being refused at the route rather than merely not shown the form.
 
 ## Signing in to the app
 
@@ -1598,19 +1714,21 @@ measurements are in [Signing in to the app](#signing-in-to-the-app).
 every non-super-admin until somebody maps it on purpose, which is the safe
 direction for a mistake to fall.
 
-| Role | Can | Sees the P&L, ledger and margin |
-|---|---|---|
-| Super Admin | Everything, including settings and user management | yes |
-| Accountant | All vouchers, credit notes, reports, statements and the audit log. No settings, no users | yes |
-| Sales Executive | Prospect queue, invoices and customer receipts | **no** |
-| Operations Staff | Supplier bookings, bills, payments and stock only | **no** |
-| Manager | Read everything, reassign leads, approve cancellations, read the audit log | yes |
-| Read Only | Statements, customer balances and the records. Nothing editable anywhere | **no** |
+| Role | Can | Sees the P&L, ledger and margin | Posts a journal voucher |
+|---|---|---|---|
+| Super Admin | Everything, including settings and user management | yes | yes |
+| Accountant | All vouchers, credit notes, reports, statements and the audit log. No settings, no users | yes | yes |
+| Sales Executive | Prospect queue, invoices and customer receipts | **no** | no |
+| Operations Staff | Supplier bookings, bills, payments and stock only | **no** | no |
+| Manager | Read everything, reassign leads, approve cancellations, read the audit log | yes | **no** |
+| Read Only | Statements, customer balances and the records. Nothing editable anywhere | **no** | no |
 
-The last column is the `books_financials` capability, split out of `books_read`
-once the same capability started gating both "may open the invoice list" and "may
-read what we pay our consolidator". See
-[Signing in to the app](#signing-in-to-the-app).
+The third column is the `books_financials` capability, split out of `books_read` once
+the same capability started gating both "may open the invoice list" and "may read what
+we pay our consolidator" — see [Signing in to the app](#signing-in-to-the-app). The
+fourth is `books_journal`; a Manager is deliberately excluded, because the person who
+reviews the numbers should not be the person who can adjust them. See
+[Journal vouchers](#journal-vouchers-and-what-they-cost-the-reconciliation).
 
 **A Sales Executive can raise an invoice but cannot reverse one.** Credit notes
 are a separate capability held by Accountant, Manager and Super Admin, because

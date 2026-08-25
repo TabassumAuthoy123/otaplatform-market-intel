@@ -87,8 +87,22 @@ terminal:
 
 ```
 email    admin@softifybd.com
-password OtaAdmin@2026
+password Ota-XXXXXXXXXXXX     <- generated per install, printed once
 ```
+
+**The password is random per installation and is printed to that terminal exactly
+once — copy it then.** It used to be a fixed string, and that string was written here
+and in `admin/server.js`, both of which are in a public repository: the default
+super-admin password of every install was public. Documenting a shipped default is
+what publishes it, so there is no longer one to document.
+
+Set your own before the first start with `ADMIN_PASSWORD=...`, or change it afterwards
+from `/account` in the portal.
+
+**Lost it?** `printf '%s' 'new-password' | node scripts/reset-admin-password.mjs admin@softifybd.com`
+— stdin, never argv, so it does not land in your shell history or in `ps`. That is the
+only recovery path: the portal refuses to delete the last Super Admin precisely so
+nobody can lock everyone out, which used to mean a lost password locked them out anyway.
 
 Stored in `content/users.json` as a scrypt hash + salt — the plaintext is never
 written anywhere. That file is **gitignored**.

@@ -194,7 +194,16 @@ const pair = await (async () => {
   const before = await fetch('http://127.0.0.1:3002/api/accounts/export?format=csv&section=reconciliation');
   const body = await before.text();
   const rows = body.split(/\r?\n/).slice(1).filter((l) => l.includes(','));
-  const bad = rows.filter((l) => { const c = l.replace(/"/g, '').split(','); return c[3] && c[3].trim() !== '0'; });
+  /**
+   * The LAST cell, not the fourth.
+   *
+   * This was `c[3]`, which was the difference until the reconciliation grew a manual
+   * adjustment column between the control total and the ledger balance. After that,
+   * `c[3]` was the ledger balance — a large number on every row — so this reported
+   * ten of twelve rows disagreeing when nothing was wrong at all. Reading from the
+   * end survives another column being added, which is what happened once already.
+   */
+  const bad = rows.filter((l) => { const c = l.replace(/"/g, '').split(','); const d = c[c.length - 1]; return d && d.trim() !== '0'; });
   const ap = rows.find((l) => l.includes('payable'));
   ok('A voucher written in admin flows into the app', bad.length === 0, `${rows.length} reconciliation rows, ${bad.length} disagreeing`);
   ok('Payable moved by the supplier credit', Boolean(ap), (ap ?? '').replace(/"/g, ''));

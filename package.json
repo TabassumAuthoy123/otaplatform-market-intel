@@ -11,7 +11,7 @@
     "start": "next start -p 3000 -H 127.0.0.1",
     "lint": "next lint",
     "admin": "node admin/server.js",
-    "verify": "node scripts/verify-srs.mjs && node scripts/verify-admin.mjs && node scripts/verify-auth.mjs && node scripts/verify-flights.mjs"
+    "verify": "node scripts/verify-srs.mjs && node scripts/verify-admin.mjs && node scripts/verify-auth.mjs && node scripts/verify-journal.mjs && node scripts/verify-flights.mjs"
   },
   "dependencies": {
     "docx": "^9.7.1",

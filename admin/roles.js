@@ -54,6 +54,20 @@ const CAPS = {
   books_masters: 'Edit customers, suppliers, services, banks, categories, employees',
   books_credit: 'Raise credit notes and cancel sales',
   books_delete: 'Delete accounting records',
+  /*
+   * Posting a manual journal voucher, kept separate from every other books_* right.
+   *
+   * It is the most powerful voucher type in the book: every other one is constrained
+   * by the document behind it, and this one can put any amount on any account —
+   * including the control accounts the reconciliation cross-checks. Somebody who can
+   * post one can make the book say almost anything, which is why auditors read the
+   * journal first.
+   *
+   * Held by Super Admin and Accountant. Deliberately NOT by Manager, who can already
+   * read the financials and approve a cancellation: the person who reviews the
+   * numbers should not also be the person who can adjust them.
+   */
+  books_journal: 'Post and reverse manual journal vouchers',
   leads_read: 'View demo requests from the storefront',
   users: 'Add, edit and remove admin users',
   audit: 'Read the audit log — who changed what',
@@ -76,7 +90,7 @@ const ROLES = {
   accountant: {
     label: 'Accountant',
     summary: 'All vouchers, reports and statements. No settings, no user management',
-    caps: ['books_read', 'books_financials', 'books_sales', 'books_purchase', 'books_masters', 'books_credit', 'books_delete', 'leads_read', 'agencies_read', 'audit', 'alerts', 'alerts_ack']
+    caps: ['books_read', 'books_financials', 'books_journal', 'books_sales', 'books_purchase', 'books_masters', 'books_credit', 'books_delete', 'leads_read', 'agencies_read', 'audit', 'alerts', 'alerts_ack']
   },
   sales_exec: {
     label: 'Sales Executive',
@@ -174,6 +188,13 @@ function requiredCap(pathname, method, col) {
   // Restoring overwrites the whole book, so it sits behind its own capability
   // rather than being folded into settings.
   if (pathname.startsWith('/backup')) return 'backup';
+
+  /*
+   * Reading the journal needs what reading the ledger needs — a voucher can carry
+   * cost and margin. Posting one needs its own capability; see books_journal.
+   */
+  if (pathname === '/journal') return write ? 'books_journal' : 'books_financials';
+  if (pathname.startsWith('/journal/')) return 'books_journal';
 
   if (pathname === '/leads') return 'leads_read';
   if (pathname === '/leads/delete') return 'settings';
