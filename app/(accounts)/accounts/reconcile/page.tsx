@@ -146,7 +146,9 @@ export default async function ReconcilePage({
           ? 'Both sides agree, every line is accounted for, and there is nothing left to post. This period is done.'
           : rec.reconciled
             ? `Both sides agree — but ${rec.requiresPosting} item(s) on the statement have never been recorded in the book. The arithmetic works because they are sitting in the adjustment column below; it is not finished until they are posted.`
-            : `The two sides do not agree. The difference is ${money(rec.difference, sym)}, and it is not explained by anything in this period's lists.`}
+            : rec.difference === rec.unclassifiedTotal && rec.unclassifiedTotal !== 0
+              ? `The two sides differ by ${money(rec.difference, sym)} — which is exactly what the ${rec.counts.unclassified + rec.counts.groupCandidate} unexplained line(s) below are worth. Nothing else is missing. Say what each of them is and this closes.`
+              : `The two sides do not agree. The difference is ${money(rec.difference, sym)}, and it is not explained by anything in this period's lists.`}
       </div>
 
       {rec.blockers.length > 0 && (
