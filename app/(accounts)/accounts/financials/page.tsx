@@ -173,23 +173,36 @@ export default async function FinancialsPage({
           <div className="flex flex-wrap gap-x-8 gap-y-2">
             <Fig label="P&L net profit" value={money(bridge.plNetProfit, sym)} />
             <Fig label="Ledger income less expense" value={money(bridge.ledgerProfit, sym)} />
-            <Fig label="Difference" value={money(bridge.difference, sym)} tone={bridge.difference === 0 ? 'good' : 'warn'} />
+            <Fig label="Difference" value={money(bridge.difference, sym)} tone={bridge.difference === 0 ? 'good' : 'bad'} />
+            {/*
+              Reported, never subtracted. It used to be an explanatory bucket the
+              difference was netted against, and a bucket is somewhere a real misstatement
+              can sit and still read clean — so the check answered a weaker question than
+              its own name. Supplier bills on unissued invoices are capitalised at source
+              now, so there is nothing legitimate left to explain and `difference` IS the
+              answer.
+            */}
             <Fig
-              label="Unexplained"
-              value={money(bridge.unexplained, sym)}
-              tone={bridge.unexplained === 0 ? 'good' : 'bad'}
+              label="Capitalised — invoices still in draft"
+              value={money(bridge.wipTotal, sym)}
+              tone="plain"
+            />
+            <Fig
+              label="In cost of sales but unrecognised"
+              value={money(bridge.unbilledOnPurchases, sym)}
+              tone={bridge.unbilledOnPurchases === 0 ? 'good' : 'bad'}
             />
           </div>
           <p className={`mt-4 ${bridge.unexplained === 0 ? 'text-muted' : 'font-semibold text-red-700'}`}>
             {bridge.detail}
           </p>
-          {bridge.strandedBills.length > 0 && (
+          {bridge.wipBills.length > 0 && (
             <div className="mt-4">
               <p className="text-[12px] font-bold uppercase tracking-wide text-muted">
-                The bills behind it — {bridge.strandedBills.length} against invoices still in draft
+                What is capitalised — {bridge.wipBills.length} bills against invoices still in draft
               </p>
               <Table head={['Bill', 'Against invoice', 'Amount']} right={[2]}>
-                {bridge.strandedBills.map((b) => (
+                {bridge.wipBills.map((b: { no: string; invoiceRef: string; amount: number }) => (
                   <tr key={b.no} className="hover:bg-surface">
                     <Td mono>{b.no}</Td>
                     <Td mono className="text-muted">{b.invoiceRef}</Td>

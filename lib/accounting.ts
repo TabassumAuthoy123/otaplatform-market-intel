@@ -1056,7 +1056,9 @@ export function plAgreesWithLedger(book: Book, from?: string, to?: string) {
   const difference = Math.round(pl.netProfit - ledgerProfit);
 
   /**
-   * The part of the gap that supplier cost on unbilled work explains.
+   * NO LONGER AN EXPLANATORY BUCKET. See the note below.
+   *
+   * The part of the gap that supplier cost on unbilled work used to explain.
    *
    * WHAT THIS ACTUALLY IS, HAVING BEEN WRONG ABOUT IT ONCE
    *
@@ -1082,15 +1084,18 @@ export function plAgreesWithLedger(book: Book, from?: string, to?: string) {
    * asset and the understated equity move together. Balancing proves nothing here, which
    * is exactly why this check exists separately.
    */
-  const purchases = gl.find((r) => r.account.code === AC.PURCHASES)?.balance ?? 0;
-  // NOT `cost - supplierRefunds`: cost is ALREADY net of them (see summarise, where
-  // `cost = grossCost - supplierRefunds - supplierCredits`). Subtracting them a second
-  // time claimed to explain 1,322,500 of an 867,000 gap and drove `unexplained` to
-  // -455,500 — a negative unexplained gap, which is nonsense on its face, and which
-  // absorbed 455,500 of real discrepancy into the "known reason" bucket. That is the
-  // precise failure the note above this function warns about, committed by the function
-  // itself.
-  const unbilledCost = Math.round(purchases - summarise(book, from, to).cost);
+  /**
+   * Kept only to report, never to excuse.
+   *
+   * This used to be subtracted from the difference and the remainder called "unexplained",
+   * which made the check answer a weaker question than the one it was named for: an
+   * explanatory bucket is somewhere a real misstatement can sit and still read clean. Now
+   * that supplier bills on unissued invoices are capitalised at source, there is nothing
+   * legitimate left to explain, so the check asserts the difference itself is zero.
+   */
+  const unbilledOnPurchases = Math.round(
+    (gl.find((r) => r.account.code === AC.PURCHASES)?.balance ?? 0) - summarise(book, from, to).cost
+  );
 
   /**
    * Which bills are behind it, by name.
@@ -1099,7 +1104,8 @@ export function plAgreesWithLedger(book: Book, from?: string, to?: string) {
    * supplier cost is sitting in the ledger and out of the P&L, so the reader can open one
    * and either finalise it or find out why it never was.
    */
-  const notLive = new Set(book.invoices.filter((i) => !isLive(i)).map((i) => i.no.replace(/^[A-Z]+-INV-/, 'INV-')));
+  const gl2 = generalLedger(book, undefined, from, to).summary;
+  const notLive = new Set(book.invoices.filter((i) => i.status === 'draft').map((i) => i.no.replace(/^.*?INV-/, 'INV-')));
   const stranded = book.bills.filter((b) => notLive.has(b.invoiceRef));
   const strandedTotal = Math.round(stranded.reduce((t, b) => t + billBase(b), 0));
 
@@ -1107,15 +1113,21 @@ export function plAgreesWithLedger(book: Book, from?: string, to?: string) {
     plNetProfit: Math.round(pl.netProfit),
     ledgerProfit: Math.round(ledgerProfit),
     difference,
-    unbilledCost,
-    strandedTotal,
-    strandedBills: stranded.map((b) => ({ no: b.no, invoiceRef: b.invoiceRef, amount: billBase(b) })),
-    unexplained: difference - unbilledCost,
-    ok: difference - unbilledCost === 0,
+    /** Supplier cost still sitting in PURCHASES that cost of sales does not recognise. Should be 0. */
+    unbilledOnPurchases,
+    /** What is capitalised right now, and against which drafts. */
+    wipTotal: Math.round(gl2.find((r) => r.account.code === AC.WIP)?.balance ?? 0),
+    wipBills: stranded.map((b) => ({ no: b.no, invoiceRef: b.invoiceRef, amount: billBase(b) })),
+    /**
+     * The difference IS the unexplained amount now. There is no bucket to net against it,
+     * which is the point: the check answers the question it is named for.
+     */
+    unexplained: difference,
+    ok: difference === 0,
     detail:
       difference === 0
-        ? 'The P&L bottom line is exactly income less expense in the ledger.'
-        : `The P&L and the ledger differ by ${difference}. ${unbilledCost} of that is supplier cost on bookings whose customer invoice is still a draft: the bill is expensed when it arrives, the invoice's cost is correctly excluded from the P&L until it goes live, and there is no work-in-progress asset to hold it in between — so retained earnings on the balance sheet is understated by that much. The remaining ${difference - unbilledCost} is unexplained.`
+        ? `The P&L bottom line is exactly income less expense in the ledger. ${Math.round(gl2.find((r) => r.account.code === AC.WIP)?.balance ?? 0)} of supplier cost is capitalised against invoices still in draft, and moves to cost of sales by itself when they are issued.`
+        : `The P&L and the ledger differ by ${difference}, and nothing accounts for it. ${unbilledOnPurchases} of supplier cost is in PURCHASES that cost of sales does not recognise — if that figure is not zero, a bill is expensed whose invoice is not live.`
   };
 }
 
@@ -1493,6 +1505,15 @@ export const AC = {
   SALES: 'SALES',
   RETURNS: 'SALES_RETURNS',
   PURCHASES: 'PURCHASES',
+  /**
+   * Supplier cost on a booking whose customer invoice has not been issued yet.
+   *
+   * An asset, not a cost, and the distinction is the whole point. A bill arrives when the
+   * consolidator invoices us, which is often before the agency raises its own invoice to
+   * the customer. Until that happens the money bought something the agency still holds —
+   * a seat it will sell — and matching says it is not a cost of anything yet.
+   */
+  WIP: 'WIP_SUPPLIER_COST',
   bank: (id: string) => `BANK:${id}`,
   expense: (id: string) => `EXP:${id}`,
   /**
@@ -1797,9 +1818,43 @@ function buildJournal(book: Book): JournalLine[] {
   }
 
   /* --- purchases -------------------------------------------------------- */
+  /**
+   * Which side of the fence a supplier bill lands on, decided by the invoice it belongs to.
+   *
+   * WHY THIS IS DERIVED AND NOT ADJUSTED
+   *
+   * Every supplier bill used to debit PURCHASES unconditionally, while cost of sales is
+   * built from LIVE invoices only. A booking whose customer invoice was still a draft
+   * therefore had its cost in the ledger and correctly out of the P&L, and the difference
+   * — 867,000 across five drafts on this book — sat nowhere. Retained earnings on the
+   * balance sheet was understated by exactly that, and the balance sheet still closed to
+   * zero, because the missing asset and the understated equity moved together.
+   *
+   * The obvious repair is a period-end journal voucher moving the balance. It was
+   * considered and rejected: a voucher can be posted twice, and posting it twice takes
+   * the difference to MINUS 867,000 with every check still reading clean, because the
+   * credit leg lands back on PURCHASES where the P&L's journal sweep cannot see it. A
+   * correction that can be applied twice is not a correction.
+   *
+   * Deriving it instead means there is nothing to post and nothing to post twice. When a
+   * draft invoice is finalised the bill moves from the asset to cost of sales on its own,
+   * on the date it should, with no entry and no chance of forgetting.
+   *
+   * WHAT IS DELIBERATELY NOT CAPITALISED
+   *
+   * Only 'draft'. A CANCELLED booking's supplier cost is a loss, not an asset — the sale
+   * is off and the agency is holding nothing. A bill whose invoiceRef names no invoice, or
+   * carries none at all, goes to cost of sales as well: the asset is a claim that the
+   * money bought something still sellable, and an unlinked bill offers no evidence of
+   * that. Both fall to the expensing side on purpose, because the failure that matters is
+   * cost hidden in an asset, not an asset shown as cost.
+   */
+  const invoiceStatusByRef = new Map(book.invoices.map((i) => [i.no.replace(/^.*?INV-/, 'INV-'), i.status]));
   for (const b of book.bills) {
+    const status = invoiceStatusByRef.get(b.invoiceRef);
+    const notYetSold = status === 'draft';
     post(b.date, b.no, 'Supplier bill', sup(b.supplierId), b.notes, [
-      { account: AC.PURCHASES, debit: billBase(b) },
+      { account: notYetSold ? AC.WIP : AC.PURCHASES, debit: billBase(b) },
       { account: AC.AP, credit: billBase(b) }
     ]);
   }

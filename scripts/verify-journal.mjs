@@ -241,17 +241,28 @@ ok('an accountant may post', acctPost.status === 302, `HTTP ${acctPost.status}`)
   ok('the P&L-against-the-ledger check is on the page, not just in the code',
     /The P&L against the ledger/.test(flat), 'an uncalled check is not a check');
 
-  const unexplained = flat.match(/Unexplained\s+(-?)৳([\d,]+)/);
-  const value = unexplained ? Number(unexplained[2].replace(/,/g, '')) * (unexplained[1] ? -1 : 1) : NaN;
-  ok('every taka of the difference is accounted for',
-    value === 0, unexplained ? `unexplained ${unexplained[1]}${unexplained[2]}` : 'could not read the figure');
+  /**
+   * The difference itself, with nothing netted against it.
+   *
+   * There used to be an "unexplained" figure here, arrived at by subtracting a bucket of
+   * things believed to be legitimate. That bucket was somewhere a real misstatement could
+   * sit and still read clean — and it did: the subtraction was wrong and absorbed 455,500.
+   * Supplier bills on unissued invoices are capitalised at source now, so there is nothing
+   * legitimate left to explain and the difference IS the answer.
+   */
+  const diff = flat.match(/Difference (-?)৳([\d,]+)/);
+  const value = diff ? Number(diff[2].replace(/,/g, '')) * (diff[1] ? -1 : 1) : NaN;
+  ok('the P&L bottom line equals income less expense in the ledger, exactly',
+    value === 0, diff ? `difference ${diff[1]}৳${diff[2]}` : 'could not read the figure');
 
-  ok('the unexplained figure is never negative — that would mean the reason over-explains the gap',
-    !(value < 0), value < 0 ? 'NEGATIVE, which is arithmetically impossible' : 'zero or positive');
+  const stray = flat.match(/In cost of sales but unrecognised (-?)৳([\d,]+)/);
+  ok('no supplier cost sits in cost of sales that cost of sales does not recognise',
+    stray && Number(stray[2].replace(/,/g, '')) === 0,
+    stray ? `${stray[1]}৳${stray[2]}` : 'could not read the figure');
 
-  ok('and the reason names what it actually is',
-    /customer invoice is still a draft/.test(flat) && !/stock not yet sold/.test(flat),
-    'draft invoices, not inventory — the first version guessed inventory and was wrong');
+  ok('the check reports what is capitalised rather than netting it off',
+    /Capitalised — invoices still in draft/.test(flat) && !/Unexplained/.test(flat),
+    'reported, never subtracted');
 }
 
 /* ------------- a voucher on an account the P&L derives from vouchers */
@@ -293,9 +304,9 @@ ok('an accountant may post', acctPost.status === 302, `HTTP ${acctPost.status}`)
   ok('a voucher on an expense category appears on the P&L',
     flat.includes(`Journal — ${category.name}`), `looked for "Journal — ${category.name}"`);
 
-  const m = flat.match(/Unexplained (-?)৳([\d,]+)/);
-  ok('and the bridge stays fully explained once it does',
-    m && Number(m[2].replace(/,/g, '')) === 0, m ? `unexplained ${m[1]}${m[2]}` : 'could not read');
+  const m = flat.match(/Difference (-?)৳([\d,]+)/);
+  ok('and the bridge still closes to zero once it does',
+    m && Number(m[2].replace(/,/g, '')) === 0, m ? `difference ${m[1]}৳${m[2]}` : 'could not read');
 
   writeFileSync(BOOK, JSON.stringify(book, null, 2));
 }

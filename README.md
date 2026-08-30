@@ -1681,37 +1681,54 @@ without opening the ledger.
 screen — because the first version was not, and **an uncalled check is not a check**. It
 carried an arithmetic error for a day for exactly that reason.
 
-### What the ৳867,000 actually was, having been wrong about it once
+### What the ৳867,000 was, and the asset that was missing
 
 The first account of this gap said "supplier bills for stock not yet sold, which has no
 inventory asset to sit in", and pointed at the inventory table. That was a guess and it
 was wrong: `book.inventory` never touches a bill or a posting, so its ৳15,479,400 of
 unsold blocks cannot contribute a taka.
 
-The real cause, checked against the book to the taka: a supplier bill debits `PURCHASES`
-on its own date, unconditionally, while `summarise()` builds cost of sales from **live**
-invoices only — `isLive` excludes draft and cancelled. **Five draft invoices on the demo
-book carry exactly ৳867,000 of supplier bills.**
+The real cause, checked to the taka: a supplier bill debited `PURCHASES` on its own date
+unconditionally, while `summarise()` builds cost of sales from **live** invoices only —
+`isLive` excludes draft. **Five draft invoices carried exactly ৳867,000 of supplier
+bills**, in the ledger as cost and correctly out of the P&L, with nothing holding the
+difference.
 
-| | |
-|---|---|
-| P&L net profit | **৳688,676** ← correct |
-| Ledger income less expense | **−৳178,324** |
-| Difference | ৳867,000 |
-| Unexplained | **৳0** |
+**The P&L was the side that was right.** Matching says the cost of an unsold booking is
+not yet a cost. What was missing was an **asset**, and `WIP_SUPPLIER_COST` — *Unbilled
+supplier cost, work in progress* — is it.
 
-The P&L is the side that is right: matching says the cost of an unsold booking is not yet
-a cost. What is missing is an **asset** to hold it until the invoice goes live — work in
-progress, unbilled supplier cost, whatever an agency calls it. The chart has no such
-account, so the ledger expenses it and **retained earnings on the balance sheet is
-understated by the same ৳867,000**.
+| | before | after |
+|---|---|---|
+| P&L net profit | ৳688,676 | ৳688,676 |
+| Ledger income less expense | −৳178,324 | **৳688,676** |
+| Difference | ৳867,000 | **৳0** |
+| Balance-sheet retained earnings | −৳178,324 | **৳688,676** |
+| Total assets | ৳23,125,224 | ৳23,992,224 |
 
-The balance sheet still closes to a difference of zero, because the missing asset and the
-understated equity move together. **Balancing proves nothing here** — which is precisely
-why this check exists separately.
+The balance sheet closed to zero both before and after, because the missing asset and the
+understated equity moved together. **Balancing proved nothing** — which is exactly why the
+bridge check exists separately from `reconciliation()`.
 
-The screen lists the eight bills by name, so the reader can open one and either finalise
-the invoice or find out why it never was.
+### Derived at the posting, not corrected by a voucher
+
+`buildJournal` decides a bill's debit account from the status of the invoice it belongs
+to. A draft invoice's bill debits the asset; everything else debits cost of sales.
+
+**A period-end adjusting voucher was considered and rejected.** A voucher can be posted
+twice, and posting it twice takes the difference to *minus* ৳867,000 with every check
+still reading clean — because its credit leg lands back on `PURCHASES`, where the P&L's
+journal sweep cannot see it. **A correction that can be applied twice is not a
+correction.** Deriving it means there is nothing to post and nothing to post twice: when a
+draft is finalised, the bill moves to cost of sales by itself, on the right date, with no
+entry and no chance of forgetting.
+
+**Only `draft` is capitalised, on purpose.** A *cancelled* booking's supplier cost is a
+loss, not an asset — the sale is off and the agency holds nothing. A bill whose
+`invoiceRef` names no invoice, or carries none, is expensed too: the asset is a claim that
+the money bought something still sellable, and an unlinked bill is no evidence of that.
+Both fall to the expensing side deliberately, **because the failure that matters is cost
+hidden inside an asset, not an asset shown as cost.**
 
 ### The check that was supposed to catch it was itself wrong
 
@@ -1724,9 +1741,14 @@ quietly absorbed ৳455,500 of real discrepancy into its own "known reason" buck
 That is the exact failure mode the comment above the function warns against, committed by
 the function itself. It survived because nothing rendered its answer.
 
-`verify-journal` now asserts three things about it on the rendered page: that the check
-appears at all, that `unexplained` is zero, and that it is **never negative** — a reason
-that over-explains its own gap is always a bug.
+There is now **no explanatory bucket at all**. A bucket is somewhere a real misstatement
+can sit and still read clean, which made the check answer a weaker question than its own
+name. With the asset in place there is nothing legitimate left to explain, so it asserts
+the difference itself is zero and merely *reports* what is capitalised beside it.
+
+`verify-journal` asserts three things on the rendered page: that the check appears at all,
+that the difference is exactly zero, and that no supplier cost sits in cost of sales which
+cost of sales does not recognise.
 
 ### The same hole, one layer down — found by planting a voucher
 
