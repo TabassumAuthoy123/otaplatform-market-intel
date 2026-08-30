@@ -923,10 +923,59 @@ export function supplierLedger(book: Book, supplierId: string) {
   return rows.map((r) => ({ ...r, balance: (bal += r.credit - r.debit) }));
 }
 
+/**
+ * Accounts whose balance the voucher-derived figures above ALREADY represent.
+ *
+ * Everything else in the income and expense groups is a journal-only account, and the
+ * profit and loss has to pick it up separately — see the note in profitAndLoss.
+ */
+function voucherDerivedPl(book: Book): Set<string> {
+  return new Set<string>([
+    AC.SALES, AC.RETURNS, AC.PURCHASES, AC.MEMO_COST,
+    ...book.expenseCategories.map((c) => AC.expense(c.id))
+  ]);
+}
+
 /** Profit & loss for a window. */
 export function profitAndLoss(book: Book, from?: string, to?: string) {
   const s = summarise(book, from, to);
   const byCat = expensesByCategory(book, from, to);
+
+  /**
+   * Income and expense that exists ONLY in the journal.
+   *
+   * Every figure above this line is derived by walking vouchers — invoices, bills,
+   * expense records. That was complete until manual journal vouchers arrived, and then
+   * it silently stopped being: depreciation, an accrued rent, a bank charge and a cash
+   * shortage all post to real expense accounts and NONE of them touch a voucher.
+   *
+   * The demo book showed the damage plainly. The journal carried 67,700 of such expenses
+   * — 8,750 depreciation, 57,500 rent, 1,450 written off at the counter — and this
+   * function reported a net profit that ignored every taka of it. Worse, the balance
+   * sheet derives retained earnings FROM the journal, so the two statements disagreed
+   * about profit by exactly that amount and neither said so.
+   *
+   * reconciliation() did not catch it either, and could not: it cross-checks ten control
+   * accounts, and "does the P&L agree with the balance sheet" is a different question. It
+   * is now asked directly — see plAgreesWithLedger below.
+   *
+   * Deliberately NOT folded into expenseRows. A journal adjustment and an expense voucher
+   * are different kinds of fact — one was raised against a document, the other because
+   * somebody decided it — and an accountant reading the P&L should be able to see which
+   * is which without opening the ledger.
+   */
+  const derived = voucherDerivedPl(book);
+  const gl = generalLedger(book, undefined, from, to).summary.filter(
+    (r) => (r.account.group === 'income' || r.account.group === 'expense') &&
+      !derived.has(r.account.code) &&
+      Math.round(r.balance) !== 0
+  );
+  const journalIncome = gl.filter((r) => r.account.group === 'income').reduce((t, r) => t + r.balance, 0);
+  const journalExpense = gl.filter((r) => r.account.group === 'expense').reduce((t, r) => t + r.balance, 0);
+  const journalNet = journalIncome - journalExpense;
+
+  const netProfit = s.netProfit + journalNet;
+
   return {
     grossRevenue: s.grossSales,
     creditNotes: s.credited,
@@ -939,8 +988,60 @@ export function profitAndLoss(book: Book, from?: string, to?: string) {
     totalExpenses: s.expenses,
     /** Airline debit memos net of credit memos, shown on its own line. */
     memoCost: s.memoCost,
-    netProfit: s.netProfit,
-    netMarginPct: s.sales > 0 ? (s.netProfit / s.sales) * 100 : 0
+    /** Income and expense posted by journal voucher, listed rather than merged. */
+    journalRows: gl.map((r) => ({ account: r.account, balance: r.balance })),
+    journalIncome,
+    journalExpense,
+    journalNet,
+    /** What the voucher side alone said, kept so the two are comparable. */
+    netProfitBeforeJournal: s.netProfit,
+    netProfit,
+    netMarginPct: s.sales > 0 ? (netProfit / s.sales) * 100 : 0
+  };
+}
+
+/**
+ * Does the profit and loss agree with the ledger it is supposed to summarise?
+ *
+ * A third cross-check, and it exists because the first two could not see this failure.
+ * reconciliation() compares ten control accounts; the trial balances each prove internal
+ * consistency of one derivation. None of them asks whether the P&L's bottom line matches
+ * income-less-expense in the journal — and for a while it did not, by 67,700, with both
+ * statements looking perfectly healthy.
+ *
+ * A difference here is NOT necessarily a defect: cost of sales is what was sold while
+ * PURCHASES is everything billed, so unsold stock legitimately separates them until an
+ * inventory asset exists to hold it. The number is reported with that stated rather than
+ * asserted to be zero, because a check that fails for a known reason gets ignored, and an
+ * ignored check is worse than none.
+ */
+export function plAgreesWithLedger(book: Book, from?: string, to?: string) {
+  const pl = profitAndLoss(book, from, to);
+  const gl = generalLedger(book, undefined, from, to).summary;
+  const bal = (g: AccountGroup) =>
+    gl.filter((r) => r.account.group === g).reduce((t, r) => t + r.balance, 0);
+  const ledgerProfit = bal('income') - bal('expense');
+  const difference = Math.round(pl.netProfit - ledgerProfit);
+
+  /**
+   * The part of the gap the purchases-versus-cost-of-sales split explains.
+   *
+   * Everything else is unaccounted for, and that is the number worth looking at.
+   */
+  const purchases = gl.find((r) => r.account.code === AC.PURCHASES)?.balance ?? 0;
+  const stockAndTiming = Math.round(purchases - (summarise(book, from, to).cost - summarise(book, from, to).supplierRefunds));
+
+  return {
+    plNetProfit: Math.round(pl.netProfit),
+    ledgerProfit: Math.round(ledgerProfit),
+    difference,
+    stockAndTiming,
+    unexplained: difference - stockAndTiming,
+    ok: difference - stockAndTiming === 0,
+    detail:
+      difference === 0
+        ? 'The P&L bottom line is exactly income less expense in the ledger.'
+        : `The P&L and the ledger differ by ${difference}. ${stockAndTiming} of that is supplier bills posted to PURCHASES for stock not yet sold, which has no inventory asset to sit in. The remaining ${difference - stockAndTiming} is unexplained.`
   };
 }
 

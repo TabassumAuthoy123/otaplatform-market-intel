@@ -326,8 +326,22 @@ export function reconcileStatement(book: Book, statement: BankStatement, driftDa
   match.counts.groupCandidate = match.results.filter((r: { status: string }) => r.status === 'group_candidate').length;
   match.counts.unpresented = match.unmatchedMovements.length;
 
+  /**
+   * What the journal has already put through this bank account inside the period.
+   *
+   * Signed the way the ledger moves: a debit raises a bank balance, a credit lowers it.
+   * Only manual vouchers are counted, because every other kind of posting comes from a
+   * voucher that bankBook already knows about and would be double counted here.
+   */
+  const postedToBank = (book.journalEntries ?? [])
+    .filter((v) => v.date >= statement.from && v.date <= statement.to)
+    .flatMap((v) => v.lines)
+    .filter((l) => l.account === `BANK:${statement.bankId}`)
+    .reduce((t, l) => t + (l.debit ?? 0) - (l.credit ?? 0), 0);
+
   const rec = reconcile({
     match,
+    postedToBank,
     bookOpening: bb.opening,
     bookClosing: bb.closing,
     statementOpening: statement.openingBalance,

@@ -252,6 +252,33 @@ export default async function FinancialsPage({
           ))}
           <Line label="Total operating expenses" value={`− ${money(pl.totalExpenses, sym)}`} />
           {/*
+            Journal-only income and expense, listed rather than merged into the categories
+            above.
+
+            An expense voucher was raised against a document; a journal line exists because
+            somebody decided it should. They are different kinds of fact and an accountant
+            reading this should be able to tell them apart without opening the ledger.
+
+            Before this existed the P&L simply ignored them — depreciation, an accrued
+            rent and a counter shortage totalling ৳67,700 were in the ledger and nowhere on
+            this page, while the balance sheet below derived retained earnings from the
+            same journal and therefore disagreed about profit by exactly that much.
+          */}
+          {pl.journalRows.length > 0 && (
+            <>
+              <div className="my-3 border-t border-hair" />
+              {pl.journalRows.map((r) => (
+                <Line
+                  key={r.account.code}
+                  label={`Journal — ${r.account.name}`}
+                  value={r.account.group === 'income' ? money(r.balance, sym) : `− ${money(r.balance, sym)}`}
+                  muted
+                />
+              ))}
+              <Line label="Net of journal adjustments" value={money(pl.journalNet, sym)} />
+            </>
+          )}
+          {/*
             Airline memos on their own line rather than inside operating expenses.
             An ADM measures the agency's own error rate — a fare underpriced, a
             commission claimed that was not earned — and burying it beside the

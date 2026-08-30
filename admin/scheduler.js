@@ -213,10 +213,42 @@ function createScheduler({ contentDir, readJson, writeJsonAtomic, appUrl, backup
   function start() {
     if (timer) return;
     startedAt = new Date().toISOString();
-    // A first pass shortly after boot, not immediately: the app on :3002 may
-    // still be compiling, and a check that fails because nothing was listening
-    // yet would raise an alert about itself.
-    setTimeout(() => { tick('startup').catch(() => {}); }, 15000);
+
+    /**
+     * Wait until the app actually answers, rather than guessing how long it takes.
+     *
+     * This used to be a flat fifteen-second delay, with a comment saying the app might
+     * still be compiling — the right worry, settled with a number. Fifteen seconds is
+     * not enough: `next dev` compiles each route on first request, and on this machine
+     * the first response takes thirty to sixty. The result was that two jobs, Book
+     * integrity and Supplier connections, failed with `fetch failed` on almost every
+     * boot and then sat failed until somebody re-ran them by hand. Book integrity is the
+     * single most important check in the product, and it was reliably not running.
+     *
+     * Worse than not running: it raised a critical alert about ITSELF, which is what the
+     * old comment was trying to avoid. Three separate times today the alerts screen
+     * showed two critical items that were both just this.
+     *
+     * So it polls instead. A cheap endpoint, every three seconds, up to three minutes —
+     * and if the app never answers, the pass runs anyway, because a genuinely absent app
+     * IS worth an alert. The difference is that the alert then means something.
+     */
+    const READY_EVERY = 3000;
+    const READY_CEILING = 180000;
+    const startedWaiting = Date.now();
+    const waitThenTick = async () => {
+      while (Date.now() - startedWaiting < READY_CEILING) {
+        try {
+          const r = await fetch(`${appUrl}/signin`, { signal: AbortSignal.timeout(4000) });
+          if (r.status > 0) { await r.text().catch(() => {}); break; }
+        } catch {
+          // not listening yet, or still compiling
+        }
+        await new Promise((res) => setTimeout(res, READY_EVERY));
+      }
+      await tick('startup');
+    };
+    waitThenTick().catch(() => {});
     timer = setInterval(() => { tick('schedule').catch(() => {}); }, TICK_MS);
     if (timer.unref) timer.unref();
   }

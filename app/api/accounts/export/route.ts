@@ -125,6 +125,13 @@ function buildSheets(book: Book, from?: string, to?: string): Sheet[] {
       ['', ''],
       ...pl.expenseRows.map((r): Row => [`Expense — ${r.category.name}`, -n0(r.amount)]),
       ['Total operating expenses', -n0(pl.totalExpenses)],
+      // Journal-only income and expense, listed rather than merged into the categories
+      // above: an expense voucher was raised against a document, a journal line because
+      // somebody decided it, and an accountant should see which is which without opening
+      // the ledger. See profitAndLoss in lib/accounting.ts.
+      ...(pl.journalRows.length ? [['', ''] as Row] : []),
+      ...pl.journalRows.map((r): Row => [`Journal — ${r.account.name}`, r.account.group === 'income' ? n0(r.balance) : -n0(r.balance)]),
+      ...(pl.journalRows.length ? [['Net of journal adjustments', n0(pl.journalNet)] as Row] : []),
       ['', ''],
       ['Net profit', n0(pl.netProfit)],
       ['Net margin', pct(pl.netMarginPct)]

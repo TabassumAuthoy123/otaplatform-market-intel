@@ -1648,8 +1648,16 @@ function reconcileStored(book, statement) {
   match.counts.unpresented = match.unmatchedMovements.length;
 
   const bal = bookBalances(book, statement.bankId, statement.from, statement.to);
+  // Mirrors postedToBank in lib/bankrec.ts. See the note there.
+  const postedToBank = (book.journalEntries || [])
+    .filter((v) => v.date >= statement.from && v.date <= statement.to)
+    .reduce((t, v) => t + v.lines
+      .filter((l) => l.account === 'BANK:' + statement.bankId)
+      .reduce((x, l) => x + (l.debit || 0) - (l.credit || 0), 0), 0);
+
   const rec = BREC.reconcile({
     match,
+    postedToBank,
     bookOpening: bal.opening,
     bookClosing: bal.closing,
     statementOpening: statement.openingBalance,
