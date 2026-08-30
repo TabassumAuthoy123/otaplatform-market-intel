@@ -964,12 +964,44 @@ export function profitAndLoss(book: Book, from?: string, to?: string) {
    * somebody decided it — and an accountant reading the P&L should be able to see which
    * is which without opening the ledger.
    */
+  /**
+   * For an account the voucher figures already cover, take ONLY its manual postings.
+   *
+   * The first version excluded those accounts outright, and that left a hole one layer
+   * down: `expensesByCategory` walks `book.expenses`, so it represents the VOUCHER part
+   * of an expense category and nothing else. A journal voucher posted to Government Fees
+   * therefore reached the ledger and no part of the P&L at all — proved by planting one:
+   * a 50,000 voucher moved `unexplained` on the bridge from 0 to exactly 50,000.
+   *
+   * So the split is by ORIGIN, not by account: voucher postings are covered by the rows
+   * above, manual postings are listed here, and every income or expense account is
+   * covered by exactly one of the two. Same rule applied to Sales, Credit notes,
+   * Purchases and Memo cost, none of which `summarise()` sees a manual entry for either.
+   */
   const derived = voucherDerivedPl(book);
-  const gl = generalLedger(book, undefined, from, to).summary.filter(
-    (r) => (r.account.group === 'income' || r.account.group === 'expense') &&
-      !derived.has(r.account.code) &&
-      Math.round(r.balance) !== 0
-  );
+  const manualOnly = (code: string) => {
+    const sign = code === AC.SALES || code === AC.RETURNS ? -1 : 1;
+    let net = 0;
+    for (const v of book.journalEntries ?? []) {
+      if (from && v.date < from) continue;
+      if (to && v.date > to) continue;
+      for (const l of v.lines) {
+        if (l.account !== code) continue;
+        net += (l.debit ?? 0) - (l.credit ?? 0);
+      }
+    }
+    // Reported the way the ledger reports it: income is credit-natured, so a credit
+    // RAISES its balance. Same flip as `naturalSign`.
+    return Math.round(net * sign * 100) / 100;
+  };
+
+  const gl = generalLedger(book, undefined, from, to).summary
+    .filter((r) => r.account.group === 'income' || r.account.group === 'expense')
+    .map((r) => ({
+      account: r.account,
+      balance: derived.has(r.account.code) ? manualOnly(r.account.code) : r.balance
+    }))
+    .filter((r) => Math.round(r.balance) !== 0);
   const journalIncome = gl.filter((r) => r.account.group === 'income').reduce((t, r) => t + r.balance, 0);
   const journalExpense = gl.filter((r) => r.account.group === 'expense').reduce((t, r) => t + r.balance, 0);
   const journalNet = journalIncome - journalExpense;
@@ -989,7 +1021,7 @@ export function profitAndLoss(book: Book, from?: string, to?: string) {
     /** Airline debit memos net of credit memos, shown on its own line. */
     memoCost: s.memoCost,
     /** Income and expense posted by journal voucher, listed rather than merged. */
-    journalRows: gl.map((r) => ({ account: r.account, balance: r.balance })),
+    journalRows: gl,
     journalIncome,
     journalExpense,
     journalNet,
@@ -1024,24 +1056,66 @@ export function plAgreesWithLedger(book: Book, from?: string, to?: string) {
   const difference = Math.round(pl.netProfit - ledgerProfit);
 
   /**
-   * The part of the gap the purchases-versus-cost-of-sales split explains.
+   * The part of the gap that supplier cost on unbilled work explains.
    *
-   * Everything else is unaccounted for, and that is the number worth looking at.
+   * WHAT THIS ACTUALLY IS, HAVING BEEN WRONG ABOUT IT ONCE
+   *
+   * The first version of this called the gap "supplier bills posted to PURCHASES for
+   * stock not yet sold" and pointed at the inventory table. That was a guess and it was
+   * wrong: `book.inventory` never touches a bill or a posting, so its 15,479,400 of
+   * unsold blocks cannot contribute a taka.
+   *
+   * The real cause, checked against the book: a supplier bill debits PURCHASES on its own
+   * date, unconditionally. `summarise()` builds cost of sales from LIVE invoices only —
+   * `isLive` excludes draft and cancelled — so a booking whose customer invoice is still
+   * a draft has its supplier cost in the ledger and correctly out of the P&L. Five draft
+   * invoices on the demo book carry exactly 867,000 of supplier bills, which is the gap
+   * to the taka.
+   *
+   * The P&L is the side that is right: matching says the cost of an unsold booking is not
+   * yet a cost. What is missing is an ASSET to hold it until the invoice goes live —
+   * work in progress, unbilled supplier cost, whatever an agency calls it. The chart has
+   * no such account, so the ledger expenses it and retained earnings on the balance sheet
+   * is understated by the same amount.
+   *
+   * Note the balance sheet still closes to a difference of zero, because the missing
+   * asset and the understated equity move together. Balancing proves nothing here, which
+   * is exactly why this check exists separately.
    */
   const purchases = gl.find((r) => r.account.code === AC.PURCHASES)?.balance ?? 0;
-  const stockAndTiming = Math.round(purchases - (summarise(book, from, to).cost - summarise(book, from, to).supplierRefunds));
+  // NOT `cost - supplierRefunds`: cost is ALREADY net of them (see summarise, where
+  // `cost = grossCost - supplierRefunds - supplierCredits`). Subtracting them a second
+  // time claimed to explain 1,322,500 of an 867,000 gap and drove `unexplained` to
+  // -455,500 — a negative unexplained gap, which is nonsense on its face, and which
+  // absorbed 455,500 of real discrepancy into the "known reason" bucket. That is the
+  // precise failure the note above this function warns about, committed by the function
+  // itself.
+  const unbilledCost = Math.round(purchases - summarise(book, from, to).cost);
+
+  /**
+   * Which bills are behind it, by name.
+   *
+   * A number nobody can trace is a number nobody acts on. This lists the invoices whose
+   * supplier cost is sitting in the ledger and out of the P&L, so the reader can open one
+   * and either finalise it or find out why it never was.
+   */
+  const notLive = new Set(book.invoices.filter((i) => !isLive(i)).map((i) => i.no.replace(/^[A-Z]+-INV-/, 'INV-')));
+  const stranded = book.bills.filter((b) => notLive.has(b.invoiceRef));
+  const strandedTotal = Math.round(stranded.reduce((t, b) => t + billBase(b), 0));
 
   return {
     plNetProfit: Math.round(pl.netProfit),
     ledgerProfit: Math.round(ledgerProfit),
     difference,
-    stockAndTiming,
-    unexplained: difference - stockAndTiming,
-    ok: difference - stockAndTiming === 0,
+    unbilledCost,
+    strandedTotal,
+    strandedBills: stranded.map((b) => ({ no: b.no, invoiceRef: b.invoiceRef, amount: billBase(b) })),
+    unexplained: difference - unbilledCost,
+    ok: difference - unbilledCost === 0,
     detail:
       difference === 0
         ? 'The P&L bottom line is exactly income less expense in the ledger.'
-        : `The P&L and the ledger differ by ${difference}. ${stockAndTiming} of that is supplier bills posted to PURCHASES for stock not yet sold, which has no inventory asset to sit in. The remaining ${difference - stockAndTiming} is unexplained.`
+        : `The P&L and the ledger differ by ${difference}. ${unbilledCost} of that is supplier cost on bookings whose customer invoice is still a draft: the bill is expensed when it arrives, the invoice's cost is correctly excluded from the P&L until it goes live, and there is no work-in-progress asset to hold it in between — so retained earnings on the balance sheet is understated by that much. The remaining ${difference - unbilledCost} is unexplained.`
   };
 }
 

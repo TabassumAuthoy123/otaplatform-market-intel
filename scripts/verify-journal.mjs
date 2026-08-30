@@ -213,6 +213,109 @@ const acctPost = await post({
 }, acct);
 ok('an accountant may post', acctPost.status === 302, `HTTP ${acctPost.status}`);
 
+/* ------------------------------ the P&L against the ledger, on the page */
+
+/**
+ * The bridge check, read off the rendered page rather than called as a function.
+ *
+ * It exists because reconciliation() cannot see this class of failure: it compares ten
+ * control accounts, and "does the P&L bottom line match income less expense in the
+ * journal" is a different question. The P&L ignored journal vouchers entirely for a
+ * while — 67,700 of depreciation, accrued rent and a counter shortage — and the balance
+ * sheet, which derives retained earnings from that same journal, disagreed about profit
+ * by exactly that much while both screens looked healthy.
+ *
+ * Then the check itself carried an arithmetic error for a day, subtracting supplier
+ * refunds from a cost figure that was already net of them. It claimed to explain
+ * 1,322,500 of an 867,000 gap and reported `unexplained` as -455,500 — a negative
+ * unexplained gap, which is nonsense on its face, and which quietly absorbed 455,500 of
+ * real discrepancy into its own "known reason" bucket.
+ *
+ * It survived a day because nothing rendered its answer. An uncalled check is not a
+ * check, so this reads the page.
+ */
+{
+  const page = await (await fetch(`${APP}/accounts/financials`, { headers: { cookie: s.cookie } })).text();
+  const flat = page.replace(/<[^>]*>/g, ' ').replace(/&#x27;/g, "'").replace(/&amp;/g, '&').split(/\s+/).join(' ');
+
+  ok('the P&L-against-the-ledger check is on the page, not just in the code',
+    /The P&L against the ledger/.test(flat), 'an uncalled check is not a check');
+
+  const unexplained = flat.match(/Unexplained\s+(-?)৳([\d,]+)/);
+  const value = unexplained ? Number(unexplained[2].replace(/,/g, '')) * (unexplained[1] ? -1 : 1) : NaN;
+  ok('every taka of the difference is accounted for',
+    value === 0, unexplained ? `unexplained ${unexplained[1]}${unexplained[2]}` : 'could not read the figure');
+
+  ok('the unexplained figure is never negative — that would mean the reason over-explains the gap',
+    !(value < 0), value < 0 ? 'NEGATIVE, which is arithmetically impossible' : 'zero or positive');
+
+  ok('and the reason names what it actually is',
+    /customer invoice is still a draft/.test(flat) && !/stock not yet sold/.test(flat),
+    'draft invoices, not inventory — the first version guessed inventory and was wrong');
+}
+
+/* ------------- a voucher on an account the P&L derives from vouchers */
+
+/**
+ * The hole one layer below the original bug, found by planting one.
+ *
+ * The first fix let the P&L pick up journal-only accounts and EXCLUDED the ones the
+ * voucher figures already cover — Sales, Purchases, the expense categories. But
+ * `expensesByCategory` walks `book.expenses`, so it represents the VOUCHER part of a
+ * category and nothing else: a journal voucher posted to Government Fees reached the
+ * ledger and no part of the P&L at all. Planting a 50,000 one moved `unexplained` on the
+ * bridge from 0 to exactly 50,000, which is the bridge doing its job and the P&L failing
+ * to do its own.
+ *
+ * The split is now by ORIGIN rather than by account: voucher postings are in the rows
+ * above, manual postings are listed separately, and every income or expense account is
+ * covered by exactly one of the two.
+ */
+{
+  const book = JSON.parse(readFileSync(BOOK, 'utf8'));
+  const planted = JSON.parse(JSON.stringify(book));
+  const category = planted.expenseCategories[0];
+  planted.journalEntries = (planted.journalEntries || []).concat([{
+    id: 'jv_probe_pl', no: 'SFT-JV-9998', date: '2026-07-20',
+    narration: 'Probe: a journal voucher on an expense category',
+    lines: [
+      { account: `EXP:${category.id}`, debit: 50000, credit: 0, memo: 'probe' },
+      { account: 'GL:JVTACC', debit: 0, credit: 50000, memo: 'probe' }
+    ],
+    createdBy: 'probe', createdAt: '2026-07-20'
+  }]);
+  planted._meta.revision = (planted._meta.revision || 0) + 1;
+  writeFileSync(BOOK, JSON.stringify(planted, null, 2));
+
+  const page = await (await fetch(`${APP}/accounts/financials`, { headers: { cookie: s.cookie } })).text();
+  const flat = page.replace(/<[^>]*>/g, ' ').replace(/&#x27;/g, "'").replace(/&amp;/g, '&').split(/\s+/).join(' ');
+
+  ok('a voucher on an expense category appears on the P&L',
+    flat.includes(`Journal — ${category.name}`), `looked for "Journal — ${category.name}"`);
+
+  const m = flat.match(/Unexplained (-?)৳([\d,]+)/);
+  ok('and the bridge stays fully explained once it does',
+    m && Number(m[2].replace(/,/g, '')) === 0, m ? `unexplained ${m[1]}${m[2]}` : 'could not read');
+
+  writeFileSync(BOOK, JSON.stringify(book, null, 2));
+}
+
+/* ----------------------- the same net profit wherever it is printed */
+
+/**
+ * One export file printed "Net profit" twice with two different numbers, 69,324 apart:
+ * the Summary sheet from summarise() alone, the P&L sheet including journal vouchers. A
+ * reader who quotes the wrong one is not being careless; the file gave them two answers.
+ */
+{
+  const csv = await (await fetch(`${APP}/api/accounts/export?format=csv`)).text();
+  const bare = csv.split(String.fromCharCode(10)).map((l) => l.trim()).filter((l) => l.startsWith('"Net profit"'));
+  ok('no two rows in the export are both labelled just "Net profit"',
+    bare.length <= 1, `${bare.length} such row(s)`);
+  ok('and the summary says which figure it is',
+    /Net profit — trading only, before journal adjustments/.test(csv), 'labelled rather than silently changed');
+}
+
 const failed = results.filter((r) => !r).length;
 console.log(`\n${results.length - failed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

@@ -2,7 +2,7 @@ import { ExportBar } from '@/components/accounts/ExportBar';
 import { Empty, PageHead, Panel, Table, Td, Tile } from '@/components/accounts/ui';
 import {
   balanceSheet, cashFlow, getBook, journalTrialBalance, money, profitAndLoss,
-  reconciliation, trialBalance
+  plAgreesWithLedger, reconciliation, trialBalance
 } from '@/lib/accounting';
 
 export const dynamic = 'force-dynamic';
@@ -34,6 +34,7 @@ export default async function FinancialsPage({
   const tb = trialBalance(book);
   const jtb = journalTrialBalance(book, to);
   const recon = reconciliation(book);
+  const bridge = plAgreesWithLedger(book, from, to);
 
   const period = from || to ? `${from ?? 'start'} to ${to ?? 'today'}` : 'Whole book';
 
@@ -151,6 +152,55 @@ export default async function FinancialsPage({
           </Table>
         </Panel>
       )}
+
+      {/* ------------------------------------- the P&L against the ledger */}
+
+      {/*
+        A third cross-check, and it is on the page because the first version of it was
+        not — an uncalled check is not a check, and this one carried an arithmetic error
+        for a day precisely because nothing rendered its answer.
+
+        It asks what reconciliation() above cannot: does the bottom line of the P&L match
+        income less expense in the journal the balance sheet is built from? Those two
+        statements disagreed by ৳67,700 for a while, both looking perfectly healthy,
+        because no check compared them.
+      */}
+      <Panel
+        title="The P&L against the ledger"
+        sub="The reconciliation above compares ten control accounts. This compares the bottom line of the profit and loss with income less expense in the journal — which is what the balance sheet's retained earnings is built from."
+      >
+        <div className="px-5 py-4 text-[13px] leading-relaxed">
+          <div className="flex flex-wrap gap-x-8 gap-y-2">
+            <Fig label="P&L net profit" value={money(bridge.plNetProfit, sym)} />
+            <Fig label="Ledger income less expense" value={money(bridge.ledgerProfit, sym)} />
+            <Fig label="Difference" value={money(bridge.difference, sym)} tone={bridge.difference === 0 ? 'good' : 'warn'} />
+            <Fig
+              label="Unexplained"
+              value={money(bridge.unexplained, sym)}
+              tone={bridge.unexplained === 0 ? 'good' : 'bad'}
+            />
+          </div>
+          <p className={`mt-4 ${bridge.unexplained === 0 ? 'text-muted' : 'font-semibold text-red-700'}`}>
+            {bridge.detail}
+          </p>
+          {bridge.strandedBills.length > 0 && (
+            <div className="mt-4">
+              <p className="text-[12px] font-bold uppercase tracking-wide text-muted">
+                The bills behind it — {bridge.strandedBills.length} against invoices still in draft
+              </p>
+              <Table head={['Bill', 'Against invoice', 'Amount']} right={[2]}>
+                {bridge.strandedBills.map((b) => (
+                  <tr key={b.no} className="hover:bg-surface">
+                    <Td mono>{b.no}</Td>
+                    <Td mono className="text-muted">{b.invoiceRef}</Td>
+                    <Td right mono>{money(b.amount, sym)}</Td>
+                  </tr>
+                ))}
+              </Table>
+            </div>
+          )}
+        </div>
+      </Panel>
 
       {/* ---------------------------------------------------------- balance sheet */}
       <Panel
@@ -319,6 +369,18 @@ function Line({
       >
         {value}
       </span>
+    </div>
+  );
+}
+
+/** One labelled figure in the bridge panel. */
+function Fig({ label, value, tone = 'plain' }: { label: string; value: string; tone?: 'plain' | 'good' | 'warn' | 'bad' }) {
+  const colour =
+    tone === 'good' ? 'text-teal-700' : tone === 'warn' ? 'text-amber-700' : tone === 'bad' ? 'text-red-700' : 'text-navy-900';
+  return (
+    <div>
+      <div className="text-[11px] font-bold uppercase tracking-wide text-muted">{label}</div>
+      <div className={`tnum text-[15px] font-semibold ${colour}`}>{value}</div>
     </div>
   );
 }

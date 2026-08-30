@@ -93,7 +93,20 @@ function buildSheets(book: Book, from?: string, to?: string): Sheet[] {
       ['Gross profit', n0(s.grossProfit)],
       ['Gross margin', pct(s.marginPct)],
       ['Operating expenses', n0(s.expenses)],
-      ['Net profit', n0(s.netProfit)],
+      /**
+       * The SAME label reported two different numbers in one file.
+       *
+       * This row came straight from summarise(), which walks vouchers only, while the
+       * Profit & loss sheet below now includes journal vouchers as well. On the demo book
+       * that printed "Net profit 758,000" here and "Net profit 688,676" there — 69,324
+       * apart, same words, same export. A reader who quotes the wrong one is not being
+       * careless; the file gave them two answers.
+       *
+       * Labelled rather than silently changed, because this sheet IS the voucher-only
+       * view and that is worth having. The P&L sheet carries the figure to quote.
+       */
+      ['Net profit — trading only, before journal adjustments', n0(s.netProfit)],
+      ['Net profit — see the Profit & loss sheet for the figure including journal vouchers', n0(pl.netProfit)],
       ['', ''],
       ['Collected from customers', n0(s.collected)],
       ['Refunded to customers', n0(s.refunded)],

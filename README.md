@@ -1383,7 +1383,7 @@ npm run verify
 node scripts/verify-srs.mjs      # 169 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 44 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
-node scripts/verify-journal.mjs  # 23 checks — manual vouchers, and the reconciliation surviving them
+node scripts/verify-journal.mjs  # 31 checks — manual vouchers, and the reconciliation surviving them
 node scripts/verify-bank.mjs     # 63 checks — a bank statement against the book, and every refusal
 node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**395 checks** across the six suites against the running app: each one loads a
+**403 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **169 + 44 + 39 + 23 + 63 + 57
+should accept on trust, including from me. It currently reports **169 + 44 + 39 + 31 + 63 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -1677,13 +1677,84 @@ categories**. An expense voucher was raised against a document; a journal line e
 because somebody decided it should. An accountant reading the P&L can tell which is which
 without opening the ledger.
 
-**`plAgreesWithLedger()` is the third cross-check**, and it reports rather than asserting
-zero — because a real difference remains that is *not* a defect. `PURCHASES` holds every
-supplier bill while cost of sales holds only what sold, and this book has **no inventory
-asset** for the difference to sit in: ৳867,000 on the demo book. Stated with the reason
-attached, because a check that fails for a known reason gets ignored, and an ignored check
-is worse than none. That gap is a real open item, not a rounding artefact, and it is
-deliberately not papered over.
+**`plAgreesWithLedger()` is the third cross-check**, and it is rendered on the Financials
+screen — because the first version was not, and **an uncalled check is not a check**. It
+carried an arithmetic error for a day for exactly that reason.
+
+### What the ৳867,000 actually was, having been wrong about it once
+
+The first account of this gap said "supplier bills for stock not yet sold, which has no
+inventory asset to sit in", and pointed at the inventory table. That was a guess and it
+was wrong: `book.inventory` never touches a bill or a posting, so its ৳15,479,400 of
+unsold blocks cannot contribute a taka.
+
+The real cause, checked against the book to the taka: a supplier bill debits `PURCHASES`
+on its own date, unconditionally, while `summarise()` builds cost of sales from **live**
+invoices only — `isLive` excludes draft and cancelled. **Five draft invoices on the demo
+book carry exactly ৳867,000 of supplier bills.**
+
+| | |
+|---|---|
+| P&L net profit | **৳688,676** ← correct |
+| Ledger income less expense | **−৳178,324** |
+| Difference | ৳867,000 |
+| Unexplained | **৳0** |
+
+The P&L is the side that is right: matching says the cost of an unsold booking is not yet
+a cost. What is missing is an **asset** to hold it until the invoice goes live — work in
+progress, unbilled supplier cost, whatever an agency calls it. The chart has no such
+account, so the ledger expenses it and **retained earnings on the balance sheet is
+understated by the same ৳867,000**.
+
+The balance sheet still closes to a difference of zero, because the missing asset and the
+understated equity move together. **Balancing proves nothing here** — which is precisely
+why this check exists separately.
+
+The screen lists the eight bills by name, so the reader can open one and either finalise
+the invoice or find out why it never was.
+
+### The check that was supposed to catch it was itself wrong
+
+`plAgreesWithLedger` subtracted supplier refunds from a cost figure that was already net
+of them — `cost = grossCost - supplierRefunds - supplierCredits` in `summarise()`. It
+therefore claimed to explain ৳1,322,500 of an ৳867,000 gap and reported `unexplained` as
+**−৳455,500**: a negative unexplained gap, which is nonsense on its face, and which
+quietly absorbed ৳455,500 of real discrepancy into its own "known reason" bucket.
+
+That is the exact failure mode the comment above the function warns against, committed by
+the function itself. It survived because nothing rendered its answer.
+
+`verify-journal` now asserts three things about it on the rendered page: that the check
+appears at all, that `unexplained` is zero, and that it is **never negative** — a reason
+that over-explains its own gap is always a bug.
+
+### The same hole, one layer down — found by planting a voucher
+
+The first fix let the P&L pick up journal-only accounts and **excluded** the ones the
+voucher figures already cover: Sales, Purchases, the expense categories. That left the
+same hole one level below, because `expensesByCategory` walks `book.expenses` and
+therefore represents the **voucher part** of a category and nothing else.
+
+A journal voucher posted to Government Fees reached the ledger and **no part of the P&L at
+all**. Proved by planting one: a ৳50,000 voucher moved `unexplained` on the bridge from
+৳0 to exactly ৳50,000 — the bridge doing its job, and the P&L failing to do its own.
+
+The split is now by **origin, not by account**: voucher postings are in the rows above,
+manual postings are listed separately, and every income and expense account is covered by
+exactly one of the two. The same argument applies to Sales, Credit notes, Purchases and
+Memo cost — `summarise()` sees a manual entry to none of them either.
+
+The planted voucher is now a permanent check: it must appear on the P&L as its own row,
+and the bridge must stay fully explained once it does.
+
+### One export, two answers to "Net profit"
+
+The Summary sheet reported `Net profit 758,000` from `summarise()` alone while the P&L
+sheet reported `688,676` including journal vouchers — same label, same file, ৳69,324
+apart. A reader who quotes the wrong one is not being careless; the file gave them two
+answers. The Summary row is now labelled *trading only, before journal adjustments* and
+points at the sheet carrying the figure to quote, rather than being silently changed —
+the voucher-only view is worth having, it just has to say that it is one.
 
 ### The reconciliation asked for a posting and could not see it arrive
 
