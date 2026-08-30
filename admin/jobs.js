@@ -308,7 +308,64 @@ function jobs(ctx) {
           const d = new Date(Date.parse(today()) + 45 * 86400000);
           return d.toISOString().slice(0, 10);
         })();
-        const res = await fetch(`${appUrl}/portal/flights?from=DAC&to=DXB&depart=${depart}&pax=1`);
+        /**
+         * Wait at least as long as the app is allowed to take.
+         *
+         * This had no timeout, so it inherited Node's default thirty seconds for response
+         * headers — while the app gives EACH supplier up to GDS_TIMEOUT_MS, 45 seconds as
+         * configured. A two-supplier search that takes longer than thirty therefore came
+         * back `fetch failed` and was reported as "Supplier connections could not run",
+         * critical, on the alerts screen.
+         *
+         * That is a false alarm about the agency's suppliers, which is the specific thing
+         * this job exists to avoid raising carelessly: an operator who learns the GDS alert
+         * cries wolf stops reading it, and then the real credential failure it was built
+         * for goes unread too. A live search here has legitimately taken 36 seconds.
+         *
+         * Derived from the app's own setting rather than hard-coded, so the two cannot
+         * drift apart again, with headroom for both suppliers plus the page render.
+         */
+        const perSupplier = Number(process.env.GDS_TIMEOUT_MS || 45000);
+        const budget = perSupplier * 2 + 15000;
+
+        /**
+         * One retry on a 5xx, then believe it.
+         *
+         * A scheduled pass can land while the app is restarting — `next dev` compiles a
+         * route on its first request and answers 500 in the meantime. Observed: this job
+         * reported "the storefront answered HTTP 500" at 18:07, and the same URL served
+         * 200 in 2.3 seconds by hand a minute later.
+         *
+         * The startup pass already waits for the app to answer, but a tick an hour later
+         * has no such protection, so the same false alarm comes back on any restart. One
+         * retry separates "compiling" from "broken" — and a persistent 500 still raises,
+         * which is the case this job exists for.
+         *
+         * Deliberately not retried more than once: a job that keeps trying until it
+         * succeeds is a job that never reports anything.
+         */
+        const ask = () => fetch(`${appUrl}/portal/flights?from=DAC&to=DXB&depart=${depart}&pax=1`, {
+          signal: AbortSignal.timeout(budget)
+        });
+
+        let res;
+        try {
+          res = await ask();
+          if (res.status >= 500) {
+            await new Promise((r) => setTimeout(r, 5000));
+            res = await ask();
+          }
+        } catch (err) {
+          // Said in the words that distinguish it. "The search was too slow" and "the
+          // credential is dead" need different actions, and a bare `fetch failed` is
+          // neither.
+          const slow = err && (err.name === 'TimeoutError' || (err.cause && err.cause.name === 'TimeoutError'));
+          throw new Error(
+            slow
+              ? `the fare search did not answer within ${Math.round(budget / 1000)}s — the suppliers may be slow rather than broken; check ${appUrl}/portal/flights by hand before treating this as a credential failure`
+              : `could not reach the storefront: ${err && err.message ? err.message : String(err)}`
+          );
+        }
         if (!res.ok) throw new Error(`the storefront answered HTTP ${res.status}`);
         const html = (await res.text()).replace(/<!--[\s\S]*?-->/g, '');
 

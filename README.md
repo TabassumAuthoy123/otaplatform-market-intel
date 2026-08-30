@@ -1384,7 +1384,7 @@ node scripts/verify-srs.mjs      # 169 checks — specification, hardening, auto
 node scripts/verify-admin.mjs    # 44 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 23 checks — manual vouchers, and the reconciliation surviving them
-node scripts/verify-bank.mjs     # 56 checks — a bank statement against the book, and every refusal
+node scripts/verify-bank.mjs     # 63 checks — a bank statement against the book, and every refusal
 node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```
 
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**388 checks** across the six suites against the running app: each one loads a
+**395 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **169 + 44 + 39 + 23 + 56 + 57
+should accept on trust, including from me. It currently reports **169 + 44 + 39 + 23 + 63 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -1649,6 +1649,107 @@ voucher back-dated into a closed reconciliation moves the book's closing balance
 stored number does not, and the screen says so instead of showing a tick over a figure
 that has since changed.
 
+### The P&L was ignoring every journal voucher
+
+`profitAndLoss()` is built from `summarise()` and `expensesByCategory()`, and both walk
+**vouchers**. That was complete until manual journal vouchers existed, and then it
+silently stopped being — because a depreciation charge, an accrued rent and a bank fee all
+post to real expense accounts and none of them touch a voucher.
+
+The demo book showed it plainly. The journal carried ৳67,700 of such expenses and the P&L
+reported a net profit that ignored every taka:
+
+| | |
+|---|---|
+| P&L net profit, as reported | **৳753,000** |
+| Journal expenses it could not see | ৳67,700 |
+| True net profit | **৳685,300** |
+
+Meanwhile the balance sheet derives retained earnings *from the journal*, so the two
+statements disagreed about profit by exactly that amount and neither said so.
+`reconciliation()` did not catch it and could not: it cross-checks ten control accounts,
+and "does the P&L agree with the balance sheet" is a different question that nothing was
+asking.
+
+The P&L now picks up income and expense accounts the voucher figures do not already
+represent, and **lists them separately rather than merging them into the expense
+categories**. An expense voucher was raised against a document; a journal line exists
+because somebody decided it should. An accountant reading the P&L can tell which is which
+without opening the ledger.
+
+**`plAgreesWithLedger()` is the third cross-check**, and it reports rather than asserting
+zero — because a real difference remains that is *not* a defect. `PURCHASES` holds every
+supplier bill while cost of sales holds only what sold, and this book has **no inventory
+asset** for the difference to sit in: ৳867,000 on the demo book. Stated with the reason
+attached, because a check that fails for a known reason gets ignored, and an ignored check
+is worse than none. That gap is a real open item, not a rounding artefact, and it is
+deliberately not papered over.
+
+### The reconciliation asked for a posting and could not see it arrive
+
+`requiresPosting` counted classified bank-only lines and never came down. Classify four
+charges, post them correctly, come back — and it still said the period was unfinished,
+with nothing on screen to do about it. **A feature that asks for an action and cannot
+notice it happening is worse than one that never asked.**
+
+Now detected, not recorded. A voucher hitting the bank account inside the period moves the
+**journal** balance while leaving `bankBook`'s voucher-derived closing alone, so the two
+are compared: once the journal has moved by exactly what the classified items are worth,
+they are on the book. Nothing to tick off, and nothing that *can* be ticked off without
+the entry existing. Posting the wrong amount, or the right amount the wrong way round,
+leaves it unsettled — three charges recorded and one forgotten is precisely the state
+worth catching.
+
+### The scheduler guessed a number where it could have waited
+
+The startup pass ran fifteen seconds after boot, with a comment saying the app might still
+be compiling. The worry was right and the number was wrong: `next dev` takes thirty to
+sixty seconds on first request, so **Book integrity — the most important check in the
+product — failed with `fetch failed` on almost every boot** and sat failed until somebody
+re-ran it by hand, while raising a critical alert about itself. Seen three times in one
+day.
+
+It now polls until the app answers, up to three minutes, then runs anyway if it never
+does — because a genuinely absent app *is* worth an alert. The difference is that the
+alert then means something.
+
+### The GDS check could not wait as long as the app was allowed to take
+
+`Supplier connections` fetches the storefront's live fare search and had **no timeout**,
+so it inherited Node's default thirty seconds for response headers — while the app gives
+*each* supplier up to `GDS_TIMEOUT_MS`, forty-five seconds as configured. A two-supplier
+search slower than thirty therefore came back `fetch failed` and was raised as a critical
+"Supplier connections could not run".
+
+That is a false alarm about the agency's suppliers, which is the specific thing this job
+must not do carelessly: **an operator who learns the GDS alert cries wolf stops reading
+it, and the real credential failure it was built for goes unread too.** A live search here
+has legitimately taken 36 seconds.
+
+The budget is now derived from the app's own setting so the two cannot drift apart again,
+and a timeout says so in words that distinguish it — "the fare search did not answer
+within Ns; the suppliers may be slow rather than broken" is a different instruction from
+"the credential is dead".
+
+It then failed differently, and usefully: **`the storefront answered HTTP 500`**, because
+a scheduled pass landed while `next dev` was compiling that route after a restart. The
+startup pass waits for the app; a tick an hour later had no such protection. One retry
+after five seconds now separates *compiling* from *broken* — and a persistent 500 still
+raises, which is the case the job exists for. Deliberately only one: a job that retries
+until it succeeds is a job that never reports anything.
+
+### A suite that failed for a reason that was not a failure
+
+`verify-bank` began failing at its first portal call, reproducibly, while the portal
+answered every request put to it by hand. The cause: the readiness probes open a pooled
+keep-alive socket, `execFileSync` then blocks the event loop for a couple of seconds
+generating the statement fixture, and the server closes the idle socket on its five-second
+timeout — so the next request comes back `ECONNRESET` from a dead socket.
+
+Fixed twice over: the fixture is now generated **before** anything is fetched, which
+removes the idle window, and `probe-session` retries once on a transport error. Only
+transport errors — an HTTP status is an answer and gets reported as it stands.
+
 ### Two implementations, and the check that stops them drifting
 
 `bookMovements` exists twice — TypeScript in `lib/bankrec.ts` for the app, plain JS in
@@ -1691,7 +1792,7 @@ operator does not have to know the difference.
 
 ### `verify-bank.mjs`
 
-56 checks. The fixture is **generated from the book's own 192 movements** by
+63 checks. The fixture is **generated from the book's own 192 movements** by
 `scripts/make-bank-statement.mjs` and then broken in seven specific ways — a cheque
 presented four days late, an unpresented payment, a deposit in transit, two bank charges,
 an interest credit and an unexplained ATM debit. A hand-written fixture tests the cases

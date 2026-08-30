@@ -64,9 +64,33 @@ export function probeSession({ roles = ['super_admin'], admin, app, prefix = 've
   // Also on a crash, so a failed run never leaves a probe super-admin behind.
   process.on('exit', restore);
 
+  /**
+   * Retry once when the CONNECTION fails, never when the response does.
+   *
+   * Node keeps a pooled keep-alive socket open to the portal. A suite that opens one,
+   * then blocks the event loop for a few seconds — verify-bank spawns a child process to
+   * generate its statement — comes back to find the server has closed it on its five
+   * second keep-alive timeout, and undici reports ECONNRESET from the reused socket.
+   *
+   * That is not a test failure and reporting it as one is worse than useless: it made
+   * verify-bank fail at its first portal call, reproducibly, while the portal was serving
+   * every request put to it by hand. Only transport errors are retried — an HTTP status
+   * is an answer and gets reported as it stands.
+   */
+  async function fetchRetrying(url, init) {
+    try {
+      return await fetch(url, init);
+    } catch (err) {
+      const code = err && err.cause && err.cause.code;
+      if (code !== 'ECONNRESET' && code !== 'ECONNREFUSED' && code !== 'UND_ERR_SOCKET') throw err;
+      await new Promise((r) => setTimeout(r, 250));
+      return fetch(url, init);
+    }
+  }
+
   async function login(role = roles[0]) {
     const body = new URLSearchParams({ email: email(role), password: pass }).toString();
-    const r = await fetch(`${admin}/login`, {
+    const r = await fetchRetrying(`${admin}/login`, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body,

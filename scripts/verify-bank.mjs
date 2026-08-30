@@ -58,11 +58,17 @@ async function waitFor(url, what) {
   }
   throw new Error(`${what} did not answer at ${url} — start it before running this`);
 }
-await waitFor(`${ADMIN}/login`, 'the admin portal');
-await waitFor(`${APP}/signin`, 'the app');
-
 /* ------------------------------------------------------------------ the fixture */
 
+/**
+ * Generated BEFORE anything is fetched, and that ordering is load-bearing.
+ *
+ * execFileSync blocks the event loop for a couple of seconds. Done after the readiness
+ * probes, it left a pooled keep-alive socket to the portal idle for longer than the
+ * server's five second timeout, and the next request came back ECONNRESET — reproducibly,
+ * at the first portal call, while the portal answered everything put to it by hand.
+ * probe-session retries a dropped socket now as well; this removes the reason to.
+ */
 const bookBefore = readFileSync(BOOK, 'utf8');
 process.on('exit', () => writeFileSync(BOOK, bookBefore));
 
@@ -70,6 +76,9 @@ const BANK = 'BNK-001', FROM = '2026-07-01', TO = '2026-07-31';
 const csv = execFileSync(process.execPath, ['scripts/make-bank-statement.mjs', BANK, FROM, TO], {
   encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']
 });
+
+await waitFor(`${ADMIN}/login`, 'the admin portal');
+await waitFor(`${APP}/signin`, 'the app');
 
 /* ------------------------------------------------- 1. the parser, before anything */
 
@@ -447,6 +456,133 @@ ok('and a manager import is refused at the route', mgrImport.status === 403, `HT
   ok('and on how many statement lines there are',
     total ? Number(total[1]) === stored.lines.length : false,
     total ? `app ${total[1]}, stored ${stored.lines.length}` : 'could not read the app figure');
+}
+
+/* -------------------------------- 8b. classify, post, and the sign-off gate */
+
+/**
+ * The whole loop a person actually walks, and the two places it used to break.
+ *
+ * A line matching nothing starts unclassified and is left OUT of the arithmetic, so the
+ * difference is exactly what the unexplained lines are worth. Classifying them is a
+ * judgement and lets them into the adjustment column. Posting the journal voucher is what
+ * finishes it — and the first version could not SEE that happen, so requiresPosting never
+ * came down and a correctly finished period was refused with nothing on screen to do
+ * about it.
+ */
+{
+  const bookNow = JSON.parse(readFileSync(BOOK, 'utf8'));
+  const st = (bookNow.bankStatements || []).find((x) => x.bankId === BANK && x.from === FROM);
+
+  const classifiedAll = M.matchStatement({ lines: st.lines, movements, carried: [], driftDays: 5, prefixes: M.bookPrefixes(bookNow) });
+  for (const r of classifiedAll.results) if (r.status === 'unmatched') r.classification = 'bank_only';
+
+  const args = {
+    match: classifiedAll,
+    bookOpening: bank.openingBalance + netOf(allMoves.filter((m) => m.date < FROM)),
+    bookClosing: bank.openingBalance + netOf(allMoves.filter((m) => m.date <= TO)),
+    statementOpening: st.openingBalance, statementClosing: st.closingBalance,
+    from: FROM, to: TO, bankId: BANK, bankName: bank.name
+  };
+
+  const unposted = R.reconcile({ ...args, postedToBank: 0 });
+  ok('classified but unposted: reconciles, and refuses to call itself settled',
+    unposted.difference === 0 && unposted.reconciled === true && unposted.settled === false && unposted.requiresPosting === 4,
+    `${unposted.requiresPosting} waiting`);
+
+  /**
+   * The exact movement a correct set of vouchers puts through the bank account: credits
+   * raise it, debits lower it. Anything else must NOT satisfy the gate.
+   */
+  const expected = unposted.postingExpected;
+  const posted = R.reconcile({ ...args, postedToBank: expected });
+  ok('posting exactly what the classified items are worth settles it',
+    posted.settled === true && posted.requiresPosting === 0, `postedToBank ${expected}`);
+
+  const partial = R.reconcile({ ...args, postedToBank: expected + 500 });
+  ok('posting the wrong amount does NOT settle it — three recorded and one forgotten is the case worth catching',
+    partial.settled === false && partial.requiresPosting === 4, `postedToBank ${expected + 500}`);
+
+  const backwards = R.reconcile({ ...args, postedToBank: -expected });
+  ok('posting it the wrong way round does not settle it either',
+    backwards.settled === false, `postedToBank ${-expected}`);
+}
+
+/* ----------------------------------------- 8c. a sign-off that stops holding */
+
+/**
+ * Driven through the APP rather than by calling the function, because lib/bankrec.ts uses
+ * the @/ path alias and a plain node script cannot resolve it — and because the thing
+ * worth proving is that the PAGE says so, not that a function returns a flag.
+ *
+ * A sign-off is the one piece of stored state in this feature. Everything else is derived
+ * so it cannot go stale; this is stored so it CAN be compared against what was true when
+ * the claim was made. Without it, a voucher back-dated into a closed period moves the
+ * book's closing balance while last month's tick stays green over a number that changed.
+ */
+{
+  const bookNow = JSON.parse(readFileSync(BOOK, 'utf8'));
+  const st = (bookNow.bankStatements || []).find((x) => x.bankId === BANK && x.from === FROM);
+  const closing = bank.openingBalance + netOf(allMoves.filter((m) => m.date <= TO));
+
+  const render = async (reconciliations) => {
+    const b2 = JSON.parse(JSON.stringify(bookNow));
+    b2.bankReconciliations = reconciliations;
+    b2._meta.revision = (b2._meta.revision || 0) + 1;
+    writeFileSync(BOOK, JSON.stringify(b2, null, 2));
+    const r = await fetch(`${APP}/accounts/reconcile`, { headers: { cookie: suCookie } });
+    return await r.text();
+  };
+  /**
+   * The difference AS THE PAGE CURRENTLY COMPUTES IT, not zero.
+   *
+   * The first version of this hard-coded zero and the "still holds" case failed — because
+   * this suite re-imports the statement a few sections above, which clears the
+   * classifications, which leaves four lines unexplained and a difference of -13,624.50.
+   * A sign-off recording zero against a live difference of -13,624.50 is EXACTLY what
+   * staleness is for, so the check was right and the fixture was wrong.
+   */
+  const postedToBank = (bookNow.journalEntries || [])
+    .filter((v) => v.date >= FROM && v.date <= TO)
+    .flatMap((v) => v.lines)
+    .filter((l) => l.account === `BANK:${BANK}`)
+    .reduce((t, l) => t + (l.debit || 0) - (l.credit || 0), 0);
+  const liveMatch = M.matchStatement({ lines: st.lines, movements, carried: [], driftDays: 5, prefixes: M.bookPrefixes(bookNow) });
+  for (const cl of st.classifications || []) {
+    const t = liveMatch.results.find((r) => r.line.sourceLine === cl.sourceLine);
+    if (t && t.status === 'unmatched') t.classification = cl.as;
+  }
+  const live = R.reconcile({
+    match: liveMatch,
+    bookOpening: bank.openingBalance + netOf(allMoves.filter((m) => m.date < FROM)),
+    bookClosing: closing,
+    statementOpening: st.openingBalance, statementClosing: st.closingBalance,
+    postedToBank,
+    from: FROM, to: TO, bankId: BANK, bankName: bank.name
+  });
+
+  const signOff = (bookClosingAtClose) => [{
+    id: 'BRC-TEST', bankId: BANK, statementId: st.id, from: FROM, to: TO,
+    closedAt: '2026-08-01T00:00:00.000Z', closedBy: 'probe@local',
+    differenceAtClose: live.difference, bookClosingAtClose
+  }];
+
+  const holding = await render(signOff(closing));
+  ok('a sign-off whose figures still match is reported as holding',
+    /Signed off by/.test(holding) && /It still holds/.test(holding) && !/no longer holds/.test(holding),
+    'the claim is repeated back with its date and its author');
+
+  const moved = await render(signOff(closing - 5000));
+  ok('a sign-off stops holding once the book closing balance has moved',
+    /no longer holds|has changed since/.test(moved) && /changed after it was signed/.test(moved),
+    'the page says what changed and by how much');
+
+  const none = await render([]);
+  ok('and an unsigned period is never reported stale',
+    !/no longer holds/.test(none), 'nothing claimed, nothing to invalidate');
+
+  // put the book back the way this section found it before the next section runs
+  writeFileSync(BOOK, JSON.stringify(bookNow, null, 2));
 }
 
 /* --------------------------------------------------------------- 9. removal */
