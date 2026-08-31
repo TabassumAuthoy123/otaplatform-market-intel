@@ -1491,6 +1491,7 @@ const bookFile = () => readJson(path.join(CONTENT_DIR, 'accounting.json'), {});
 /* ================================================= journal voucher screen === */
 
 const JV = require('../lib/journal-rules.js');
+const FLOAT = require('../lib/supplier-float.js');
 /* ============================================== bank statements & reconciliation === */
 
 const BSTMT = require('../lib/bank-statement.js');
@@ -2561,13 +2562,10 @@ function validateDepositDrawdown(rec, bookArg) {
   const num = (v) => Number(v || 0);
   if (!rec.supplierId) return ['Choose the supplier whose deposit this draws on.'];
 
-  const placed = (book.supplierDeposits || [])
-    .filter((d) => d.supplierId === rec.supplierId)
-    .reduce((t, d) => t + num(d.amount), 0);
-  const drawn = (book.payments || [])
-    .filter((p) => p.id !== rec.id && p.supplierId === rec.supplierId && p.method === 'supplier_deposit')
-    .reduce((t, p) => t + num(p.amount), 0);
-  const left = placed - drawn;
+  // The same definition the Inventory screen shows, from the same file — the two used
+  // to be written out separately here and in lib/accounting.ts, and they disagreed by
+  // 3,179,600. See lib/supplier-float.js.
+  const { available: left } = FLOAT.floatFor(book, rec.supplierId, rec.id);
 
   if (num(rec.amount) > left) {
     errors.push(`Only ${Math.max(0, left)} of deposit is left with that supplier. Pay the rest from cash or a bank account.`);

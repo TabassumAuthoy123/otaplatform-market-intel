@@ -214,33 +214,60 @@ function jobs(ctx) {
       label: 'Overdue receivables',
       everyMinutes: 12 * 60,
       why: 'The chase list only existed while somebody had the page open. An invoice past terms needs to arrive at the manager rather than wait to be found.',
+      /**
+       * Reads the app's own receivables ledger instead of recomputing it.
+       *
+       * This used to derive the chase list here, by hand: gross = sum(qty x unitPrice),
+       * plus VAT, less receipts, less credit_balance notes. That is a SECOND
+       * implementation of invoiceTotals, and it was wrong in a way nobody would spot —
+       * it never converted currency. SFT-INV-0118 is a USD invoice of 4,800 at 122.5,
+       * worth 588,000 taka; this job valued it at 4,800. A hundred-and-twenty-two-fold
+       * understatement, on the one screen an agency phones people from.
+       *
+       * With todayISO fixed to the real clock the screen said 22 invoices / 4,054,980 and
+       * this job said 21 / 3,466,980 against the same book at the same instant. Two
+       * answers to one question, and the wrong one was the one that arrives by alert.
+       *
+       * So it fetches. The export's receivables section already carries Due and Days
+       * outstanding per invoice, computed by invoiceTotals with conversion, and dated by
+       * the real clock — the same numbers the Reminders screen renders. One derivation.
+       * The scheduler waits for the app before its first pass (see admin/scheduler.js), so
+       * a fetch here is no more fragile than the integrity job that already does it.
+       */
       async run() {
         const b = book();
         const cfg = (b.company && b.company.reminders) || { dueAfterDays: 14, escalateAfterDays: 30, chaseFrom: 0 };
-        const t = today();
         const sym = (b.company && b.company.currencySymbol) || '৳';
 
-        const paidOn = {};
-        for (const r of b.receipts || []) paidOn[r.invoiceId] = (paidOn[r.invoiceId] || 0) + r.amount;
-        const creditOn = {};
-        for (const c of b.creditNotes || []) {
-          if (c.settlement === 'credit_balance') creditOn[c.invoiceId] = (creditOn[c.invoiceId] || 0) + c.amount;
+        const res = await fetch(`${appUrl}/api/accounts/export?format=csv&section=receivables`, {
+          signal: AbortSignal.timeout(60000)
+        });
+        if (!res.ok) throw new Error(`the receivables ledger answered HTTP ${res.status}`);
+        const csv = (await res.text()).replace(/^\ufeff/, '');
+
+        const lines = csv.split(String.fromCharCode(10)).map((l) => l.trim()).filter(Boolean);
+        const cells = (l) => (l.match(/"[^"]*"/g) || []).map((c) => c.slice(1, -1));
+        const head = cells(lines[0]);
+        const iNo = head.indexOf('Invoice');
+        const iDue = head.indexOf('Due');
+        const iAge = head.indexOf('Days outstanding');
+        if (iNo < 0 || iDue < 0 || iAge < 0) {
+          throw new Error('the receivables ledger no longer has Invoice, Due and Days outstanding columns');
         }
 
         let worst = null;
         let total = 0;
         let count = 0;
-        for (const inv of b.invoices || []) {
-          if (inv.status === 'draft' || inv.status === 'cancelled') continue;
-          const gross = (inv.lines || []).reduce((x, l) => x + l.qty * l.unitPrice, 0);
-          const tot = gross + Math.round((gross * (inv.vatRate || 0)) / 100);
-          const due = Math.max(0, tot - (paidOn[inv.id] || 0) - (creditOn[inv.id] || 0));
+        for (const line of lines.slice(1)) {
+          const c = cells(line);
+          const due = Number(c[iDue]);
+          const age = Number(c[iAge]);
+          if (!Number.isFinite(due) || !Number.isFinite(age)) continue;
           if (due <= (cfg.chaseFrom || 0)) continue;
-          const age = Math.round((Date.parse(t) - Date.parse(inv.date)) / 86400000);
           if (age < cfg.escalateAfterDays) continue;
           count += 1;
           total += due;
-          if (!worst || due > worst.due) worst = { no: inv.no, due, age };
+          if (!worst || due > worst.due) worst = { no: c[iNo], due, age };
         }
 
         if (count === 0) return [];

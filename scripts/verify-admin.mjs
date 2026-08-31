@@ -13,6 +13,7 @@
 
 import { randomBytes, scryptSync } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { retryTransport } from './lib/probe-session.mjs';
 
 const ADMIN = process.env.ADMIN_URL || 'http://127.0.0.1:4001';
 const USERS = 'content/users.json';
@@ -65,7 +66,7 @@ async function req(path, { method = 'GET', form } = {}) {
     headers['content-type'] = 'application/x-www-form-urlencoded';
     body = new URLSearchParams(form).toString();
   }
-  const res = await fetch(ADMIN + path, { method, headers, body, redirect: 'manual' });
+  const res = await retryTransport(ADMIN + path, { method, headers, body, redirect: 'manual' });
   const setCookie = res.headers.get('set-cookie');
   if (setCookie) cookie = setCookie.split(';')[0];
   const text = await res.text();

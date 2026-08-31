@@ -30,6 +30,34 @@ import { readFileSync, writeFileSync } from 'node:fs';
 const USERS = 'content/users.json';
 
 /**
+ * Retry once when the CONNECTION fails, never when the response does.
+ *
+ * Node keeps a pooled keep-alive socket open to the portal. A suite that opens one, then
+ * blocks the event loop for a few seconds — spawning a child process, hashing a password,
+ * running a long assertion — comes back to find the server has closed it on its five
+ * second keep-alive timeout, and undici reports ECONNRESET from the reused socket.
+ *
+ * That is not a test failure, and reporting it as one is worse than useless: it killed
+ * verify-bank at its first portal call and later verify-admin at its 395th line, both
+ * while the portal was answering every request put to it by hand.
+ *
+ * Exported because three separate suites needed it and two of them had their own fetch
+ * helper. Only transport errors are retried — an HTTP status is an answer and gets
+ * reported as it stands.
+ */
+export async function retryTransport(url, init) {
+  try {
+    return await fetch(url, init);
+  } catch (err) {
+    const code = err && err.cause && err.cause.code;
+    if (code !== 'ECONNRESET' && code !== 'ECONNREFUSED' && code !== 'UND_ERR_SOCKET') throw err;
+    await new Promise((r) => setTimeout(r, 250));
+    return fetch(url, init);
+  }
+}
+
+
+/**
  * Set up probe accounts and return the handles a check needs.
  *
  * `roles` is the list to create. The password is random per run and never leaves the
@@ -39,7 +67,34 @@ const USERS = 'content/users.json';
 export function probeSession({ roles = ['super_admin'], admin, app, prefix = 'verify-probe-' } = {}) {
   const pass = randomBytes(18).toString('base64url');
   const email = (role) => `${prefix}${role}@local`;
-  const before = readFileSync(USERS, 'utf8');
+
+  /**
+   * The snapshot this run will restore, with ANY probe account already stripped.
+   *
+   * The restore handler puts back exactly what was there when the run began. That is
+   * correct in isolation and wrong the moment two suites overlap: the second one snapshots
+   * a file that already contains the first one's probes, and restoring it hands them back
+   * permanently. Running verify-srs and verify-admin at the same time left five accounts
+   * behind, one of them a super_admin — the exact thing the note above says must never
+   * happen.
+   *
+   * Stripping on the way IN makes the file self-healing: a crashed run, a killed terminal
+   * or an overlap leaves residue that the next run removes rather than preserves. It costs
+   * nothing, because no real account is ever named like this.
+   *
+   * It does NOT make concurrent runs safe — they still fight over one file and a session
+   * can still be pulled out from under another suite. `npm run verify` chains them with &&
+   * for that reason. This only guarantees the mess does not outlive the mistake.
+   */
+  const PROBE = /^[a-z0-9-]*(probe|verify)[a-z0-9-]*-[a-z_]+@local$/i;
+  const before = (() => {
+    const raw = readFileSync(USERS, 'utf8');
+    const db = JSON.parse(raw);
+    const kept = db.users.filter((u) => !PROBE.test(u.email) && !u.email.startsWith(prefix));
+    if (kept.length === db.users.length) return raw;
+    db.users = kept;
+    return JSON.stringify(db, null, 2);
+  })();
 
   /**
    * Rewrites the probe rows from the ORIGINAL file every time, not from the current
@@ -77,16 +132,7 @@ export function probeSession({ roles = ['super_admin'], admin, app, prefix = 've
    * every request put to it by hand. Only transport errors are retried — an HTTP status
    * is an answer and gets reported as it stands.
    */
-  async function fetchRetrying(url, init) {
-    try {
-      return await fetch(url, init);
-    } catch (err) {
-      const code = err && err.cause && err.cause.code;
-      if (code !== 'ECONNRESET' && code !== 'ECONNREFUSED' && code !== 'UND_ERR_SOCKET') throw err;
-      await new Promise((r) => setTimeout(r, 250));
-      return fetch(url, init);
-    }
-  }
+  const fetchRetrying = retryTransport;
 
   async function login(role = roles[0]) {
     const body = new URLSearchParams({ email: email(role), password: pass }).toString();

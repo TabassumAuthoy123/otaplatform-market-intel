@@ -1,3 +1,5 @@
+// eslint-disable-next-line @typescript-eslint/no-var-requires -- shared with the zero-dependency admin portal
+import { floatRows } from '@/lib/supplier-float.js';
 import type { BankReconciliation, BankStatement } from '@/lib/bankrec';
 import { chartAccounts } from '@/lib/journal-rules.js';
 import { adjustmentFor, controlAdjustments } from '@/lib/journals';
@@ -1340,11 +1342,37 @@ export function creditNoteReport(book: Book) {
   };
 }
 
-export const todayISO = (book: Book) => {
-  const all = book.invoices.map((i) => i.date).concat(book.receipts.map((r) => r.date)).sort();
-  // Falls back to the calendar date in Dhaka, not UTC — see lib/clock.ts.
-  return all[all.length - 1] ?? todayIn(book.company.timezone);
-};
+/**
+ * Today. The actual calendar date, in the company's own timezone.
+ *
+ * WHAT THIS USED TO BE, AND WHY IT WAS WRONG
+ *
+ * It returned the LATEST date on any invoice or receipt — the newest voucher, treated as
+ * "now". Nothing recorded why, and it produced two different todays inside one product:
+ * this one, and `clock.todayIn(zone())` in admin/jobs.js which the scheduled alerts use.
+ *
+ * On the demo book at the moment of the fix, the newest voucher was 2026-08-12 and the
+ * real date was 2026-08-31 — nineteen days apart — and the two halves said:
+ *
+ *   the Reminders screen   10 invoices past 30 days,  1,812,380 outstanding
+ *   the Overdue alert job  21 invoices past 30 days,  3,466,980 outstanding
+ *
+ * Same book, same instant, and the screen an agency phones people from was the one
+ * missing eleven customers.
+ *
+ * It also made the whole book's age depend on its newest row. One invoice with a mistyped
+ * year moves "today" forward by months: every open invoice becomes overdue, deferred
+ * income collapses to nothing because every travel date is in the past, and
+ * `reconciliation()` stays clean throughout — because both sides of its as-at check are
+ * bounded by the same poisoned date. A cross-check cannot catch a bad clock it shares.
+ *
+ * WHAT IT COSTS, SAID PLAINLY
+ *
+ * A demo book seeded in the past now looks its age: figures that were dated to the last
+ * voucher move to real today, so more of it reads as overdue and less as deferred. That is
+ * the correct answer, and the old behaviour was flattering rather than right.
+ */
+export const todayISO = (book: Book) => todayIn(book.company.timezone);
 
 /* ------------------------------------------- supplier deposits & inventory */
 
@@ -1377,28 +1405,27 @@ export const INVENTORY_KIND: Record<string, string> = {
 export function supplierDeposits(book: Book) {
   const deposits = book.supplierDeposits ?? [];
 
-  const rows = book.suppliers.map((s) => {
-    const paidIn = deposits.filter((d) => d.supplierId === s.id).reduce((t, d) => t + d.amount, 0);
-    const billed = book.bills.filter((b) => b.supplierId === s.id).reduce((t, b) => t + billBase(b), 0);
-    const settled = book.payments.filter((p) => p.supplierId === s.id).reduce((t, p) => t + p.amount, 0);
-    // the float is what we advanced, less anything the bills have not already paid for
-    const outstandingBills = Math.max(0, billed - settled);
-    return {
-      supplier: s,
-      deposited: paidIn,
-      billed,
-      settled,
-      outstandingBills,
-      available: paidIn - outstandingBills,
-      depositCount: deposits.filter((d) => d.supplierId === s.id).length
-    };
-  }).filter((r) => r.deposited > 0 || r.billed > 0);
+  /**
+   * Delegated to the shared file, not computed here.
+   *
+   * This used to net unpaid bills off the advance — `deposited - max(0, billed - settled)`
+   * — while the portal's drawdown validator used `placed - drawn`. The two were 3,179,600
+   * apart on the live book, and the screen's version moved the WRONG WAY when the float
+   * was spent, because `settled` counted the drawdown itself. See lib/supplier-float.js
+   * for the whole account of it. One definition now, in one place, imported by both.
+   */
+  const rows = floatRows(book, billBase) as {
+    supplier: Supplier; deposited: number; drawn: number; available: number;
+    billed: number; settled: number; outstandingBills: number; depositCount: number;
+  }[];
 
   return {
     rows: rows.sort((a, b) => b.deposited - a.deposited),
     deposits: [...deposits].sort((a, b) => b.date.localeCompare(a.date)),
     totalDeposited: rows.reduce((t, r) => t + r.deposited, 0),
+    totalDrawn: rows.reduce((t, r) => t + r.drawn, 0),
     totalAvailable: rows.reduce((t, r) => t + r.available, 0),
+    /** What is still owed on bills. Reported beside the float, never netted into it. */
     totalOutstanding: rows.reduce((t, r) => t + r.outstandingBills, 0)
   };
 }

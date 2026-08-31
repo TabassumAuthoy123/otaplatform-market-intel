@@ -1380,7 +1380,7 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 169 checks — specification, hardening, automation
+node scripts/verify-srs.mjs      # 174 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 44 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 31 checks — manual vouchers, and the reconciliation surviving them
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**403 checks** across the six suites against the running app: each one loads a
+**408 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **169 + 44 + 39 + 31 + 63 + 57
+should accept on trust, including from me. It currently reports **174 + 44 + 39 + 31 + 63 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -1498,6 +1498,107 @@ Public, with no session and no figure from anybody's book: it describes the prod
 not an installation.
 
 ---
+
+---
+
+## Two todays, and a float that rose when you spent it
+
+An adversarial audit — five lenses over the code and the data, every finding then put to a
+verifier told to refute it — returned 16 confirmed problems from 57 candidates. Two were
+live wrong numbers on screens an agency acts on. Both are fixed; a third surfaced while
+fixing them.
+
+### `todayISO()` was the newest voucher, not today
+
+It returned the latest date on any invoice or receipt. Nothing recorded why, and it meant
+the product had **two todays**: this one, and `clock.todayIn(zone())` in `admin/jobs.js`
+which the scheduled alerts use. On the demo book they were nineteen days apart:
+
+| | |
+|---|---|
+| Reminders screen | 10 invoices past 30 days, ৳18,12,380 |
+| Overdue alert job | 21 invoices past 30 days, ৳34,66,980 |
+
+Same book, same instant. **The screen an agency phones people from was missing eleven
+customers.**
+
+It also tied the whole book's age to its newest row. One invoice with a mistyped year
+moves "today" forward by months: every open invoice becomes overdue, deferred income
+collapses to nothing because every travel date is now in the past — and `reconciliation()`
+stays clean throughout, **because both sides of its as-at check are bounded by the same
+poisoned date.** A cross-check cannot catch a bad clock it shares.
+
+It is now the calendar date in the company's timezone. The cost is stated plainly: a demo
+book seeded in the past looks its age, so more reads as overdue and less as deferred. That
+is the correct answer; the old behaviour was flattering rather than right.
+
+### The supplier float had two definitions, and one of them went the wrong way
+
+The Inventory screen computed `deposited − max(0, billed − settled)`. The portal's
+drawdown validator computed `placed − drawn`. They were **৳31,79,600** apart:
+
+| supplier | screen said | portal would allow |
+|---|---|---|
+| Biman | **−৳1,74,100** | ৳6,50,000 |
+| Qatar | −৳1,58,500 | ৳18,00,000 |
+
+The screen showed the float exhausted and overdrawn while the portal stood ready to
+authorise the whole advance against it.
+
+Worse than a second opinion: `settled` counted **every** payment to that supplier,
+including a drawdown against the deposit itself. Spending the float raised `settled`, which
+lowered `outstandingBills`, which **raised the reported available float**. A number that
+goes up when you spend it is not a definition, it is a bug.
+
+It survived because **zero of 150 payments used the `supplier_deposit` method**, so the two
+were never put side by side. The rest of the codebase already knew better — the portal and
+`verify-srs` both exclude that method from bank movements precisely because no fresh money
+moves. One place forgot.
+
+`lib/supplier-float.js` is now the single definition, imported by both. **The float is what
+was advanced less what has been drawn against it.** What is still owed on bills is reported
+beside it, never netted in — netting them was the original error, because *an unpaid bill
+does not consume an advance, it sits beside it.*
+
+### Found while fixing: the alert job never converted currency
+
+With the clocks agreed the two still differed, and the reason was a third derivation. The
+overdue job computed invoice totals by hand — `gross = Σ qty × unitPrice`, plus VAT, less
+receipts — which is a second implementation of `invoiceTotals` and **never converted
+currency**. `SFT-INV-0118` is $4,800 at 122.5, worth ৳5,88,000; the job valued it at
+৳4,800. **A hundred-and-twenty-two-fold understatement**, on the one list an agency phones
+people from.
+
+The job now reads the app's own receivables ledger, which converts and is dated by the real
+clock. One derivation. Screen and alert both read 22 invoices, ৳40,54,980.
+
+### And a mess of my own making
+
+Running `verify-srs` and `verify-admin` **at the same time** left five probe accounts in
+`content/users.json`, one of them a `super_admin` — the exact thing that file's own comment
+says must never happen. Both suites write it, and each restores the snapshot it took, so
+the second one hands the first one's probes back permanently.
+
+The snapshot now strips probe residue **on the way in**, which makes the file self-healing:
+a crashed run, a killed terminal or an overlap leaves a mess that the next run clears rather
+than preserves. It does **not** make concurrent runs safe — they still fight over one file —
+and `npm run verify` chains them with `&&` for that reason.
+
+Three suites also each had their own fetch helper and the same keep-alive bug: a pooled
+socket idles past the server's five-second timeout while the suite blocks on something
+slow, and the next request comes back `ECONNRESET`. `retryTransport` is now shared and
+retries **transport errors only** — an HTTP status is an answer and gets reported as it
+stands.
+
+### A check that went red for reasons outside its subject
+
+"Every check has run and none of them failed" asserted on `scheduler-state.json` as it
+happened to stand, which made it a test of the last few hours rather than of the jobs. It
+failed for a stale error from a boot three hours earlier, and again when a scheduled tick
+fired *during* the suite — the fare-search job competes with the suite's own flight searches
+and exceeded its 105-second budget. It now triggers the pass and then reads the result:
+deterministic, slower, and actually exercising the jobs. **A check that goes red for reasons
+outside its subject teaches people to ignore it.**
 
 ## Bank reconciliation
 

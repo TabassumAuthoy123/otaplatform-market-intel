@@ -80,26 +80,40 @@ export default async function InventoryPage() {
       {/* ------------------------------------------------- supplier float */}
       <div className="grid gap-3 sm:grid-cols-3">
         <Tile label="Deposited with suppliers" value={money(dep.totalDeposited, sym)} sub={`${dep.deposits.length} advances`} />
-        <Tile label="Unsettled bills against it" value={money(dep.totalOutstanding, sym)} sub="Drawn but not paid down" tone="warn" />
-        <Tile label="Float still available" value={money(dep.totalAvailable, sym)} sub="What you can issue against tomorrow" tone={dep.totalAvailable >= 0 ? 'good' : 'bad'} />
+        {/*
+          Two separate numbers, and they were one.
+
+          The float used to be shown as the advance LESS unpaid bills, which said Biman
+          was 174,100 overdrawn while the portal stood ready to authorise a 650,000
+          drawdown against the same advance. An unpaid bill does not consume an advance —
+          it sits beside it — so it is reported beside it. See lib/supplier-float.js.
+        */}
+        <Tile label="Drawn against the float" value={money(dep.totalDrawn, sym)} sub={dep.totalDrawn ? 'Issued out of the advance' : 'Nothing drawn yet'} />
+        <Tile
+          label="Float still available"
+          value={money(dep.totalAvailable, sym)}
+          sub="Advance less what has been drawn — what you can issue against tomorrow"
+          tone={dep.totalAvailable > 0 ? 'good' : 'warn'}
+        />
       </div>
 
       <Panel
         title="Supplier float"
-        sub="In travel this decides whether you can ticket tomorrow — the payable does not"
+        sub="The float is the advance less what has been drawn against it. What is still owed on bills is shown beside it, not netted into it — an unpaid bill does not consume an advance."
       >
-        <Table head={['Supplier', 'Type', 'Deposited', 'Billed', 'Settled', 'Unsettled', 'Available float']} right={[2, 3, 4, 5, 6]}>
+        <Table head={['Supplier', 'Type', 'Deposited', 'Drawn', 'Available float', 'Billed', 'Settled', 'Still owed']} right={[2, 3, 4, 5, 6, 7]}>
           {dep.rows.map((r) => (
             <tr key={r.supplier.id} className="hover:bg-surface">
               <Td className="font-semibold text-navy-900">{r.supplier.name}</Td>
               <Td className="text-muted">{r.supplier.type}</Td>
               <Td right mono>{money(r.deposited, sym)}</Td>
-              <Td right mono className="text-muted">{money(r.billed, sym)}</Td>
-              <Td right mono>{money(r.settled, sym)}</Td>
-              <Td right mono className={r.outstandingBills ? 'text-amber-700' : 'text-muted'}>{money(r.outstandingBills, sym)}</Td>
-              <Td right mono className={`font-semibold ${r.available >= 0 ? 'text-teal-700' : 'text-amber-700'}`}>
+              <Td right mono className={r.drawn ? '' : 'text-muted'}>{money(r.drawn, sym)}</Td>
+              <Td right mono className={`font-semibold ${r.available > 0 ? 'text-teal-700' : 'text-amber-700'}`}>
                 {money(r.available, sym)}
               </Td>
+              <Td right mono className="text-muted">{money(r.billed, sym)}</Td>
+              <Td right mono className="text-muted">{money(r.settled, sym)}</Td>
+              <Td right mono className={r.outstandingBills ? 'text-amber-700' : 'text-muted'}>{money(r.outstandingBills, sym)}</Td>
             </tr>
           ))}
         </Table>

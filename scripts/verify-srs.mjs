@@ -56,9 +56,27 @@ async function check(item, fn) {
 }
 
 const cache = new Map();
+
+/**
+ * One retry on a 5xx, then believe it.
+ *
+ * `next dev` compiles a route on its first request and can answer 500 while it does. The
+ * fare-search page is the slow one — a live two-supplier search — and it 500'd on the
+ * first call after a restart while serving 200 in eight seconds by hand a minute later.
+ * Two checks went red for that and neither was about anything real.
+ *
+ * Only once, and only on a 5xx: a persistent 500 is a genuine failure and still fails, and
+ * a check that retries until it succeeds is not a check. Same rule as the Supplier
+ * connections job in admin/jobs.js, which had the identical problem.
+ */
 async function get(path) {
   if (cache.has(path)) return cache.get(path);
-  const res = await fetch(path.startsWith('http') ? path : APP + path);
+  const url = path.startsWith('http') ? path : APP + path;
+  let res = await fetch(url);
+  if (res.status >= 500) {
+    await new Promise((r) => setTimeout(r, 4000));
+    res = await fetch(url);
+  }
   const body = await res.text();
   const out = { status: res.status, body };
   cache.set(path, out);
@@ -1671,14 +1689,132 @@ await check('Something actually runs on a timer', () => {
     'the admin portal hosts the runner, so there is no second service to forget to start'];
 });
 
+section('One clock, one float');
+
+/**
+ * The product had TWO todays.
+ *
+ * todayISO(book) returned the latest date on any invoice or receipt — the newest voucher,
+ * treated as now — while admin/jobs.js used the real calendar. On the demo book those were
+ * nineteen days apart, and the two halves said:
+ *
+ *   the Reminders screen   10 invoices past 30 days, 1,812,380
+ *   the Overdue alert job  21 invoices past 30 days, 3,466,980
+ *
+ * Same book, same instant. The screen an agency phones people from was missing eleven
+ * customers.
+ */
+await check('The book\'s today is the real calendar date', async () => {
+  const src = readFileSync('lib/accounting.ts', 'utf8');
+  const m = src.match(/export const todayISO = [^;]+;/);
+  if (!m) return [false, 'todayISO not found'];
+  const derivesFromVouchers = /book\.invoices\.map|book\.receipts\.map/.test(m[0]);
+  return [!derivesFromVouchers && /todayIn\(/.test(m[0]),
+    derivesFromVouchers
+      ? 'it is back to deriving today from the newest voucher — one mistyped year re-ages the whole book'
+      : 'the calendar, in the company timezone — not the newest voucher'];
+});
+
+await check('The screen and the alert agree about what is overdue', async () => {
+  const page = (await get('/accounts/reminders')).body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
+  const onScreen = page.match(/Overdue — escalate[^0-9]{0,40}৳([\d,]+)[^0-9]{0,40}(\d+) invoices past/);
+  const alerts = await (await fetch(`${APP}/api/alerts`)).json();
+  const alert = (alerts.open || []).find((a) => /past 30 days/i.test(a.title || ''));
+  if (!onScreen || !alert) return [false, `screen ${onScreen ? 'read' : 'unreadable'}, alert ${alert ? 'present' : 'absent'}`];
+  const alertCount = Number((alert.title.match(/^(\d+)/) || [])[1]);
+  const alertValue = Number((alert.title.match(/৳([\d,]+)/) || ['', '0'])[1].replace(/,/g, ''));
+  const screenCount = Number(onScreen[2]);
+  const screenValue = Number(onScreen[1].replace(/,/g, ''));
+  return [alertCount === screenCount && alertValue === screenValue,
+    `screen ${screenCount}/${screenValue}, alert ${alertCount}/${alertValue}`];
+});
+
+/**
+ * The alert job used to recompute invoice totals by hand and never converted currency.
+ * SFT-INV-0118 is 4,800 USD at 122.5 — 588,000 taka — and the job valued it at 4,800.
+ */
+await check('The overdue alert values a foreign-currency invoice in book currency', async () => {
+  const b = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const fx = b.invoices.filter((i) => i.currency && i.currency !== b.company.currency);
+  if (!fx.length) return [true, 'no foreign-currency invoice in the book to test with'];
+  const jobs = readFileSync('admin/jobs.js', 'utf8');
+  const overdue = jobs.slice(jobs.indexOf("key: 'overdue'"), jobs.indexOf("key: 'inventory'"));
+  const recomputes = /l\.qty \* l\.unitPrice/.test(overdue);
+  return [!recomputes && /section=receivables/.test(overdue),
+    recomputes
+      ? 'it is recomputing invoice totals by hand again — that path does not convert currency'
+      : 'it reads the app\'s receivables ledger, which converts'];
+});
+
+/**
+ * The supplier float had two definitions 3,179,600 apart, and the screen's version rose
+ * when the float was spent because it counted the drawdown as a settlement.
+ */
+await check('The float means the same thing on the screen and in the validator', () => {
+  const FLOAT = createRequire(import.meta.url)('../lib/supplier-float.js');
+  const b = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const acc = readFileSync('lib/accounting.ts', 'utf8');
+  const srv = readFileSync('admin/server.js', 'utf8');
+  const bothDelegate = /floatRows\(book, billBase\)/.test(acc) && /FLOAT\.floatFor\(/.test(srv);
+  const anySupplier = (b.suppliers || [])[0];
+  const f = anySupplier ? FLOAT.floatFor(b, anySupplier.id) : null;
+  return [bothDelegate && !!f && f.available === f.placed - f.drawn,
+    bothDelegate ? 'one definition, imported by both' : 'one of them has its own copy again'];
+});
+
+await check('Spending the float lowers it', () => {
+  const FLOAT = createRequire(import.meta.url)('../lib/supplier-float.js');
+  const b = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const s = (b.suppliers || []).find((x) => (b.supplierDeposits || []).some((d) => d.supplierId === x.id));
+  if (!s) return [true, 'no supplier holds a deposit in this book'];
+  const before = FLOAT.floatFor(b, s.id).available;
+  const probe = JSON.parse(JSON.stringify(b));
+  probe.payments.push({
+    id: 'PAY-PROBE', no: 'PROBE', date: '2026-08-01', supplierId: s.id,
+    method: 'supplier_deposit', bankId: null, amount: 100000, notes: 'probe'
+  });
+  const after = FLOAT.floatFor(probe, s.id).available;
+  // The original bug: drawing on the float RAISED the reported figure, because the
+  // drawdown counted as a settlement which reduced outstanding bills.
+  return [after === before - 100000,
+    `${before} -> ${after} after drawing 100,000${after > before ? ' — IT WENT UP' : ''}`];
+});
+
+/**
+ * Runs the checks, then reads the result — rather than reading whatever was left behind.
+ *
+ * This used to assert on content/scheduler-state.json as it happened to stand, which made
+ * it a test of the last few hours rather than of the jobs. It went red for a stale failure
+ * from a boot three hours earlier, and again when a scheduled tick fired DURING this suite:
+ * the fare-search job competes with the suite's own flight searches for the app, took
+ * longer than its 105-second budget, and recorded a timeout that had nothing to do with
+ * the code under test.
+ *
+ * Triggering the pass first makes it deterministic and actually exercises the jobs. It is
+ * also slower, and worth it: a check that goes red for reasons outside its subject teaches
+ * people to ignore it.
+ */
 await check('Every check has run and none of them failed', async () => {
+  const page = await fetch(`${ADMIN}/alerts`, { headers: { cookie: probe.cookie } });
+  const csrf = ((await page.text()).match(/name="csrf" value="([^"]+)"/) || [])[1];
+  if (csrf) {
+    await fetch(`${ADMIN}/alerts/run`, {
+      method: 'POST',
+      redirect: 'manual',
+      headers: { cookie: probe.cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ csrf }).toString()
+    });
+  }
+
   const r = await fetch(`${APP}/api/alerts`);
   const d = await r.json();
   const state = JSON.parse(readFileSync('content/scheduler-state.json', 'utf8'));
   const jobs = Object.entries(state.jobs ?? {});
   const failed = jobs.filter(([, j]) => !j.ok);
   return [jobs.length >= 6 && failed.length === 0,
-    `${jobs.length} checks recorded, ${failed.length} failed, ${d.counts.critical} critical open`];
+    failed.length
+      ? `${failed.length} failed: ${failed.map(([k, j]) => `${k} (${j.error})`).join('; ')}`
+      : `${jobs.length} checks ran just now, none failed, ${d.counts.critical} critical open`];
 });
 
 await check('A stopped scheduler is visible, not silent', async () => {
