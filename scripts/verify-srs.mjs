@@ -304,6 +304,29 @@ await check('Balance sheet balances', async () => {
   const line = body.split(/\r?\n/).find((l) => l.includes('Difference'));
   return [/,"?0"?$/.test((line || '').trim()), (line || 'not found').replace(/"/g, '')];
 });
+/**
+ * The book had accumulated EIGHT identical supplier credit notes — same day, same bill,
+ * same 5,000, same note "Audit probe — overbilling reversed" — left behind by a suite that
+ * creates one and deletes it, across runs that died before the delete. 40,000 of fictitious
+ * supplier credit against SFT-BIL-0127, committed to the repo, arithmetically valid enough
+ * that nothing complained.
+ *
+ * This is the demo book an agency is shown. A probe marker in it is a defect whether or not
+ * the totals still add up.
+ */
+await check('No test residue is left in the book', () => {
+  const marker = /audit probe|verify[- ]probe|\bprobe\b|\btest\b|dummy|lorem/i;
+  const found = [];
+  for (const [col, rows] of Object.entries(book)) {
+    if (!Array.isArray(rows)) continue;
+    for (const r of rows) {
+      const text = [r.notes, r.ref, r.reason, r.description].filter((v) => typeof v === 'string').join(' ');
+      if (marker.test(text)) found.push(`${col}/${r.id}`);
+    }
+  }
+  return [found.length === 0, found.length ? found.slice(0, 6).join(', ') : 'no probe markers in any collection'];
+});
+
 await check('No cash or bank account ever goes negative', () => {
   const out = [];
   const walk = (isCash, bankId) => {

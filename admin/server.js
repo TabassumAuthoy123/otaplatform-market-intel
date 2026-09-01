@@ -1498,6 +1498,19 @@ const BOOK_ENUMS = {
  * Every dropdown for one collection: the fixed vocabularies above plus the
  * live lists of customers, suppliers, banks and documents read out of the book.
  */
+/**
+ * A bill in a dropdown, with its currency said out loud.
+ *
+ * The list used to render SFT-BIL-0163 as "4360" next to nine bills whose numbers were
+ * taka. Nothing marked which was which, so the one figure on the screen that was not taka
+ * looked like the cheapest bill in the book instead of one of the largest.
+ */
+function billLabel(bill) {
+  const face = Number(bill.amount || 0).toLocaleString('en-IN');
+  if (!bill.currency || Number(bill.fxRate || 1) === 1) return face;
+  return `${bill.currency} ${face} · ৳${billBase(bill).toLocaleString('en-IN')}`;
+}
+
 function bookEnums(book, spec) {
   const opt = (rows, label) => (rows || []).map((r) => ({ value: r.id, label: label(r) }));
   const blank = (rows) => [{ value: '', label: '— none —' }, ...rows];
@@ -1525,14 +1538,14 @@ function bookEnums(book, spec) {
     employeeId: blank(opt(book.employees, (e) => `${e.name} — ${e.role}`)),
     invoiceId: blank(opt(book.invoices, (i) => `${i.no} · ${custName(i.customerId)} · ${i.date}`)),
     invoiceRef: blank(opt(book.invoices, (i) => `${i.no} · ${custName(i.customerId)} · ${i.date}`)),
-    billId: blank(opt(book.bills, (b) => `${b.no} · ${supName(b.supplierId)} · ${b.amount}`))
+    billId: blank(opt(book.bills, (b) => `${b.no} · ${supName(b.supplierId)} · ${billLabel(b)}`))
   };
 
   const merged = { ...shared, ...(BOOK_ENUMS[spec.key] || {}) };
   // A transfer and a supplier credit note both name a required document, so
   // neither offers the blank "none" that optional references get.
   if (spec.key === 'transfers') merged.bankId = opt(book.banks, (b) => `${b.name} · ${b.accountNo || b.id}`);
-  if (spec.key === 'supplierCreditNotes') merged.billId = opt(book.bills, (b) => `${b.no} · ${supName(b.supplierId)} · ${b.amount}`);
+  if (spec.key === 'supplierCreditNotes') merged.billId = opt(book.bills, (b) => `${b.no} · ${supName(b.supplierId)} · ${billLabel(b)}`);
   return merged;
 }
 
@@ -2495,7 +2508,7 @@ function validateCreditNote(rec, bookArg) {
       const otherRefunds = (book.creditNotes || [])
         .filter((c) => c.id !== rec.id && c.billId === bill.id)
         .reduce((t, c) => t + num(c.supplierRefund), 0);
-      const outstanding = num(bill.amount) - paid - otherRefunds;
+      const outstanding = billBase(bill) - paid - otherRefunds;
       if (refund > outstanding) {
         errors.push(`Only ${Math.max(0, outstanding)} is still outstanding on ${bill.no}. A refund on an already-settled bill is money coming back in — record it as a supplier deposit.`);
       }
@@ -2512,6 +2525,25 @@ function validateCreditNote(rec, bookArg) {
  * reasons: unsettled credit cannot exceed what is still owed on the bill, and
  * money cannot come back that was never paid out.
  */
+/**
+ * What a bill is worth in the book's currency.
+ *
+ * `bill.amount` is in the DOCUMENT currency. Three validators compared a taka figure
+ * against it directly, so on a foreign bill they were comparing taka with dollars.
+ * SFT-BIL-0163 is USD 4,360 at 122.5 — 534,100 taka — and crediting 5,000 taka against it
+ * was refused with "At most 4360 is left to credit". A bill worth over five lakh would not
+ * accept a five-thousand-taka credit note, and would have accepted a four-thousand one as
+ * though it had eaten 4,000 of a 4,360 allowance.
+ *
+ * Same family as the overdue alert that valued a USD 4,800 invoice at 4,800 taka. Anywhere
+ * a document amount meets a book amount, one of them has to be converted first, and the
+ * conversion belongs in one place rather than at each comparison.
+ */
+function billBase(bill) {
+  const n = (v) => Number(v || 0);
+  return Math.round(n(bill && bill.amount) * (n(bill && bill.fxRate) || 1));
+}
+
 function validateSupplierCreditNote(rec, bookArg) {
   const errors = [];
   const book = bookArg || bookFile();
@@ -2537,12 +2569,13 @@ function validateSupplierCreditNote(rec, bookArg) {
     const otherAll = others.reduce((t, c) => t + num(c.amount), 0);
     const otherOpen = others.filter((c) => c.settlement === 'credit_balance').reduce((t, c) => t + num(c.amount), 0);
 
-    if (otherAll + refunded + amount > num(bill.amount)) {
-      const left = num(bill.amount) - otherAll - refunded;
+    const worth = billBase(bill);
+    if (otherAll + refunded + amount > worth) {
+      const left = worth - otherAll - refunded;
       errors.push(`That would credit more than ${bill.no} is worth. At most ${Math.max(0, left)} is left to credit.`);
     }
     if (rec.settlement === 'credit_balance') {
-      const owed = num(bill.amount) - paid - refunded - otherOpen;
+      const owed = worth - paid - refunded - otherOpen;
       if (amount > owed) {
         errors.push(`Only ${Math.max(0, owed)} is still owed on ${bill.no}. If the supplier is sending money back on a bill already settled, choose the method it arrives by.`);
       }

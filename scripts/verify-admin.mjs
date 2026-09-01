@@ -397,6 +397,99 @@ const pair = await (async () => {
   ok('A forged CSRF token is rejected', r.status === 403, `HTTP ${r.status}`);
 }
 
+/* ------------------------- the refund-received path, and what a bill is worth */
+
+/**
+ * Every supplier credit note in the book was settlement: credit_balance. The other half of
+ * the feature — the supplier actually sending money back — had a branch in the validator, a
+ * leg in the journal and a place in the bank movements, and no record had ever taken it.
+ *
+ * Writing these found that a bill was being valued at its FACE amount. SFT-BIL-0163 is USD
+ * 4,360 at 122.5, so 534,100 taka, and crediting 5,000 taka against it came back "At most
+ * 4360 is left to credit". A bill worth over five lakh would not accept a five-thousand-taka
+ * credit note. Three validators compared a taka figure against a document-currency one.
+ */
+{
+  const fs2 = await import('node:fs');
+  const book = JSON.parse(fs2.readFileSync('content/accounting.json', 'utf8'));
+  const save = async (patch) => {
+    const list = await req(`/books/list?col=${COL}`);
+    const made = await req(`/books/new?col=${COL}`, { method: 'POST', form: { csrf: csrfFrom(list.text) } });
+    const id = /id=([A-Za-z0-9-]+)/.exec(made.location ?? '')?.[1] ?? '';
+    const form = await req(`/books/edit?col=${COL}&id=${id}`);
+    const r = await req(`/books/edit?col=${COL}&id=${id}`, {
+      method: 'POST',
+      form: { ...fieldsFrom(form.text), ...hiddensFrom(form.text), csrf: csrfFrom(form.text), ...patch, save: '1' }
+    });
+    return { id, status: r.status, why: /<li>([^<]{10,160})/.exec(r.text)?.[1] ?? '' };
+  };
+  const drop = async (id) => {
+    const list = await req(`/books/list?col=${COL}`);
+    await req(`/books/delete?col=${COL}`, { method: 'POST', form: { csrf: csrfFrom(list.text), remove: id } });
+  };
+
+  const foreign = book.bills.find((b) => b.currency && Number(b.fxRate) > 1);
+  if (foreign) {
+    const face = Number(foreign.amount);
+    const worth = Math.round(face * Number(foreign.fxRate));
+    // Above the face value and far below the converted one: only a validator comparing
+    // taka with dollars refuses this.
+    const amount = Math.min(face + 1000, Math.round(worth / 2));
+    const r = await save({
+      'rec.date': '2026-08-27', 'rec.supplierId': foreign.supplierId, 'rec.billId': foreign.id,
+      'rec.amount': String(amount), 'rec.settlement': 'credit_balance', 'rec.reason': 'overbilled',
+      'rec.notes': 'headroom check'
+    });
+    ok('A foreign bill is credited against its book value, not its face value',
+      r.status === 302,
+      r.status === 302
+        ? `${amount} accepted against ${foreign.no} — face ${face} ${foreign.currency}, worth ${worth}`
+        : `refused: ${r.why}`);
+    await drop(r.id);
+  } else {
+    ok('A foreign bill is credited against its book value, not its face value', true, 'no foreign bill in the book');
+  }
+
+  const paidOn = {};
+  for (const p of book.payments) paidOn[p.billId] = (paidOn[p.billId] ?? 0) + p.amount;
+  // Partly paid, not wholly: on a fully paid bill `paid + 1` exceeds what the bill is
+  // worth, so the headroom check fires first and this one never reaches its own branch.
+  const worthOf = (b) => Math.round(Number(b.amount) * (Number(b.fxRate) || 1));
+  const creditedOn = {};
+  for (const c of book.supplierCreditNotes || []) creditedOn[c.billId] = (creditedOn[c.billId] ?? 0) + c.amount;
+  for (const c of book.creditNotes || []) if (c.billId) creditedOn[c.billId] = (creditedOn[c.billId] ?? 0) + c.supplierRefund;
+  const settled = book.bills.find((b) => {
+    const paid = paidOn[b.id] ?? 0;
+    return paid > 0 && paid + 1 + (creditedOn[b.id] ?? 0) <= worthOf(b);
+  });
+  if (settled) {
+    const paid = paidOn[settled.id];
+    const over = await save({
+      'rec.date': '2026-08-27', 'rec.supplierId': settled.supplierId, 'rec.billId': settled.id,
+      'rec.amount': String(paid + 1), 'rec.settlement': 'bank_transfer',
+      'rec.bankId': book.banks[0].id, 'rec.reason': 'overbilled'
+    });
+    ok('Money cannot come back that was never paid out',
+      over.status === 422 && /has been paid/.test(over.why), over.why.slice(0, 90) || `HTTP ${over.status}`);
+    await drop(over.id);
+
+    const noBank = await save({
+      'rec.date': '2026-08-27', 'rec.supplierId': settled.supplierId, 'rec.billId': settled.id,
+      'rec.amount': '1000', 'rec.settlement': 'bank_transfer', 'rec.bankId': '', 'rec.reason': 'overbilled'
+    });
+    ok('A refund that arrives by bank must name the bank',
+      noBank.status === 422 && /bank or wallet/.test(noBank.why), noBank.why.slice(0, 90) || `HTTP ${noBank.status}`);
+    await drop(noBank.id);
+  }
+
+  const refunds = (book.supplierCreditNotes || []).filter((c) => c.settlement !== 'credit_balance');
+  ok('A supplier credit note settled by money coming back exists at all',
+    refunds.length > 0,
+    refunds.length
+      ? `${refunds.length} refund(s) received, ${refunds.map((c) => c.amount).join(', ')}`
+      : 'every supplier credit note is a credit balance — the refund branch has still never run');
+}
+
 /* ------------------------------------------------------------------ clean up */
 {
   const list = await req(`/books/list?col=${COL}`);

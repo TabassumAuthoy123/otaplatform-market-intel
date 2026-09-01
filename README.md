@@ -1380,8 +1380,8 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 179 checks — specification, hardening, automation
-node scripts/verify-admin.mjs    # 46 checks — the admin portal, signed in
+node scripts/verify-srs.mjs      # 180 checks — specification, hardening, automation
+node scripts/verify-admin.mjs    # 50 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 31 checks — manual vouchers, and the reconciliation surviving them
 node scripts/verify-bank.mjs     # 63 checks — a bank statement against the book, and every refusal
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**415 checks** across the six suites against the running app: each one loads a
+**420 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **179 + 46 + 39 + 31 + 63 + 57
+should accept on trust, including from me. It currently reports **180 + 50 + 39 + 31 + 63 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -2715,6 +2715,58 @@ the old expression `total - credited - paid` in `invoiceTotals()` and found it i
 the doc comment explaining the bug. Comments are stripped before the match now.
 
 ---
+## Supplier credit notes, and eight copies of a test
+
+A supplier credit note settles two ways: the credit sits against the bill, or the supplier
+sends the money back. Every one of the eight in the book was the first kind. The second —
+a branch in the validator, a leg in the journal, a place in the bank movements — had never
+been taken by any record.
+
+### The eight
+
+They were the same note. Same day, same bill, same ৳5,000, same text: *Audit probe —
+overbilling reversed*. `verify-admin.mjs` creates one and deletes it at the end, and runs
+that died before the delete left theirs behind, one at a time, until there were eight —
+৳40,000 of fictitious supplier credit against SFT-BIL-0127, committed to the repo.
+
+Nothing complained, because nothing was arithmetically wrong: the bill is ৳2,55,000 and
+still showed ৳87,500 owing. The book balanced with ৳40,000 of invented credit in it. This
+is the demo book an agency is shown, so seven are gone, the survivor describes a real
+reversal, and a check now fails if any collection contains a probe marker at all.
+
+The suite does clean up now — the count held at eight across a fresh run — so this was old
+damage, not an active leak. The README already warns about tests with side effects on
+production data; this is what the warning looks like a few months later.
+
+### A bill was being valued at its face amount
+
+Found by exercising the refund path. `SFT-BIL-0163` is **USD 4,360 at 122.5 — ৳5,34,100**,
+and crediting ৳5,000 against it came back:
+
+```
+That would credit more than SFT-BIL-0163 is worth. At most 4360 is left to credit.
+```
+
+Three validators compared a taka figure against `bill.amount`, which is in the **document**
+currency. A bill worth over five lakh would not accept a five-thousand-taka credit note,
+and would have accepted a four-thousand one as though it had eaten 4,000 of a 4,360
+allowance. Same family as the overdue alert that valued a USD 4,800 invoice at ৳4,800:
+anywhere a document amount meets a book amount, one of them has to be converted, and the
+conversion now happens in one `billBase()` rather than at each comparison.
+
+The dropdown had the same problem in a quieter way. It listed that bill as `4360` beside
+nine bills whose numbers were taka, so the largest bill in the list looked like the
+smallest. It now reads `USD 4,360 · ৳5,34,100`, and taka bills are unchanged.
+
+### What runs now
+
+Qatar Airways refunding ৳25,000 into Dutch-Bangla against SFT-BIL-0127 — the first supplier
+credit note in the book that is money rather than an offset — plus the three refusals that
+had never been triggered: crediting more than the bill is worth, taking back more than was
+ever paid out, and a refund that names no bank. All twelve reconciliation rows stay at zero.
+
+---
+
 ## Data model, in one paragraph
 
 `Agency` is the core record. It hangs off `Cluster` (which hangs off `District` →
