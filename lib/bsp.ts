@@ -132,6 +132,16 @@ const TYPE: Record<string, BspRow['type']> = {
 
 export type BspParse = {
   rows: BspRow[];
+  /**
+   * Data rows dropped for carrying no document number.
+   *
+   * They were dropped silently. A real billing file carries them — a mis-keyed line, a
+   * subtotal the export left in — and the summary then said "5 row(s) on the file" over a
+   * file with six, with the missing one folded into no total and named nowhere. The
+   * agency remits what IATA asks and reconciles against a figure that quietly excludes a
+   * row, which is the shape of gap this whole screen exists to close.
+   */
+  skipped: number;
   /** Header names we could not place, so a mapping problem is visible. */
   unmapped: string[];
   /** Fields the file does not carry at all. */
@@ -141,7 +151,7 @@ export type BspParse = {
 
 export function parseBspCsv(text: string): BspParse {
   const table = parseCsv(text);
-  if (!table.length) return { rows: [], unmapped: [], missing: Object.keys(COLUMNS), errors: ['The file is empty.'] };
+  if (!table.length) return { rows: [], unmapped: [], missing: Object.keys(COLUMNS), errors: ['The file is empty.'], skipped: 0 };
 
   const header = table[0].map(normalise);
   const index: Partial<Record<keyof BspRow, number>> = {};
@@ -164,7 +174,7 @@ export function parseBspCsv(text: string): BspParse {
     return at === undefined ? '' : (r[at] ?? '').trim();
   };
 
-  const rows: BspRow[] = table.slice(1).map((r, i) => {
+  const parsed: BspRow[] = table.slice(1).map((r, i) => {
     const base = num(cell(r, 'baseFare'));
     const tax = num(cell(r, 'tax'));
     const comm = num(cell(r, 'commission'));
@@ -185,10 +195,13 @@ export function parseBspCsv(text: string): BspParse {
       period: cell(r, 'period'),
       pnr: cell(r, 'pnr').toUpperCase()
     };
-  }).filter((r) => r.documentNo);
+  });
+
+  const rows = parsed.filter((r) => r.documentNo);
+  const skipped = parsed.length - rows.length;
 
   if (!rows.length && !errors.length) errors.push('No rows carried a document number.');
-  return { rows, unmapped, missing, errors };
+  return { rows, unmapped, missing, errors, skipped };
 }
 
 /* ------------------------------------------------------------------- matching */

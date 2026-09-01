@@ -2260,6 +2260,34 @@ function withOptionalFields(spec, rec) {
   if (spec.key === 'documents') {
     if (rec.againstDocumentNo === undefined) rec.againstDocumentNo = '';
     if (rec.reason === undefined) rec.reason = '';
+    /**
+     * THE TICKET NUMBER COULD NOT BE ENTERED AT ALL
+     *
+     * Every one of the book's 63 documents carries `documentNo: null`, and the generic
+     * editor builds its fields from the record it is handed: the boolean branch wants a
+     * boolean, the number branch a number, the string branch a string, and `null` is none
+     * of them, so no field was rendered and there was nowhere to type it.
+     *
+     * That is not a cosmetic gap. lib/bsp.ts keys the three-way match on the document
+     * number, so with every number null its `byNumber` map is empty and two of its five
+     * verdicts — `exact` and `disputed` — were unreachable by construction. The dispute
+     * figure an agency most wants to watch could never be non-zero, and nothing said so.
+     *
+     * Coerced to a typed empty value rather than defaulted to something meaningful: '' and
+     * null both read as "no ticket number" everywhere downstream, and 0 commission is what
+     * `?? 0` already assumed.
+     *
+     * baseFare is deliberately NOT in this list. An empty fare box would have to store 0,
+     * and 0 means the ticket was free while null means nobody recorded what it cost —
+     * documentGross() returns null for exactly that reason. Giving a fareless document a
+     * fare still needs a typed-empty number input the editor does not have yet.
+     */
+    for (const f of ['documentNo', 'issueDate', 'settlementRef', 'passengerName', 'platingCarrier']) {
+      if (rec[f] === null || rec[f] === undefined) rec[f] = '';
+    }
+    for (const f of ['commissionPct', 'commissionAmt']) {
+      if (rec[f] === null || rec[f] === undefined) rec[f] = 0;
+    }
   }
   if (['invoices', 'bills', 'expenses'].includes(spec.key) && !Array.isArray(rec.attachments)) {
     rec.attachments = [];
@@ -5216,7 +5244,21 @@ const server = http.createServer(async (req, res) => {
       const book = bookFile();
       const rec = (book[spec.key] || []).find((r) => r.id === url.searchParams.get('id'));
       if (!rec) return send(res, 404, page({ title: 'Not found', session, body: '<h1>No record with that id</h1><p><a href="/books">Back</a></p>' }));
-      return send(res, 200, bookEditView(session, book, spec, rec, url.searchParams.get('saved') ? 'Saved.' : null, null));
+      /**
+       * The optional fields have to be added HERE too, not only on the way in.
+       *
+       * withOptionalFields ran on save and on a freshly created blank, and never on the
+       * record the form renders — so it worked for new records and for nothing else. Every
+       * field it exists to surface was invisible on the 63 documents, 8 customers and
+       * everything else already in the book: creditLimit had a comment saying "defaulting it
+       * to 0 here puts the box on the form" and it did not, and a ticket number could not be
+       * typed into any document at all, which is why two of the BSP matcher's five verdicts
+       * were unreachable.
+       *
+       * A copy, so the stored record is not mutated by rendering it.
+       */
+      const shown = withOptionalFields(spec, JSON.parse(JSON.stringify(rec)));
+      return send(res, 200, bookEditView(session, book, spec, shown, url.searchParams.get('saved') ? 'Saved.' : null, null));
     }
 
     if (pathname === '/books/edit' && req.method === 'POST') {

@@ -836,78 +836,127 @@ await check('Only a future travel date defers anything', () => {
  * higher; one row for a booking nothing here has ever seen; one memo. Every
  * assertion below is a defect this file found the first time it ran.
  */
-const BSP_CSV = [
-  'DocumentNumber,TRNC,AirlineCode,IssueDate,Currency,FareAmount,TaxAmount,CommissionAmount,AmountPayable,PNR,Period,PassengerName',
-  '0571234567890,TKT,BS,2026-08-12,BDT,25900,10699,0,36599,{PNR1},2026-08-P2,"RAHMAN, TANVIR MR"',
-  '0571234567891,TKT,BS,2026-08-12,BDT,25900,11899,0,37799,{PNR2},2026-08-P2,"AKTER, SHARMIN MS"',
-  '0571234567899,TKT,EK,2026-08-11,BDT,40000,12000,0,52000,ZZZ999,2026-08-P2,"UNKNOWN, PASSENGER"',
-  '0571234567898,ADM,BS,2026-08-10,BDT,0,0,0,2500,{PNR1},2026-08-P2,"RAHMAN, TANVIR MR"'
-].join('\n');
+/**
+ * ONE FILE, EVERY VERDICT — AND TWO OF THEM HAD NEVER BEEN REACHABLE
+ *
+ * lib/bsp.ts has had five buckets since it was written. The book could only ever produce
+ * three of them, because every one of its 63 documents carried documentNo: null — so the
+ * matcher's byNumber map was empty and `exact` and `disputed` could not happen at all.
+ * The dispute figure an agency most wants to watch could never be anything but zero.
+ *
+ * It was null because there was nowhere to type it: the generic editor builds its fields
+ * from the record it is handed, null belongs to no branch, and withOptionalFields — the
+ * hook that exists to surface exactly this kind of field — was applied on save and on a
+ * fresh blank but never on the record the form renders. So it worked for new records and
+ * for nothing already in the book.
+ *
+ * This fixture now needs three priced documents and says so, rather than quietly passing
+ * on a book that cannot produce the case.
+ */
+function bspFixture(bk) {
+  const docs = bk.documents || [];
+  const tax = (d) => (d.taxes || []).reduce((t, x) => t + (x.amount || 0), 0);
+  const payable = (d) => Math.round(d.baseFare + tax(d) - (d.commissionAmt || 0));
+  const ticketed = docs.filter((d) => d.documentNo && d.baseFare !== null && d.type === "TKT");
+  const pricedNoNumber = docs.find((d) => !d.documentNo && d.baseFare !== null);
+  const farelessNoNumber = docs.find((d) => !d.documentNo && d.baseFare === null && d.pnr);
+  const unbilled = docs.find((d) => d.documentNo && d.status === "issued" && !ticketed.slice(0, 2).includes(d));
+  if (ticketed.length < 2 || !pricedNoNumber || !farelessNoNumber) return null;
+
+  const [exactDoc, disputedDoc] = ticketed;
+  const head = "DocumentNumber,TRNC,AirlineCode,IssueDate,Currency,FareAmount,TaxAmount,CommissionAmount,AmountPayable,PNR,Period,PassengerName";
+  const row = (a) => a.map((c) => (String(c).includes(",") ? JSON.stringify(String(c)) : String(c))).join(",");
+  const csv = [
+    head,
+    // exact — billed at precisely what the book says is owed
+    row([exactDoc.documentNo, "TKT", "BS", "2026-08-26", "BDT", exactDoc.baseFare, tax(exactDoc), exactDoc.commissionAmt || 0, payable(exactDoc), exactDoc.pnr, "2026-08-P2", "EXACT MR"]),
+    // disputed — 400 more than the book says, on a document matched by NUMBER
+    row([disputedDoc.documentNo, "TKT", "BS", "2026-08-26", "BDT", disputedDoc.baseFare, tax(disputedDoc), disputedDoc.commissionAmt || 0, payable(disputedDoc) + 400, disputedDoc.pnr, "2026-08-P2", "DISPUTE MR"]),
+    // onlyInBsp — a number this book has never seen
+    row(["0571111111119", "TKT", "EK", "2026-08-11", "BDT", 40000, 12000, 0, 52000, "ZZZ999", "2026-08-P2", "UNKNOWN PASSENGER"]),
+    // the memo branch — an ADM is a claim raised AGAINST a ticket, never a ticket
+    row(["0579999999991", "ADM", "BS", "2026-08-10", "BDT", 0, 0, 0, 2500, exactDoc.pnr, "2026-08-P2", "EXACT MR"]),
+    // provisional, with a real gap — the book has a fare for this PNR but no ticket number
+    row(["0571234567891", "TKT", "BS", "2026-08-12", "BDT", pricedNoNumber.baseFare, tax(pricedNoNumber) + 1200, 0, Math.round(pricedNoNumber.baseFare + tax(pricedNoNumber)) + 1200, pricedNoNumber.pnr, "2026-08-P2", "PROVISIONAL MS"]),
+    // provisional against a document with no fare at all — nothing to compare, and correct
+    row(["0571234567892", "TKT", "BS", "2026-08-12", "BDT", 9000, 1000, 0, 10000, farelessNoNumber.pnr, "2026-08-P2", "NO FARE MR"]),
+    // a row with no document number: a real file carries these, and they are dropped
+    row(["", "TKT", "BS", "2026-08-29", "BDT", 1000, 0, 0, 1000, "QQQQQQ", "2026-08-P2", "NO NUMBER MR"])
+    // `unbilled` is deliberately absent from the file, so it comes back onlyInBook
+  ].join("\n");
+  return { csv, exactDoc, disputedDoc, pricedNoNumber, farelessNoNumber, unbilled, payable, tax };
+}
 
 async function bspReport() {
   const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
-  const priced = (bk.documents ?? []).filter((d) => d.baseFare !== null && !d.documentNo);
-  if (priced.length < 2) return null;
-  const csv = BSP_CSV.replace(/\{PNR1\}/g, priced[0].pnr).replace(/\{PNR2\}/g, priced[1].pnr);
-  const html = (await (await fetch(`${APP}/accounts/bsp?csv=${encodeURIComponent(csv)}`)).text())
+  const f = bspFixture(bk);
+  if (!f) return null;
+  const html = (await (await fetch(`${APP}/accounts/bsp?csv=${encodeURIComponent(f.csv)}`)).text())
     .replace(/<!--[\s\S]*?-->/g, '');
   const rows = [...html.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map((m) =>
     [...m[1].matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)]
       .map((c) => c[1].replace(/<[^>]+>/g, '').replace(/&#x?\w+;/g, '').replace(/\s+/g, ' ').trim())
   ).filter((r) => r.length >= 7);
-  return { html, rows, priced };
+  return { html, rows, ...f };
 }
 
 await check('A BSP file is matched against the book, verdict by verdict', async () => {
   const r = await bspReport();
-  if (!r) return [false, 'fewer than two priced documents to match against'];
+  if (!r) return [false, 'the book cannot produce every verdict — it needs two ticketed priced documents, one priced without a number, and one fareless'];
   const kinds = r.rows.map((x) => x[0]);
-  const unknown = kinds.filter((k) => /Not in the book/.test(k)).length;
-  const provisional = kinds.filter((k) => /PNR only/.test(k)).length;
-  const exact = kinds.filter((k) => k === 'Matched').length;
+  const count = (re) => kinds.filter((k) => re.test(k)).length;
   /**
-   * Properties, not a tally. This read `unknown >= 2` and went red the moment step
-   * 5 gave the memo a document and it matched — a correct change failing a check
-   * that had memorised the previous step's answer. Second time in this file.
+   * Properties, not a tally. An earlier version read `unknown >= 2` and went red the
+   * moment a later step gave the memo a document and it matched — a correct change
+   * failing a check that had memorised the previous step's answer.
    */
-  return [r.rows.length >= 4 && provisional === 2 && unknown >= 1,
-    `${r.rows.length} row(s): ${provisional} on PNR, ${exact} exact, ${unknown} unknown to the book`];
+  const exact = count(/^Matched$/);
+  const disputed = count(/Amounts differ/);
+  const provisional = count(/PNR only/);
+  const unknown = count(/Not in the book/);
+  const onlyBook = count(/Not on this billing|Not billed/);
+  const all = exact >= 1 && disputed >= 1 && provisional === 2 && unknown >= 1 && onlyBook >= 1;
+  return [all,
+    `${exact} exact, ${disputed} disputed, ${provisional} on PNR, ${unknown} unknown to the book, ${onlyBook} unbilled`];
+});
+
+await check('The dispute is measured against the document number, not the PNR', async () => {
+  const r = await bspReport();
+  if (!r) return [false, 'no fixture'];
+  const row = r.rows.find((x) => x[1] === r.disputedDoc.documentNo);
+  if (!row) return [false, 'the disputed row is not on the report'];
+  const differs = /Amounts differ/.test(row[0]);
+  const tile = /Amounts in dispute<\/div>[\s\S]{0,260}?>([^<]*400[^<]*)</.exec(r.html);
+  return [differs && Boolean(tile),
+    differs ? `the 400 gap is a dispute and the tile carries it` : `read as ${row[0]}`];
 });
 
 await check('A memo is never matched to a ticket', async () => {
   const r = await bspReport();
-  if (!r) return [false, 'no documents to match against'];
-  const admRow = r.rows.find((x) => x[1] === '0571234567898');
+  if (!r) return [false, 'no fixture'];
+  const admRow = r.rows.find((x) => x[1] === '0579999999991');
   if (!admRow) return [false, 'the ADM row is not on the report at all'];
   /**
-   * Before step 5 a memo had no document of its own, so "not in the book" was the
-   * right answer and this asserted exactly that. Now the memo HAS a document and
-   * matches it on the document number — the point of step 5 — which made the old
-   * assertion fail on correct behaviour.
-   *
-   * The property that holds in both states: a memo must never match a TICKET.
-   * Either it matches its own memo document or it matches nothing. What it must not
-   * do is report the gap between a 2,500 memo and a 36,599 fare as a dispute.
+   * The property that holds whatever else changes: a memo must never match a TICKET.
+   * Either it matches a memo document of its own or it matches nothing. What it must not
+   * do is report the gap between a 2,500 memo and a 36,599 fare as a pricing dispute.
    */
   const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
-  const memoNos = new Set((bk.documents || [])
-    .filter((d) => d.type === 'ADM' || d.type === 'ACM')
-    .map((d) => d.documentNo));
+  const memoNos = new Set((bk.documents || []).filter((d) => d.type === "ADM" || d.type === "ACM").map((d) => d.documentNo));
   if (/Not in the book/.test(admRow[0])) {
-    return [admRow[6] === '—', 'no memo document exists yet, so the memo is correctly unmatched'];
+    return [admRow[6] === '—' || admRow[6] === '', 'no memo document carries that number, so it is correctly unmatched'];
   }
-  const ownDocument = memoNos.has('0571234567898') && admRow[4] === admRow[5];
-  return [ownDocument,
-    ownDocument
-      ? 'the memo matched its own memo document, amounts equal — never a ticket'
-      : `matched something it should not: ${admRow.join(' | ')}`];
+  const ownDocument = memoNos.has('0579999999991') && admRow[4] === admRow[5];
+  return [ownDocument, ownDocument
+    ? 'the memo matched its own memo document, amounts equal — never a ticket'
+    : `matched something it should not: ${admRow.join(" | ")}`];
 });
 
 await check('One document is never matched twice', async () => {
   const r = await bspReport();
-  if (!r) return [false, 'no documents to match against'];
-  // Two BSP rows share a PNR in the file above. Before the used-set guarded the
-  // PNR pass, both matched the same document and one sale looked like two.
+  if (!r) return [false, 'no fixture'];
+  // Two BSP rows share a PNR in the file above. Before the used-set guarded the PNR pass,
+  // both matched the same document and one sale looked like two.
   const matchedPnrs = r.rows.filter((x) => /PNR only/.test(x[0])).map((x) => x[2]);
   return [new Set(matchedPnrs).size === matchedPnrs.length,
     `${matchedPnrs.length} provisional match(es), ${new Set(matchedPnrs).size} distinct document(s)`];
@@ -915,15 +964,38 @@ await check('One document is never matched twice', async () => {
 
 await check('A difference on a PNR-only match is shown but not called a dispute', async () => {
   const r = await bspReport();
-  if (!r) return [false, 'no documents to match against'];
+  if (!r) return [false, 'no fixture'];
   /**
-   * Provisional differences are not disputes — the join is a PNR and may be wrong,
-   * so sending somebody to argue with an airline over it would be worse than
-   * silence. But a tile reading "in dispute: 0" beside a row showing a 1,200 gap
-   * reads as a bug, which is exactly how the first run looked.
+   * Provisional differences are not disputes — the join is a PNR and may be wrong, so
+   * sending somebody to argue with an airline over it would be worse than silence. But a
+   * tile reading "in dispute: 0" beside a row showing a 1,200 gap reads as a bug, which is
+   * exactly how the first run looked.
    */
-  const sub = /Amounts in dispute<\/div>[\s\S]{0,220}?text-\[12px\] text-muted">([^<]+)</.exec(r.html)?.[1] ?? '';
-  return [/PNR-only/.test(sub) && /1,200/.test(sub), `dispute tile reads: ${sub || '(nothing)'}`];
+  const sub = /Amounts in dispute<\/div>[\s\S]{0,320}?text-\[12px\] text-muted">([^<]+)</.exec(r.html)?.[1] ?? '';
+  return [/PNR-only/.test(sub) && /1,200/.test(sub), `dispute tile reads: ${sub || "(nothing)"}`];
+});
+
+await check('A row with no document number is counted, not silently dropped', async () => {
+  const r = await bspReport();
+  if (!r) return [false, 'no fixture'];
+  /**
+   * They were dropped in silence. A real billing file carries them — a mis-keyed line, a
+   * subtotal the export left in — and the tile then read "5 row(s) on the file" over a file
+   * with six, the missing one in no total and named nowhere. An agency remits what IATA
+   * asks and reconciles against a figure that quietly excludes a row.
+   */
+  const flat = r.html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+  const named = /carried no document number/.test(flat);
+  // Read off the tile rather than hard-coded: the fixture grows, and a check that has
+  // memorised its row count goes red on a correct change. Twice already in this file.
+  const tile = /(\d+) of (\d+) row\(s\)/.exec(flat);
+  const adds = Boolean(tile) && Number(tile[2]) > Number(tile[1]);
+  return [named && adds,
+    named && adds
+      ? `the tile says ${tile[1]} of ${tile[2]}, and the panel says why`
+      : named
+        ? 'the panel names it but the tile still counts only what parsed'
+        : 'the dropped row is still invisible'];
 });
 
 await check('The BSP page never writes anything', async () => {

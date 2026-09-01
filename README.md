@@ -1380,7 +1380,7 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 181 checks — specification, hardening, automation
+node scripts/verify-srs.mjs      # 183 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 50 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 31 checks — manual vouchers, and the reconciliation surviving them
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**427 checks** across the six suites against the running app: each one loads a
+**429 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **181 + 50 + 39 + 31 + 69 + 57
+should accept on trust, including from me. It currently reports **183 + 50 + 39 + 31 + 69 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -2875,6 +2875,66 @@ records unsaveable, and the real answer is a **year-end close** — carrying Jun
 bringing it back in as an opening position — which this project does not have yet and which
 is listed among the gaps below. The June import was rolled back rather than left in the book
 as a reconciliation nobody can finish.
+
+---
+
+## Two BSP verdicts that could not happen
+
+`lib/bsp.ts` does a three-way match — what the GDS sold, what the book recorded, what IATA
+will bill — and sorts every row into one of five buckets: `exact`, `disputed`, `onlyInBsp`,
+`onlyInBook`, `provisional`. The book could only ever produce three of them.
+
+The match is keyed on the document number. **All 63 documents carried `documentNo: null`**,
+so the matcher's `byNumber` map was empty, and `exact` and `disputed` were unreachable by
+construction. *Amounts in dispute* — the one figure on that screen an agency most wants to
+watch go down — could never be anything but ৳0, and nothing said why.
+
+### The field could not be typed into
+
+It was null because there was nowhere to enter it. The generic editor builds its fields
+from the record it is handed — the boolean branch wants a boolean, the number branch a
+number, the string branch a string — and `null` belongs to no branch, so no input was
+rendered.
+
+`withOptionalFields()` exists for exactly this: it puts a field on the form that the record
+does not have yet. It was called on save, and on a freshly created blank, and **never on
+the record the form renders.** So it worked for new records and for nothing already in the
+book. The comment beside `creditLimit` says *"defaulting it to 0 here puts the box on the
+form"* — it did not; that box was absent from all eight customers. Fixed in one line on the
+render path, which brings back `creditLimit`, `againstDocumentNo`, `reason`, and the
+ticketing fields together.
+
+`baseFare` is deliberately still not surfaced. An empty fare box has to store something,
+and `0` means the ticket was free while `null` means nobody recorded what it cost —
+`documentGross()` returns null for that reason. Giving a fareless document a fare needs a
+typed-empty number input the editor does not have.
+
+### A row with no document number vanished
+
+`parseBspCsv` ends with `.filter((r) => r.documentNo)`. A real billing file carries such
+rows — a mis-keyed line, a subtotal the export left in — and they were dropped in silence:
+the tile read *"5 row(s) on the file"* over a file with six, the missing one in no total and
+named nowhere. An agency remits what IATA asks and reconciles against a figure that quietly
+excludes a row, which is the exact shape of gap the screen exists to close. The parse now
+returns a `skipped` count, the tile reads *"5 of 6 row(s) — 1 had no document number"*, and
+the panel above says so in words.
+
+### What runs now
+
+Two documents issued by hand from the airline confirmation — Travelport ticketing is
+entitlement-blocked, so that is what an agency actually does — and a file covering the
+whole matrix:
+
+| Verdict | How |
+|---|---|
+| `exact` | ticket `0571234567899` billed at exactly its ৳34,786 payable |
+| `disputed` | ticket `0571234567907` billed ৳400 over its ৳36,295 |
+| `onlyInBsp` | a number the book has never seen, and an ADM against a ticket |
+| `onlyInBook` | an issued document left off the billing |
+| `provisional` | two PNR matches, one with a ৳1,200 gap shown but **not** called a dispute |
+
+The suite fixture now states what the book must contain to produce every verdict and fails
+when it cannot, rather than passing quietly over a book that has nothing to match.
 
 ---
 

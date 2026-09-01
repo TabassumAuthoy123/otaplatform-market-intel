@@ -99,7 +99,7 @@ export default async function BspPage({ searchParams }: { searchParams: { csv?: 
         </form>
       </Panel>
 
-      {parsed && (parsed.errors.length > 0 || parsed.missing.length > 0 || parsed.unmapped.length > 0) && (
+      {parsed && (parsed.errors.length > 0 || parsed.missing.length > 0 || parsed.unmapped.length > 0 || parsed.skipped > 0) && (
         <Panel title="What the file did and did not carry" sub="Read this before trusting the match below">
           <div className="space-y-2 px-5 py-4 text-[12.5px] leading-relaxed">
             {parsed.errors.map((e) => (
@@ -116,6 +116,22 @@ export default async function BspPage({ searchParams }: { searchParams: { csv?: 
                 <span className="font-semibold text-navy-900">Columns ignored:</span> {parsed.unmapped.join(', ')}.
               </p>
             )}
+            {/*
+              A row with no document number is dropped, and used to be dropped in silence.
+              A real billing file carries them — a mis-keyed line, a subtotal the export left
+              in — and the tile below then read "5 row(s) on the file" over a file with six,
+              with the missing one in no total and named nowhere. An agency remits what IATA
+              asks and reconciles against a figure that quietly excludes a row, which is the
+              exact shape of gap this screen exists to close.
+            */}
+            {parsed.skipped > 0 && (
+              <p className="font-semibold text-amber-700">
+                {parsed.skipped} row(s) carried no document number and are not in the match or any
+                total below. BSP is keyed on the document number, so there is nothing to match them
+                on — but they are on the file, and the figures here are of {parsed.rows.length} rows
+                out of {parsed.rows.length + parsed.skipped}.
+              </p>
+            )}
           </div>
         </Panel>
       )}
@@ -123,7 +139,15 @@ export default async function BspPage({ searchParams }: { searchParams: { csv?: 
       {match && (
         <>
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            <Tile label="IATA will take" value={money(match.summary.bspNetTotal, sym)} sub={`${parsed!.rows.length} row(s) on the file`} />
+            <Tile
+              label="IATA will take"
+              value={money(match.summary.bspNetTotal, sym)}
+              sub={
+                parsed!.skipped > 0
+                  ? `${parsed!.rows.length} of ${parsed!.rows.length + parsed!.skipped} row(s) — ${parsed!.skipped} had no document number`
+                  : `${parsed!.rows.length} row(s) on the file`
+              }
+            />
             <Tile
               label="Amounts in dispute"
               value={money(match.summary.disputedBy, sym)}
