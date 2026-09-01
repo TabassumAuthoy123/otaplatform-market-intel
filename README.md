@@ -1381,7 +1381,7 @@ npm run verify
 
 ```bash
 node scripts/verify-srs.mjs      # 174 checks — specification, hardening, automation
-node scripts/verify-admin.mjs    # 44 checks — the admin portal, signed in
+node scripts/verify-admin.mjs    # 46 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 31 checks — manual vouchers, and the reconciliation surviving them
 node scripts/verify-bank.mjs     # 63 checks — a bank statement against the book, and every refusal
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**408 checks** across the six suites against the running app: each one loads a
+**410 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **174 + 44 + 39 + 31 + 63 + 57
+should accept on trust, including from me. It currently reports **174 + 46 + 39 + 31 + 63 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -1500,6 +1500,63 @@ not an installation.
 ---
 
 ---
+
+---
+
+## Running the paths that had never run
+
+Several features had a route, a form, a validator, a journal account and a dropdown — and
+no data had ever gone through any of them. A code path that has never executed is not
+"probably fine"; it is untested in the strongest sense. Putting real records through them,
+one at a time, through the portal so the validations and the audit trail actually run.
+
+### Supplier deposit drawdowns
+
+A pay method, a validator, `AC.ADVANCES`, and a dropdown option — and **zero of the book's
+150 payments used it**. Everything below executed for the first time.
+
+It works: the validator refuses an overdraw, a legitimate drawdown reduces the float,
+`Dr Accounts payable / Cr Advances to suppliers` posts, and both derivations agree. Qatar's
+float went ৳18,00,000 → ৳13,90,000 on a ৳4,10,000 drawdown.
+
+It also found two things.
+
+**A payment was never checked against what the bill still owed.** The first drawdown was
+aimed at a bill a supplier had already refunded in full. It went straight through, and the
+two derivations then disagreed by the whole ৳4,10,000: the journal debited Accounts payable
+a second time while the control side floored the row at zero and reported no change.
+
+Only `reconciliation()` noticed — the right last line of defence and the wrong first one. A
+figure caught by a cross-check has already been written, and on a busy book it is written
+among two hundred others. **The floor is exactly why it hides**: `Math.max(0, billed − paid
+− …)` is correct for reporting what is owed and useless for spotting an overpayment,
+because the overpaid amount is precisely what the floor removes.
+
+`validateNotOverpaid` now refuses it before the write, counting everything that can settle a
+bill — payments, supplier refunds on customer credit notes, supplier credit notes — and
+saying which of them already covered it:
+
+> `SFT-BIL-0125 has 0 still owing out of 410000 (410000 refunded by the supplier). Paying
+> more would take Accounts payable below what is actually owed.`
+
+**A refused save leaves a numbered blank behind.** `/books/new` creates the record *before*
+the form is filled, so an abandoned or rejected edit leaves an empty voucher holding a
+voucher number. It changes no figure — a zero posts nothing — but it puts gaps in the
+numbering, and a gap in a voucher sequence is a question an auditor asks. Not changed here:
+the create-then-edit flow is how the whole portal works, and a browser user sees the form
+they are meant to fill. Worth knowing it litters.
+
+### A suite that had quietly lost its session
+
+Adding those checks exposed something in `verify-admin` itself. Its password-change section
+ends by restoring `myCookie` — the cookie from *before* the change, which that change
+deliberately kills by bumping `tokenVersion`. Every request after it went to `/login`.
+
+Nothing noticed, because nothing followed. The first check added after that point read a
+`302` with an empty body and reported a record as saved when it had never been submitted —
+which is how a refusal check comes back green while refusing nothing. **A suite that
+silently loses its session is worse than one that fails: every assertion after that point is
+measuring a redirect.** It now keeps the re-issued cookie.
 
 ## Two todays, and a float that rose when you spent it
 

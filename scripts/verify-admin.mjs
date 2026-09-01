@@ -555,6 +555,20 @@ const pair = await (async () => {
     (await req('/dashboard')).status === 200,
     'cookie was re-issued, so the change does not log you out of itself');
 
+  /**
+   * The re-issued cookie, kept so later checks have a live session.
+   *
+   * The block below used to end by restoring `myCookie` — the cookie from BEFORE the
+   * password change, which that change deliberately kills by bumping tokenVersion. Every
+   * later request then went to /login, and nothing noticed because nothing followed. The
+   * first check added after it read a 302 with an empty body and reported the record as
+   * saved when it had never been submitted.
+   *
+   * A suite that quietly loses its session is worse than one that fails: every assertion
+   * after that point is measuring a redirect.
+   */
+  const liveCookie = cookie;
+
   const otherAfter = await asOther('/dashboard');
   ok('Every OTHER session for that account is ended',
     otherAfter.status === 302,
@@ -585,7 +599,83 @@ const pair = await (async () => {
   ok('The CSRF token is different in a different session',
     csrfBefore !== csrfAfter,
     'derived from the session issue time, so a leaked token dies with its session');
-  cookie = myCookie;
+  cookie = liveCookie;
+}
+
+/* ------------------------------- supplier deposits, actually drawn on */
+
+/**
+ * The drawdown path had a pay method, a validator, a journal account and a dropdown, and
+ * not one of the book's 150 payments had ever used it. Everything below ran for the first
+ * time when this was written, and it found two things.
+ */
+{
+  const book = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const held = (book.supplierDeposits || []).reduce((m, d) => {
+    m[d.supplierId] = (m[d.supplierId] || 0) + d.amount;
+    return m;
+  }, {});
+  const supplierId = Object.keys(held).sort((a, b) => held[b] - held[a])[0];
+
+  const rows = await req(`/books?col=payments`);
+  const csrf = csrfFrom(rows.text);
+  const make = async (patch) => {
+    const blank = await req('/books/new?col=payments', { method: 'POST', form: { csrf } });
+    const id = (blank.location || '').replace(/.*id=/, '').replace(/&.*/, '');
+    const page = await req(`/books/edit?col=payments&id=${id}`);
+    // __nums matters: it tells the handler which fields are numeric. Without it the
+    // amount arrives as text, is stored as nothing, and every amount-based validator
+    // then measures against zero and passes. The first version of this omitted it and
+    // both refusal checks reported a clean save.
+    const hidden = (name) => (page.text.match(new RegExp('name="' + name + '" value="([^"]*)"')) || [])[1];
+    const form = { csrf: csrfFrom(page.text) };
+    for (const h of ['__fp', '__nums', '__bools']) { const v = hidden(h); if (v !== undefined) form[h] = v; }
+    for (const m of page.text.matchAll(/name="(rec\.[a-zA-Z0-9_]+)"(?:[^>]*?value="([^"]*)")?/g)) {
+      form[m[1]] = m[2] ?? '';
+    }
+    for (const [k, v] of Object.entries(patch)) form[`rec.${k}`] = String(v);
+    const saved = await req(`/books/edit?col=payments&id=${id}`, { method: 'POST', form });
+    return { id, status: saved.status, text: saved.text };
+  };
+  const drop = async (id) => req('/books/delete?col=payments', { method: 'POST', form: { csrf, remove: id } });
+
+  const over = await make({
+    supplierId, billId: '', method: 'supplier_deposit', bankId: '',
+    amount: held[supplierId] + 1, date: '2026-08-20', ref: 'probe'
+  });
+  ok('Drawing more than the deposit holds is refused',
+    over.status === 422 && /of deposit is left/.test(over.text),
+    `HTTP ${over.status}`);
+  await drop(over.id);
+
+  /**
+   * The one that mattered. Paying a bill a supplier had already refunded in full went
+   * straight through and put Accounts payable 410,000 below what was owed — the journal
+   * debited it a second time while the control side floored the row at zero and reported
+   * nothing. Only reconciliation() caught it, which is the right last line of defence and
+   * the wrong first one.
+   */
+  const settled = (book.bills || []).find((b) => {
+    const refunded = (book.creditNotes || [])
+      .filter((c) => c.billId === b.id)
+      .reduce((t, c) => t + (c.supplierRefund || 0), 0);
+    const paid = (book.payments || [])
+      .filter((p) => p.billId === b.id)
+      .reduce((t, p) => t + p.amount, 0);
+    return Math.round(b.amount * (b.fxRate || 1)) - paid - refunded <= 0;
+  });
+  if (settled) {
+    const dup = await make({
+      supplierId: settled.supplierId, billId: settled.id, method: 'bank_transfer',
+      bankId: (book.banks[0] || {}).id || '', amount: 1000, date: '2026-08-21', ref: 'probe'
+    });
+    ok('Paying a bill that is already settled is refused',
+      dup.status === 422 && /still owing/.test(dup.text),
+      dup.status === 422 ? 'the message says what already covered it' : `HTTP ${dup.status}`);
+    await drop(dup.id);
+  } else {
+    ok('Paying a bill that is already settled is refused', true, 'no fully settled bill in the book to try it on');
+  }
 }
 
 /* --------------------------------------------- leave nothing behind */

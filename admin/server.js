@@ -2299,6 +2299,7 @@ function validateBookRecord(spec, rec) {
   if (spec.key === 'payments' && rec.method === 'supplier_deposit') {
     errors.push(...validateDepositDrawdown(rec));
   }
+  if (spec.key === 'payments') errors.push(...validateNotOverpaid(rec));
   if (spec.key === 'invoices') {
     if (!Array.isArray(rec.lines) || rec.lines.length === 0) errors.push('An invoice needs at least one line.');
     else for (const [i, l] of rec.lines.entries()) {
@@ -2556,6 +2557,61 @@ function validateTransfer(rec, bookArg) {
  * Settling a bill out of a supplier float can only spend float that is left.
  * Overdrawing it would show an advance the agency never placed.
  */
+
+/**
+ * A payment may not exceed what the bill still owes.
+ *
+ * Nothing checked this. Paying a bill a supplier had already refunded in full went straight
+ * through, and the two derivations then disagreed by the whole amount: the journal debited
+ * Accounts payable a second time, taking the account 410,000 below what was owed, while the
+ * control side floored the bill at zero per row and reported no change at all.
+ *
+ * Only reconciliation() noticed. That is the right last line of defence and the wrong first
+ * one — a figure caught by a cross-check has already been written, and on a busy book it is
+ * written among two hundred others.
+ *
+ * The floor is exactly why it hides: `Math.max(0, billed - paid - ...)` is correct for
+ * reporting what is owed and useless for noticing an overpayment, because the overpaid
+ * amount is precisely what the floor removes. So the check happens before the write.
+ *
+ * Counts everything that can settle a bill — payments, supplier refunds on customer credit
+ * notes, and supplier credit notes — because any of them may be what already covered it.
+ * Excludes the record being edited, so correcting a payment is not measured against itself.
+ */
+function validateNotOverpaid(rec, bookArg) {
+  const book = bookArg || bookFile();
+  const num = (v) => Number(v || 0);
+  if (!rec.billId) return [];
+  const bill = (book.bills || []).find((b) => b.id === rec.billId);
+  if (!bill) return [];
+
+  const billed = Math.round(num(bill.amount) * (num(bill.fxRate) || 1));
+  const paid = (book.payments || [])
+    .filter((x) => x.billId === rec.billId && x.id !== rec.id)
+    .reduce((t, x) => t + num(x.amount), 0);
+  const refunded = (book.creditNotes || [])
+    .filter((c) => c.billId === rec.billId)
+    .reduce((t, c) => t + num(c.supplierRefund), 0);
+  const credited = (book.supplierCreditNotes || [])
+    .filter((c) => c.billId === rec.billId)
+    .reduce((t, c) => t + num(c.amount), 0);
+
+  const owed = billed - paid - refunded - credited;
+  if (num(rec.amount) > owed) {
+    const covered = [
+      paid ? paid + ' already paid' : null,
+      refunded ? refunded + ' refunded by the supplier' : null,
+      credited ? credited + ' settled by credit note' : null
+    ].filter(Boolean).join(', ');
+    return [
+      bill.no + ' has ' + Math.max(0, owed) + ' still owing out of ' + billed +
+      (covered ? ' (' + covered + ')' : '') +
+      '. Paying more would take Accounts payable below what is actually owed.'
+    ];
+  }
+  return [];
+}
+
 function validateDepositDrawdown(rec, bookArg) {
   const errors = [];
   const book = bookArg || bookFile();
