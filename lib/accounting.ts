@@ -12,7 +12,7 @@ import { todayIn } from '@/lib/clock';
 // Type only: the document sub-ledger derives FROM the book, so the runtime
 // dependency runs one way and this import cannot become a cycle.
 import { deferredIncome, memoPayable } from '@/lib/documents';
-import { customerCredit, fxGain, settlements } from '@/lib/fx';
+import { customerCredit, fxGain, reliefOn, settlements } from '@/lib/fx';
 import type { CarrierContract } from '@/lib/contracts';
 import type { TaxRule } from '@/lib/taxrules';
 import type { TravelDocument } from '@/lib/documents';
@@ -477,7 +477,14 @@ export function billCredited(billId: string, book: Book): number {
 export type InvoiceTotals = {
   gross: number; vat: number; total: number;
   cost: number; profit: number; marginPct: number;
-  paid: number; due: number;
+  /** Cash received against this invoice. */
+  paid: number;
+  /**
+   * What that cash relieved. Differs from paid whenever the settlement rate differs from
+   * the rate the invoice was raised at — the gap is the exchange gain or loss, not a debt.
+   */
+  relieved: number;
+  due: number;
   /** Credited and left against the balance — reduces what is owed. */
   credited: number;
   /** Credited in total, including amounts already refunded in money. */
@@ -507,10 +514,33 @@ export function invoiceTotals(inv: Invoice, receipts: Receipt[], creditNotes: Cr
   const cost = Math.round(costDoc * fx);
   const vat = Math.round(gross * (inv.vatRate || 0) / 100);
   const total = gross + vat;
-  const paid = receipts.filter((r) => r.invoiceId === inv.id).reduce((t, r) => t + r.amount, 0);
+  const mine = receipts.filter((r) => r.invoiceId === inv.id);
+  /** Cash that arrived. This is what a customer is told we received, so it stays the cash. */
+  const paid = mine.reduce((t, r) => t + r.amount, 0);
   const credited = creditOnInvoice(inv.id, creditNotes);
   const creditedAll = creditedTotal(inv.id, creditNotes);
-  const due = Math.max(0, total - credited - paid);
+  /**
+   * What those receipts relieved, which stops being the cash the moment a rate moves.
+   *
+   * SFT-INV-0121: 3,000 USD raised at 123, carried at 369,000. FlyTrek paid all 3,000
+   * dollars at 120, so 360,000 arrived and the debt was gone. Subtracting the cash left
+   * 9,000 owing by a customer who owed nothing — it aged, it sat in Accounts receivable,
+   * and it went on the reminders screen. The 9,000 was an exchange loss the agency had
+   * taken, recorded as a receivable.
+   *
+   * The mirror case hid for the opposite reason. Paid at 124 the cash was 595,200 against
+   * 588,000 carried, `total - credited - paid` came to -7,200, and Math.max(0, ...) turned
+   * it into the right answer for the wrong reason. That floor is why nobody found this by
+   * reading the code, and why the two-derivation check stayed silent: it compares two
+   * numbers, and only one of them was being computed here.
+   */
+  const relieved = reliefOn(inv, mine, total - credited).relief;
+  /**
+   * The floor is kept for over-crediting, which is a real and separate case. It can no
+   * longer swallow an exchange movement: allocate() caps relief at what the debt carries,
+   * so this subtraction cannot go negative on a settlement however the rate moved.
+   */
+  const due = Math.max(0, total - credited - relieved);
   const net = total - creditedAll;
 
   /**
@@ -530,7 +560,7 @@ export function invoiceTotals(inv: Invoice, receipts: Receipt[], creditNotes: Cr
     gross, vat, total, cost,
     profit: gross - cost,
     marginPct: gross > 0 ? ((gross - cost) / gross) * 100 : 0,
-    paid, due, credited, creditedAll, net, cancelled, effectiveStatus,
+    paid, relieved, due, credited, creditedAll, net, cancelled, effectiveStatus,
     fx, grossDoc, totalDoc: grossDoc + Math.round(grossDoc * (inv.vatRate || 0) / 100)
   };
 }

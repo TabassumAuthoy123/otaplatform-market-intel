@@ -413,7 +413,7 @@ is missing, **config only** means the settings exist but nothing sends.
 | + | Booking management, PNR tracking, supplier cost vs selling price, gross profit per booking | built | `/accounts/reports`, `/portal/book` |
 | + | Ticketing, void and refund calls | built; **Travelport creates real PNRs**, issuing refused on both, proved live | `lib/ticketing.ts`, `/accounts/gds` |
 | + | Partial payments, VAT support, automatic numbering | built | throughout |
-| + | **Multi-currency** | built | any invoice or bill can name a currency and a rate |
+| + | **Multi-currency** | built | invoices, bills and receipts each name a currency and a rate; settling at a different rate posts the gain or the loss |
 | + | **Audit log** | built | admin → Audit log |
 | + | **Payment reminders** | built, but nothing is sent | `/accounts/reminders` |
 | + | **Document attachments** | built as links, not uploads | see below |
@@ -1380,7 +1380,7 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 174 checks — specification, hardening, automation
+node scripts/verify-srs.mjs      # 179 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 46 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 31 checks — manual vouchers, and the reconciliation surviving them
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**410 checks** across the six suites against the running app: each one loads a
+**415 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **174 + 46 + 39 + 31 + 63 + 57
+should accept on trust, including from me. It currently reports **179 + 46 + 39 + 31 + 63 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -2626,7 +2626,7 @@ identical.
 
 ---
 
-## Multi-currency
+## Multi-currency, and settling in a foreign currency
 
 Any invoice or bill can name a currency and the rate it was raised at. Line
 amounts stay in the document currency — exactly what the customer sees — and
@@ -2637,16 +2637,84 @@ moves next month must not restate a sale that was already made and already paid,
 which is the whole reason it lives on the document rather than being read from
 the Currencies master at display time.
 
-Receipts and payments are base currency only. Money moved through a real bank
-account at a real amount, and inventing an unrealised gain would put a figure in
-a book that has nowhere to hold it.
+A **receipt** carries its own currency and rate, because the rate on the day the
+money arrives is rarely the rate the invoice was raised at, and the gap between
+them is a real gain or loss the agency takes. `lib/fx.ts` splits one settlement
+into three parts — what it relieved, what the rate moved, and what was simply too
+much — and the journal and the control-side derivations both call it, so there is
+one answer to "how much did this clear" rather than two.
 
-Verified end to end: a USD 4,800 invoice at 122.5 adds exactly 588,000 to
-receivables and to revenue, the USD 4,360 bill behind it adds 534,100 to
-payables, and all six reconciliation checks stay at zero.
+### It had never run
+
+That engine had an `allocate()`, a `settlements()`, an `fxGain()`, a
+`customerCredit()`, an account in the chart, a branch in the journal and a pair of
+checks in the suite. Not one of the book's 111 receipts carried a currency, so
+every one of those functions returned an empty list. The checks passed by grepping
+the source for the strings it contained. A grep cannot tell a function that works
+from a function that has never been called.
+
+Three receipts through the portal — a USD settlement at a better rate, a USD
+settlement at a worse one, and a customer who rounded ৳9,600 up to ৳10,000 —
+found three defects.
+
+**The engine could report a gain and not a loss.** `allocate()` asked whether cash
+was left over once the debt was cleared, and that is only true when the rate moved
+in the agency's favour. Everything downstream had been built for both directions:
+`Allocation.fx` is documented as "gain (positive) or loss (negative)", `fxGain()`
+says "net of loss", the account is called Exchange gain / (loss), and the journal
+has had a `fxPart < 0` debit branch the whole time. The one function that decides
+was the only one that could not. It now works in the foreign currency instead —
+the dollars received clear the dollars owed, and the gap between what those dollars
+cost and what the debt was carried at is the rate movement, whichever way it went.
+
+**A customer who had paid in full was left owing money.** SFT-INV-0121 was raised
+for USD 3,000 at 123 and carried at ৳3,69,000. FlyTrek paid all 3,000 dollars when
+the rate was 120, so ৳3,60,000 arrived — and `invoiceTotals()` subtracted the
+**cash**, leaving ৳9,000 owing by somebody who owed nothing. It aged, it sat in
+Accounts receivable, and it appeared on the reminders screen as a debt to chase.
+The ৳9,000 was an exchange loss the agency had taken, recorded as a receivable.
+
+The mirror case had been hiding for the opposite reason. Paid at 124 the cash was
+৳5,95,200 against ৳5,88,000 carried, `total - credited - paid` came to −7,200, and
+`Math.max(0, ...)` turned it into the right answer for the wrong reason. That floor
+is why nobody found this by reading the code — and it is the same floor this
+README already describes as the original defect, still in place in the one function
+that had not been converted. **Both derivations called it, so both were wrong by
+the same ৳9,000 and the reconciliation showed a difference of zero.** A shared
+misreading is exactly what a two-derivation check cannot catch, which is worth
+remembering before trusting one.
+
+**VAT on a foreign invoice was added before it was converted.** `settlements()`
+kept its own copy of the carrying value and put 15% of a dollar figure into a taka
+one. It has never bitten, because both foreign invoices here are zero-rated. It was
+found by putting the two carrying values side by side, and the two are now one.
+
+### What the book says now
+
+| | Control | Ledger | Difference |
+|---|---|---|---|
+| Exchange gain / (loss) | −৳1,800 | −৳1,800 | ৳0 |
+| Customer credit balances | ৳400 | ৳400 | ৳0 |
+| Accounts receivable | ৳37,88,778 | ৳37,88,778 | ৳0 |
+
+The exchange account carries ৳9,000 of debits and ৳7,200 of credits — losses and
+gains both reach it. The ৳400 is in a **liability**, not in income: a customer who
+sends too much is owed it back, and booking that as a gain would report profit the
+agency does not have. Telling the two apart is the only thing the settlement rate
+is for, and without one the safer reading applies.
+
+### The checks that missed it have been rewritten
+
+The two suite checks that guarded this read `lib/fx.ts` for source strings. They
+now measure the book, and **fail when there is nothing to measure** — one of them
+refuses to pass unless a settlement exists whose relief is not its cash, because a
+check that passes on an empty set is the thing being guarded against.
+
+One of the new checks did the same thing to itself on the first run: it looked for
+the old expression `total - credited - paid` in `invoiceTotals()` and found it in
+the doc comment explaining the bug. Comments are stripped before the match now.
 
 ---
-
 ## Data model, in one paragraph
 
 `Agency` is the core record. It hangs off `Cluster` (which hangs off `District` →

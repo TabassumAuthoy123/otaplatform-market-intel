@@ -596,7 +596,45 @@ const LONG_TEXT_KEYS = new Set([
 
 /* --------------------------------------------------------------- form render */
 
-function renderField(pathKey, key, value, boolPaths, numPaths, arrayLinePaths, enums) {
+/**
+ * Which paths in a collection hold numbers.
+ *
+ * The editor used to answer that from the one record on screen: `typeof value === "number"`
+ * put a field in __nums, and __nums is what turns the posted string back into a number. That
+ * is right for every record the seed wrote and wrong for every record the portal creates,
+ * because a field that does not exist yet has no type to read.
+ *
+ * A USD invoice raised through the portal saved its line as qty "2", unitPrice "1500" — and,
+ * the part that matters, stayed that way. The next edit read the string, left it out of
+ * __nums for the same reason, and wrote the string back. The rule meant to repair the type
+ * was derived from the data it was repairing, so a field that became a string was a string
+ * for good. Nothing complained: JavaScript multiplies "2" * "1500" quite happily, so the
+ * totals were right and only the shape was rotten. Addition would not have been so kind.
+ *
+ * The collection already knows. A hundred and twenty invoices say lines[].qty is a number, so
+ * the one that says "2" is the odd one out. Array indices flatten to # so lines.0.qty and
+ * lines.7.qty are one shape.
+ */
+function shapeKey(pathKey) {
+  return pathKey.replace(/.d+(?=.|$)/g, ".#");
+}
+
+function numericShape(records) {
+  const seen = new Set();
+  const walk = (path, value) => {
+    if (Array.isArray(value)) {
+      value.forEach((item, i) => walk(path + "." + i, item));
+    } else if (value && typeof value === "object") {
+      for (const [k, v] of Object.entries(value)) walk(path + "." + k, v);
+    } else if (typeof value === "number") {
+      seen.add(shapeKey(path));
+    }
+  };
+  for (const rec of records || []) walk("rec", rec);
+  return seen;
+}
+
+function renderField(pathKey, key, value, boolPaths, numPaths, arrayLinePaths, enums, numericByShape) {
   const label = key.replace(/^_/, '').replace(/([a-z])([A-Z])/g, '$1 $2');
   const id = pathKey.replace(/[^a-zA-Z0-9]/g, '_');
 
@@ -632,7 +670,19 @@ function renderField(pathKey, key, value, boolPaths, numPaths, arrayLinePaths, e
       </label>`;
   }
 
-  if (typeof value === 'number') {
+  /**
+   * A string here is promoted only when the rest of the collection says the field is a number
+   * and this value could be one. An empty string counts, because a blank number box posts
+   * empty and applyForm already reads that as 0. A PNR of "USD002" is not finite and a branch
+   * id of "BR-001" is not either, so neither is touched.
+   */
+  const numericByShapeHere =
+    typeof value === 'string' &&
+    numericByShape &&
+    numericByShape.has(shapeKey(pathKey)) &&
+    (value === '' || Number.isFinite(Number(value)));
+
+  if (typeof value === 'number' || numericByShapeHere) {
     numPaths.push(pathKey);
     return `
       <label class="row">
@@ -671,7 +721,7 @@ function renderField(pathKey, key, value, boolPaths, numPaths, arrayLinePaths, e
     // array of objects / nested arrays -> repeated cards
     const items = value
       .map((item, i) => {
-        const inner = renderValue(`${pathKey}.${i}`, item, boolPaths, numPaths, arrayLinePaths, enums);
+        const inner = renderValue(`${pathKey}.${i}`, item, boolPaths, numPaths, arrayLinePaths, enums, numericByShape);
         const title = itemTitle(item, i);
         return `
         <div class="item">
@@ -697,20 +747,20 @@ function renderField(pathKey, key, value, boolPaths, numPaths, arrayLinePaths, e
     return `
       <fieldset class="obj">
         <legend>${esc(label)}</legend>
-        ${renderValue(pathKey, value, boolPaths, numPaths, arrayLinePaths, enums)}
+        ${renderValue(pathKey, value, boolPaths, numPaths, arrayLinePaths, enums, numericByShape)}
       </fieldset>`;
   }
 
   return '';
 }
 
-function renderValue(pathKey, value, boolPaths, numPaths, arrayLinePaths, enums) {
+function renderValue(pathKey, value, boolPaths, numPaths, arrayLinePaths, enums, numericByShape) {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return Object.entries(value)
-      .map(([k, v]) => renderField(`${pathKey}.${k}`, k, v, boolPaths, numPaths, arrayLinePaths, enums))
+      .map(([k, v]) => renderField(`${pathKey}.${k}`, k, v, boolPaths, numPaths, arrayLinePaths, enums, numericByShape))
       .join('');
   }
-  return renderField(pathKey, pathKey.split('.').pop(), value, boolPaths, numPaths, arrayLinePaths, enums);
+  return renderField(pathKey, pathKey.split('.').pop(), value, boolPaths, numPaths, arrayLinePaths, enums, numericByShape);
 }
 
 function itemTitle(item, i) {
@@ -2244,7 +2294,9 @@ function bookEditView(session, book, spec, rec, flash, errors) {
   const boolPaths = [];
   const numPaths = [];
   const linePaths = [];
-  const fields = renderValue('rec', rec, boolPaths, numPaths, linePaths, bookEnums(book, spec));
+  // Every OTHER record in the collection votes on what shape this one should be.
+  const fields = renderValue('rec', rec, boolPaths, numPaths, linePaths, bookEnums(book, spec),
+    numericShape((book[spec.key] || []).filter((r) => r.id !== rec.id)));
 
   // dropdown help — the raw form shows ids, so list what they mean
   const legend = [];

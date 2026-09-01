@@ -71,14 +71,13 @@ export function allocate(
   carrying: number
 ): Allocation {
   const cash = Math.round(settlement.amount);
-  const relief = Math.min(cash, Math.max(0, Math.round(carrying)));
-  let excess = cash - relief;
+  const owed = Math.max(0, Math.round(carrying));
 
   /**
-   * FX only when both sides name the same foreign currency and the rates differ.
+   * FX only when both sides name the same foreign currency.
    *
    * A settlement with no currency is base currency: the customer paid taka and the
-   * agency bore no exchange movement, so an excess there is an overpayment however
+   * agency bore no exchange movement, so a difference there is an overpayment however
    * foreign the invoice was. Reading it as a gain would invent income out of a
    * customer's arithmetic error.
    */
@@ -87,21 +86,62 @@ export function allocate(
     Boolean(debt.currency) &&
     settlement.currency === debt.currency;
 
-  let fx = 0;
-  if (sameForeign && excess > 0) {
-    const settleRate = rateOf(settlement);
-    const debtRate = rateOf(debt);
-    if (settleRate !== debtRate) {
-      // The foreign amount implied by the cash at the settlement rate, revalued at
-      // the rate the debt was carried at. Capped by the excess, so a customer who
-      // both overpays AND settles at a better rate has each part named correctly.
-      const foreign = settleRate > 0 ? cash / settleRate : 0;
-      fx = Math.min(excess, Math.round(foreign * (settleRate - debtRate)));
-      excess -= fx;
-    }
+  const settleRate = rateOf(settlement);
+  const debtRate = rateOf(debt);
+
+  if (!sameForeign || settleRate <= 0 || debtRate <= 0) {
+    const relief = Math.min(cash, owed);
+    return { relief, fx: 0, overpaid: cash - relief, cash };
   }
 
-  return { relief, fx, overpaid: excess, cash };
+  /**
+   * WHY THIS WORKS IN THE FOREIGN CURRENCY AND NOT IN TAKA
+   *
+   * The first version asked "is there cash left over after the debt is cleared?" and
+   * split that leftover into rate movement and overpayment. That question can only be
+   * answered yes when the rate moved in the agency's favour, so the function could
+   * only ever produce a gain — and it was the only thing in the chain that could not
+   * handle a loss. Allocation.fx is documented as "gain (positive) or loss (negative)",
+   * fxGain() says "net of loss", the account is called Exchange gain / (loss), and the
+   * journal has had a `fxPart < 0` debit branch the whole time. Every consumer was
+   * built for losses; the one function that decides never emitted one.
+   *
+   * Found on real data, not by reading. SFT-INV-0121 was raised for 3,000 USD at 123
+   * and carried at 369,000. FlyTrek paid all 3,000 dollars when the rate was 120, so
+   * 360,000 arrived. Nothing was left over, so the old rule saw no exchange movement
+   * at all and relieved receivables by the cash. The book then said FlyTrek owed 9,000
+   * taka: it aged, it sat in Accounts receivable, and it appeared on the reminders
+   * screen as a debt to chase from a customer who did not owe a cent. The agency had
+   * taken a 9,000 exchange loss and the accounts recorded a receivable instead.
+   *
+   * The cross-check could not see it. Both derivations call this function, so both
+   * were wrong by the same 9,000 and agreed perfectly. A shared misreading is exactly
+   * the failure a two-derivation check cannot catch, which is worth remembering before
+   * trusting a difference of zero.
+   *
+   * So ask the question the other way round. The debt is denominated in dollars, so
+   * work in dollars: the dollars received clear the dollars owed, and the gap between
+   * what those dollars cost in cash and what the debt was carried at IS the rate
+   * movement — in whichever direction it went. Dollars beyond the debt are the
+   * overpayment, and they are valued at the rate they actually arrived at.
+   */
+  const owedForeign = owed / debtRate;
+  const paidForeign = cash / settleRate;
+  const appliedForeign = Math.min(paidForeign, owedForeign);
+  const excessForeign = paidForeign - appliedForeign;
+
+  const relief = Math.min(owed, Math.round(appliedForeign * debtRate));
+  const overpaid = Math.round(excessForeign * settleRate);
+
+  /**
+   * Derived last, and by subtraction, so the three parts add back to the cash to the
+   * taka. Rounding each of them independently would leak a taka or two into the trial
+   * balance on awkward rates, and a trial balance that is out by two is worse than
+   * useless — it trains people to ignore it.
+   */
+  const fx = cash - relief - overpaid;
+
+  return { relief, fx, overpaid, cash };
 }
 
 type Settled = { invoice: Invoice; receipt: Receipt; alloc: Allocation };
@@ -112,6 +152,43 @@ type Settled = { invoice: Invoice; receipt: Receipt; alloc: Allocation };
  * Built once and used by both the journal and the reports, for the reason in the
  * header: two answers to "how much did this relieve" is what caused the defect.
  */
+const byArrival = (a: Receipt, b: Receipt) =>
+  a.date < b.date ? -1 : a.date > b.date ? 1 : a.no.localeCompare(b.no);
+
+/**
+ * What one invoice's receipts actually relieved, and what the rate did along the way.
+ *
+ * Exists because invoiceTotals() was the last place still answering "how much did this
+ * relieve" on its own, with `total - credited - cash` floored at zero. That is the very
+ * expression the header of this file describes as the original defect, and it survived the
+ * fix because the floor made it look right: a receipt of 595,200 against a debt of 588,000
+ * gave -7,200, the floor turned it into 0, and 0 was the correct answer for the wrong
+ * reason. An exchange LOSS has nothing to hide behind. The same invoice paid at a weaker
+ * rate left 9,000 sitting in receivables, aged, and on the reminders screen.
+ *
+ * Receipts are walked in the order the money arrived, because each one is measured against
+ * what the debt was still carrying when it landed.
+ */
+export function reliefOn(
+  invoice: { currency?: string; fxRate?: number },
+  receipts: Receipt[],
+  carrying: number
+): { relief: number; fx: number; overpaid: number; allocations: Allocation[] } {
+  let left = carrying;
+  const allocations: Allocation[] = [];
+  for (const r of [...receipts].sort(byArrival)) {
+    const a = allocate(r, invoice, left);
+    left -= a.relief;
+    allocations.push(a);
+  }
+  return {
+    relief: allocations.reduce((t, a) => t + a.relief, 0),
+    fx: allocations.reduce((t, a) => t + a.fx, 0),
+    overpaid: allocations.reduce((t, a) => t + a.overpaid, 0),
+    allocations
+  };
+}
+
 export function settlements(book: Book): Settled[] {
   const byInvoice = new Map<string, Receipt[]>();
   for (const r of book.receipts) {
@@ -123,24 +200,27 @@ export function settlements(book: Book): Settled[] {
   for (const invoice of book.invoices) {
     const receipts = (byInvoice.get(invoice.id) ?? [])
       .slice()
-      .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : a.no.localeCompare(b.no)));
+      .sort(byArrival);
     if (!receipts.length) continue;
 
     // What receivables is carrying: the invoice in base currency, less credit notes
     // that relieved it rather than refunding cash.
+    // VAT is charged on the converted value, not on the document one — adding it before
+    // the conversion valued a foreign invoice's VAT in dollars and called it taka. It has
+    // never bitten because both foreign invoices in the book are zero-rated, which is not a
+    // reason to leave it. invoiceTotals() has always done it this way round; this is the
+    // copy that drifted.
     const fx = rateOf(invoice);
-    const gross = invoice.lines.reduce((t, l) => t + l.qty * l.unitPrice, 0);
+    const grossDoc = invoice.lines.reduce((t, l) => t + l.qty * l.unitPrice, 0);
+    const gross = Math.round(grossDoc * fx);
     const vat = Math.round((gross * (invoice.vatRate || 0)) / 100);
     const credited = (book.creditNotes ?? [])
       .filter((n) => n.invoiceId === invoice.id && n.settlement === 'credit_balance')
       .reduce((t, n) => t + n.amount, 0);
-    let carrying = Math.round(gross * fx) + vat - credited;
+    const carrying = gross + vat - credited;
 
-    for (const receipt of receipts) {
-      const alloc = allocate(receipt, invoice, carrying);
-      carrying -= alloc.relief;
-      out.push({ invoice, receipt, alloc });
-    }
+    const { allocations } = reliefOn(invoice, receipts, carrying);
+    receipts.forEach((receipt, i) => out.push({ invoice, receipt, alloc: allocations[i] }));
   }
   return out;
 }

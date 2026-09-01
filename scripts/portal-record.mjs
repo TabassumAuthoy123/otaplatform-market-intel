@@ -79,12 +79,12 @@ for (const hidden of ['__fp', '__nums', '__bools']) {
   const v = field(page, hidden);
   if (v !== undefined) body.set(hidden, v);
 }
-for (const m of page.matchAll(/name="(rec\.[a-zA-Z0-9_]+)"(?:[^>]*?value="([^"]*)")?/g)) {
+for (const m of page.matchAll(/name="(rec\.[a-zA-Z0-9_.]+)"(?:[^>]*?value="([^"]*)")?/g)) {
   const key = m[1].slice(4);
   body.set(m[1], Object.prototype.hasOwnProperty.call(patch, key) ? String(patch[key]) : (m[2] ?? ''));
 }
 // A select renders its value on the option, not the element, so pick the selected one.
-for (const sel of page.matchAll(/<select name="(rec\.[a-zA-Z0-9_]+)"[\s\S]*?<\/select>/g)) {
+for (const sel of page.matchAll(/<select name="(rec\.[a-zA-Z0-9_.]+)"[\s\S]*?<\/select>/g)) {
   const key = sel[1].slice(4);
   if (Object.prototype.hasOwnProperty.call(patch, key)) { body.set(sel[1], String(patch[key])); continue; }
   const chosen = sel[0].match(/<option value="([^"]*)" selected/);

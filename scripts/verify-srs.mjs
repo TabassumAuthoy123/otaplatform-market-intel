@@ -879,40 +879,61 @@ await check('A receipt relieves what receivables carries, not the cash that arri
     `relief is capped: ${capped}, and comes from the shared allocation: ${usesAllocation}`];
 });
 
-await check('One allocation function, so the two derivations cannot disagree', () => {
-  const acc = readFileSync('lib/accounting.ts', 'utf8');
-  const fx = readFileSync('lib/fx.ts', 'utf8');
-  /**
-   * The actual fix. The defect existed because two pieces of code answered "how much
-   * did this relieve" differently. The journal builder and the control-side
-   * derivations now call the same `allocate`, and one function cannot disagree with
-   * itself.
-   */
-  const journalCalls = acc.includes("from '@/lib/fx'") && acc.includes('settlements(book)');
-  const controlCalls = fx.includes('export function fxGain') && fx.includes('allocate(receipt, invoice, carrying)');
-  return [journalCalls && controlCalls,
-    `journal uses it: ${journalCalls}, control derivations use it: ${controlCalls}`];
+/**
+ * BOTH OF THESE USED TO READ THE SOURCE, AND THAT IS WHY THEY MISSED A BUG
+ *
+ * They asserted that lib/fx.ts contained `settlement.currency === debt.currency` and
+ * `if (settleRate !== debtRate)`, and it did, and they passed for weeks over a book in
+ * which not one receipt carried a currency — so allocate() had never been called with a
+ * foreign settlement at all. A grep cannot tell a function that works from a function that
+ * has never run. When the first real USD receipts went through, the engine turned out to be
+ * able to report an exchange gain and not an exchange loss, and a customer who had paid
+ * every dollar they owed was left owing 9,000 taka.
+ *
+ * Rewritten to measure the book instead, and to fail when there is nothing to measure —
+ * a check that passes on an empty set is the thing being guarded against.
+ */
+await check('The control side and the journal share one allocation', async () => {
+  const byRate = book.receipts.filter((r) => {
+    const inv = book.invoices.find((i) => i.id === r.invoiceId);
+    return inv && r.currency && r.currency === inv.currency && Number(r.fxRate) !== Number(inv.fxRate);
+  });
+  if (!byRate.length) {
+    return [false, 'no receipt settles at a rate other than its invoice, so nothing here is being tested'];
+  }
+  const rows = await reconciliationRows();
+  const watched = ['Accounts receivable', 'Exchange gain', 'Customer credit'];
+  const mine = rows.filter((r) => watched.some((w) => (r.name || r.Account || '').includes(w)));
+  const bad = mine.filter((r) => difference(r) !== 0);
+  return [mine.length === watched.length && bad.length === 0,
+    byRate.length + ' settlement(s) where the relief is not the cash, and ' + mine.length +
+    ' rows still agree' + (bad.length ? ' — except ' + bad.map((r) => r.Account).join(', ') : '')];
 });
 
-await check('An exchange gain and an overpayment are told apart, not merged', () => {
-  const fx = readFileSync('lib/fx.ts', 'utf8');
-  /**
-   * The same cash can mean two unrelated things. 4,800 USD settled at 124 against an
-   * invoice carried at 122.5 is a 7,200 exchange GAIN — nobody overpaid. The same
-   * 595,200 paid in taka against a 588,000 debt is 7,200 the agency OWES BACK.
-   *
-   * Verified live during the build with both receipts in turn: the first reported
-   * exchange gain 7,200 and customer credit 0, the second the reverse, and both
-   * reconciled to zero on every row.
-   *
-   * Telling them apart needs the settlement rate. Without it the safer reading
-   * applies — an overpayment, which never invents income.
-   */
-  const needsSameCurrency = fx.includes('settlement.currency === debt.currency');
-  const needsDifferentRate = fx.includes('if (settleRate !== debtRate)');
-  const safeDefault = fx.includes('let fx = 0;');
-  return [needsSameCurrency && needsDifferentRate && safeDefault,
-    `same currency required: ${needsSameCurrency}, rates must differ: ${needsDifferentRate}, defaults to no gain: ${safeDefault}`];
+/**
+ * The same excess cash means two unrelated things. 4,800 USD settled at 124 against an
+ * invoice carried at 122.5 is a 7,200 exchange GAIN — nobody overpaid. 595,200 taka paid
+ * against a 588,000 taka debt is 7,200 the agency OWES BACK. Merging them reports profit
+ * that does not exist, and the safe reading when the rate is unknown is the liability.
+ *
+ * Measured on three real receipts: a USD settlement at a better rate, a USD settlement at a
+ * worse one, and a customer who rounded 9,600 up to 10,000 in taka.
+ */
+await check('An exchange gain and an overpayment are told apart, not merged', async () => {
+  const { body } = await get('/api/accounts/export?format=csv&section=generalledger');
+  const row = (code) => {
+    const line = body.split(/\r?\n/).find((l) => l.startsWith('"' + code + '"'));
+    if (!line) return null;
+    const c = line.split('","').map((x) => x.replace(/"/g, ''));
+    return { group: c[2], debits: Number(c[3]), credits: Number(c[4]), balance: Number(c[5]) };
+  };
+  const fx = row('FX_GAIN');
+  const cc = row('CUSTOMER_CREDIT');
+  if (!fx || !cc) return [false, 'the two accounts are not both in the general ledger'];
+  if (fx.balance === 0 && cc.balance === 0) return [false, 'neither account has ever been posted to'];
+  const separated = fx.group === 'income' && cc.group === 'liability' && cc.debits === 0;
+  return [separated,
+    'exchange ' + fx.balance + ' in ' + fx.group + ', customer credit ' + cc.balance + ' in ' + cc.group];
 });
 
 await check('No monitoring job reads a report column by position', () => {
@@ -1794,6 +1815,121 @@ await check('Spending the float lowers it', () => {
  * also slower, and worth it: a check that goes red for reasons outside its subject teaches
  * people to ignore it.
  */
+section('Foreign settlement');
+
+/**
+ * None of this had ever run. The FX engine had an allocate(), a settlements(), an fxGain(),
+ * a customerCredit(), an account in the chart and a branch in the journal — and not one of
+ * the book's 111 receipts carried a currency, so every one of those returned an empty list.
+ * The feature was verified by reading its own source.
+ *
+ * Three receipts through the portal found three things. They are kept here as data checks
+ * rather than source checks wherever possible, because reading the source is what missed
+ * them the first time.
+ */
+
+const ledgerRow = async (code) => {
+  const { body } = await get('/api/accounts/export?format=csv&section=generalledger');
+  const line = body.split(/\r?\n/).find((l) => l.startsWith('"' + code + '"'));
+  if (!line) return null;
+  const c = line.split('","').map((x) => x.replace(/"/g, ''));
+  return { code: c[0], name: c[1], group: c[2], debits: Number(c[3]), credits: Number(c[4]), balance: Number(c[5]) };
+};
+
+/**
+ * allocate() could only ever report a GAIN. It asked whether cash was left over once the
+ * debt was cleared, and that can only be true when the rate moved in the agency's favour.
+ * Everything downstream was already built for the other direction — Allocation.fx is
+ * documented as gain or loss, fxGain() says net of loss, the journal has a fxPart < 0 debit
+ * branch — so the one function that decides was the only one that could not.
+ *
+ * A debit on this account is the proof, because nothing but a loss can put one there.
+ */
+await check('An exchange loss reaches the exchange account', async () => {
+  const fx = await ledgerRow('FX_GAIN');
+  if (!fx) return [false, 'no exchange account in the general ledger'];
+  return [fx.debits > 0 && fx.credits > 0,
+    'debits ' + fx.debits + ' (losses), credits ' + fx.credits + ' (gains), balance ' + fx.balance +
+    (fx.debits === 0 ? ' — gains only, which is what the old allocate() could produce' : '')];
+});
+
+/**
+ * The one that mattered. SFT-INV-0121 was raised for 3,000 USD at 123 and carried at
+ * 369,000. FlyTrek paid all 3,000 dollars at 120, so 360,000 arrived — and invoiceTotals()
+ * subtracted the CASH, leaving 9,000 owing by a customer who owed nothing. It aged, it sat
+ * in Accounts receivable, and it went on the reminders screen as a debt to chase.
+ *
+ * The mirror case hid behind Math.max(0, ...): paid at a better rate the subtraction went
+ * negative and the floor turned it into the right answer for the wrong reason. Both
+ * derivations called the same broken function, so the difference was zero and the
+ * cross-check stayed quiet — which is worth remembering before trusting one.
+ */
+await check('An invoice settled in full in its own currency shows nothing owing', async () => {
+  const { body } = await get('/api/accounts/export?format=csv&section=receivables');
+  const foreign = book.invoices.filter((i) =>
+    i.currency && i.currency !== book.company.currency && !(i.vatRate > 0) && i.status !== 'draft');
+  if (!foreign.length) return [true, 'no foreign-currency invoice in the book'];
+  const settled = foreign.filter((i) => {
+    const owedForeign = i.lines.reduce((t, l) => t + Number(l.qty) * Number(l.unitPrice), 0);
+    const paidForeign = book.receipts
+      .filter((r) => r.invoiceId === i.id && r.currency === i.currency && Number(r.fxRate) > 0)
+      .reduce((t, r) => t + r.amount / Number(r.fxRate), 0);
+    return paidForeign >= owedForeign - 0.005;
+  });
+  if (!settled.length) return [true, foreign.length + ' foreign invoices, none settled in full yet'];
+  const stillListed = settled.filter((i) => body.includes('"' + i.no + '"'));
+  return [stillListed.length === 0,
+    stillListed.length
+      ? stillListed.map((i) => i.no).join(', ') + ' still owing after every unit of ' + stillListed[0].currency + ' was paid'
+      : settled.map((i) => i.no).join(', ') + ' paid in full in ' + settled[0].currency + ', nothing carried'];
+});
+
+/**
+ * The two reasons a receipt can exceed the debt are not the same thing and must never be
+ * merged. A rate that moved is income. A customer who sent too much is money the agency
+ * owes back. Booking the second as the first reports profit that does not exist.
+ */
+await check('Paying too much is a liability, not income', async () => {
+  const cc = await ledgerRow('CUSTOMER_CREDIT');
+  if (!cc) return [false, 'no customer credit account in the general ledger'];
+  const over = book.receipts.some((r) => !r.currency);
+  if (cc.balance === 0) return [over, 'nothing overpaid in the book yet'];
+  return [cc.group === 'liability' && cc.credits > 0 && cc.debits === 0,
+    cc.name + ' — ' + cc.group + ', held ' + cc.balance];
+});
+
+/**
+ * invoiceTotals() was the last place answering "how much did this relieve" on its own. It
+ * now calls the same reliefOn() the journal does, because two answers to that question is
+ * the defect lib/fx.ts was written to close in the first place.
+ */
+await check('Receivables are measured by what a receipt relieved, not by the cash', () => {
+  const src = readFileSync('lib/accounting.ts', 'utf8');
+  // Comments stripped first: the doc comment on this very function quotes the old
+  // expression to explain what went wrong, and the check matched its own explanation.
+  const fn = src
+    .slice(src.indexOf('export function invoiceTotals'), src.indexOf('export function receivables'))
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '');
+  const usesRelief = /reliefOn\(/.test(fn) && /total - credited - relieved/.test(fn);
+  const usesCash = /total - credited - paid/.test(fn);
+  return [usesRelief && !usesCash,
+    usesCash ? 'it is back to subtracting the cash — an exchange loss becomes a receivable again'
+            : 'one allocation, shared with the journal'];
+});
+
+/**
+ * settlements() added a foreign invoice's VAT before converting it, so 15% of 4,800 dollars
+ * went into a taka figure as 720. Never bitten — both foreign invoices here are zero-rated —
+ * and found only by putting the two carrying values side by side.
+ */
+await check('VAT on a foreign invoice is converted before it is added', () => {
+  const src = readFileSync('lib/fx.ts', 'utf8');
+  const fn = src.slice(src.indexOf('export function settlements'));
+  const convertsFirst = /const gross = Math\.round\(grossDoc \* fx\)/.test(fn);
+  return [convertsFirst, convertsFirst ? 'VAT is charged on the converted value' : 'VAT is being added in document currency'];
+});
+
 await check('Every check has run and none of them failed', async () => {
   const page = await fetch(`${ADMIN}/alerts`, { headers: { cookie: probe.cookie } });
   const csrf = ((await page.text()).match(/name="csrf" value="([^"]+)"/) || [])[1];
