@@ -2,7 +2,7 @@ import type { Book } from '@/lib/accounting';
 import { bankBook } from '@/lib/accounting';
 // The rules themselves are plain CommonJS, shared verbatim with the admin portal, which
 // does the importing and cannot run TypeScript. See each file's header.
-import { matchStatement, bookPrefixes } from '@/lib/bank-match.js';
+import { applyDecisions, matchStatement, bookPrefixes } from '@/lib/bank-match.js';
 import { reconcile, adjustmentDraft } from '@/lib/bank-reconcile.js';
 
 /**
@@ -265,66 +265,8 @@ export function reconcileStatement(book: Book, statement: BankStatement, driftDa
    * decision can be undone without re-running anything. A decision naming a movement the
    * automatic pass already consumed is ignored rather than allowed to double-book it.
    */
-  const taken = new Set(
-    match.results.filter((r: { status: string; match?: { movementId: string } }) => r.status === 'matched').map((r: { match: { movementId: string } }) => r.match.movementId)
-  );
-  const byLine = new Map<number, string[]>();
-  for (const d of statement.decisions ?? []) {
-    if (!byLine.has(d.sourceLine)) byLine.set(d.sourceLine, []);
-    byLine.get(d.sourceLine)!.push(d.movementId);
-  }
-  for (const [sourceLine, ids] of byLine) {
-    const target = match.results.find((r: { line: StatementLine }) => r.line.sourceLine === sourceLine);
-    if (!target || target.status === 'matched') continue;
-    const picked = ids
-      .filter((id) => !taken.has(id))
-      .map((id) => movements.concat(carried).find((m) => m.id === id))
-      .filter(Boolean) as BookMovement[];
-    if (picked.length === 0) continue;
-
-    /**
-     * The group must add up EXACTLY, even though a person asked for it.
-     *
-     * A confirmed grouping is a judgement about which entries were banked together, not a
-     * licence to close a gap. If the chosen entries do not sum to the line, accepting it
-     * would put the difference inside a matched pair — the one thing this whole feature
-     * exists to prevent, arrived at by consent instead of by accident.
-     */
-    const sum = Math.round(picked.reduce((t, m) => t + m.amount, 0) * 100) / 100;
-    if (picked.length > 1 && sum !== Math.round(target.line.amount * 100) / 100) {
-      target.status = 'ambiguous';
-      target.why = `A grouping was confirmed for this line, but the ${picked.length} entries chosen add up to ${sum} against a line of ${target.line.amount}. The difference would have been buried inside the match, so it is refused.`;
-      continue;
-    }
-
-    for (const m of picked) taken.add(m.id);
-    target.status = 'matched';
-    target.strength = 'by_hand';
-    target.match = { movementId: picked[0].id, ref: picked.map((m) => m.ref).join(' + '), kind: picked[0].kind, drift: 0, byReference: false, wordHits: 0, carried: false };
-    target.matchedGroup = picked.map((m) => ({ id: m.id, ref: m.ref, amount: m.amount }));
-    target.decidedBy = (statement.decisions ?? []).find((d) => d.sourceLine === sourceLine)?.decidedBy;
-    match.unmatchedMovements = match.unmatchedMovements.filter((u: { movement: BookMovement }) => !picked.some((m) => m.id === u.movement.id));
-  }
-
-  /**
-   * Lines a person has called the bank's own.
-   *
-   * Carried on the statement alongside the match decisions, and applied here rather than
-   * inside the matcher: "no book entry fits this" is a fact the matcher can establish,
-   * and "therefore it is a bank charge" is a judgement only a person can make.
-   */
-  for (const cl of statement.classifications ?? []) {
-    const target = match.results.find((r: { line: StatementLine }) => r.line.sourceLine === cl.sourceLine);
-    if (!target || target.status !== 'unmatched') continue;
-    target.classification = cl.as;
-    target.classifiedBy = cl.by;
-  }
-
-  match.counts.matched = match.results.filter((r: { status: string }) => r.status === 'matched').length;
-  match.counts.ambiguous = match.results.filter((r: { status: string }) => r.status === 'ambiguous').length;
-  match.counts.unmatched = match.results.filter((r: { status: string }) => r.status === 'unmatched').length;
-  match.counts.groupCandidate = match.results.filter((r: { status: string }) => r.status === 'group_candidate').length;
-  match.counts.unpresented = match.unmatchedMovements.length;
+  // One implementation, shared with the portal — see applyDecisions in lib/bank-match.js.
+  applyDecisions(match, statement, movements.concat(carried));
 
   /**
    * What the journal has already put through this bank account inside the period.

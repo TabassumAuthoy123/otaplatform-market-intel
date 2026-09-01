@@ -1718,7 +1718,44 @@ function buildJournal(book: Book): JournalLine[] {
   };
 
   /* --- opening balances ------------------------------------------------- */
-  const openingDate = book.company.financialYearStart;
+  /**
+   * Brought forward BEFORE anything it is meant to fund.
+   *
+   * This was dated at the financial year start and nothing else was. The book opens on
+   * 2026-07-01, and 176 of its documents — invoices, receipts, bills, payments, expenses,
+   * supplier deposits and transfers — are dated in the June before it, because the data
+   * straddles a year end that was never closed. The journal therefore spent a fortnight
+   * spending money it had not yet been given:
+   *
+   *   general ledger as at 2026-06-30    Cash -81,320    Dutch-Bangla -62,23,400
+   *
+   * Every date-ranged report to a June cut-off showed the agency overdrawn by sixty-two
+   * lakh and holding no equity. The full-book totals were right, which is why nothing
+   * caught it: the opening posting was present, just late, so by 31 July everything added
+   * up again and only a report that stopped in between could see it.
+   *
+   * The suite could not see it either. "No cash or bank account ever goes negative" walks
+   * the records forward from bank.openingBalance and never reads the journal, so it was
+   * checking the one derivation that was right.
+   *
+   * The financial year start is still what the year is called. It is not what the book
+   * begins on, and using it as though it were is what put the opening balance a fortnight
+   * late. A real year-end close — carrying June out and bringing it in as an opening
+   * position — is still missing and is tracked as such; this makes the arithmetic honest
+   * in the meantime rather than pretending the June data is not there.
+   */
+  const earliestDated = [
+    ...book.invoices, ...book.receipts, ...book.bills, ...book.payments, ...book.expenses,
+    ...(book.supplierDeposits ?? []), ...(book.transfers ?? []),
+    ...(book.creditNotes ?? []), ...(book.supplierCreditNotes ?? [])
+  ].reduce<string | null>((min, r) => {
+    const d = (r as { date?: string }).date;
+    return d && (!min || d < min) ? d : min;
+  }, null);
+  const openingDate =
+    earliestDated && earliestDated < book.company.financialYearStart
+      ? earliestDated
+      : book.company.financialYearStart;
   const openingTotal = book.company.openingCash + book.banks.reduce((t, b) => t + b.openingBalance, 0);
   post(openingDate, 'OPENING', 'Opening', '', 'Opening balances brought forward', [
     { account: AC.CASH, debit: book.company.openingCash },

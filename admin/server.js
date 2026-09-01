@@ -1564,8 +1564,13 @@ const BREC = require('../lib/bank-reconcile.js');
 /**
  * The book's side of one bank account, flattened.
  *
- * A deliberate mirror of `bookMovements` in lib/bankrec.ts, and the ONLY duplicated
- * logic in this feature. It exists because the portal cannot import a TypeScript module
+ * A deliberate mirror of `bookMovements` in lib/bankrec.ts, and now genuinely the only
+ * duplicated logic in this feature — which it was not when that was written. The code that
+ * applies a person's hand decision sat here in full as well, mirroring lib/bankrec.ts, and
+ * the two had already drifted over which counts they refreshed. That one now lives once, in
+ * lib/bank-match.js as applyDecisions().
+ *
+ * This one remains duplicated because the portal cannot import a TypeScript module
  * and `bankBook` — which does the real work of knowing that eight different record types
  * move bank money — lives in lib/accounting.ts.
  *
@@ -1665,51 +1670,10 @@ function reconcileStored(book, statement) {
     prefixes: BMATCH.bookPrefixes(book)
   });
 
-  const taken = new Set(match.results.filter((r) => r.status === 'matched').map((r) => r.match.movementId));
-  const byLine = new Map();
-  for (const d of statement.decisions || []) {
-    if (!byLine.has(d.sourceLine)) byLine.set(d.sourceLine, []);
-    byLine.get(d.sourceLine).push(d.movementId);
-  }
-  for (const [sourceLine, ids] of byLine) {
-    const target = match.results.find((r) => r.line.sourceLine === sourceLine);
-    if (!target || target.status === 'matched') continue;
-    const pool = movements.concat(carried);
-    const picked = ids.filter((id) => !taken.has(id)).map((id) => pool.find((m) => m.id === id)).filter(Boolean);
-    if (!picked.length) continue;
-
-    // The group must add up exactly. See the note in lib/bankrec.ts: a confirmed grouping
-    // is a judgement about what was banked together, not a licence to close a gap.
-    const sum = Math.round(picked.reduce((t, m) => t + m.amount, 0) * 100) / 100;
-    if (picked.length > 1 && sum !== Math.round(target.line.amount * 100) / 100) {
-      target.status = 'ambiguous';
-      target.why = `A grouping was confirmed for this line, but the ${picked.length} entries chosen add up to ${sum} against a line of ${target.line.amount}. The difference would have been buried inside the match, so it is refused.`;
-      continue;
-    }
-
-    for (const m of picked) taken.add(m.id);
-    target.status = 'matched';
-    target.strength = 'by_hand';
-    target.match = { movementId: picked[0].id, ref: picked.map((m) => m.ref).join(' + '), kind: picked[0].kind, drift: 0, byReference: false, wordHits: 0, carried: false };
-    target.matchedGroup = picked.map((m) => ({ id: m.id, ref: m.ref, amount: m.amount }));
-    const first = (statement.decisions || []).find((d) => d.sourceLine === sourceLine);
-    target.decidedBy = first ? first.decidedBy : null;
-    match.unmatchedMovements = match.unmatchedMovements.filter((u) => !picked.some((m) => m.id === u.movement.id));
-  }
-
-  // See the note on classifications in lib/bankrec.ts: only a person may say a line
-  // matching nothing is the bank's own.
-  for (const cl of statement.classifications || []) {
-    const t = match.results.find((r) => r.line.sourceLine === cl.sourceLine);
-    if (!t || t.status !== 'unmatched') continue;
-    t.classification = cl.as;
-    t.classifiedBy = cl.by;
-  }
-
-  match.counts.matched = match.results.filter((r) => r.status === 'matched').length;
-  match.counts.ambiguous = match.results.filter((r) => r.status === 'ambiguous').length;
-  match.counts.unknownToBook = match.results.filter((r) => r.status === 'unknown_to_book').length;
-  match.counts.unpresented = match.unmatchedMovements.length;
+  // One implementation, shared with the screen. See applyDecisions in lib/bank-match.js:
+  // this was thirty lines of judgement about somebody's money written twice, and the two
+  // copies had already drifted on which counts they refreshed.
+  BMATCH.applyDecisions(match, statement, movements.concat(carried));
 
   const bal = bookBalances(book, statement.bankId, statement.from, statement.to);
   // Mirrors postedToBank in lib/bankrec.ts. See the note there.

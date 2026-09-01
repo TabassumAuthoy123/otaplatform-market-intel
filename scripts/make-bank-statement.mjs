@@ -100,6 +100,25 @@ for (let i = 0; i < outs.length && !ambiguousPair; i++) {
 const drifted = outs.find((m) => m !== (ambiguousPair || [])[0] && m !== (ambiguousPair || [])[1]);
 const unpresented = outs[outs.length - 1];
 const inTransit = ins[ins.length - 1];
+/**
+ * The ambiguous case has to be MADE, not just described.
+ *
+ * This file said "one statement line fits both" and then printed a line for each of them,
+ * so the matcher paired them off one-to-one and reported nothing ambiguous at all. The July
+ * import came back "126 lines · 122 matched · 0 need a decision" and the two routes that
+ * resolve a decision by hand — /bank-statements/decide and /bank-statements/group — could
+ * not be reached from any statement this generator produced. They had never run.
+ *
+ * Dropping the twin is what creates the ambiguity: one line, two book payments of the same
+ * amount days apart, no reference in the narration to break the tie. Whichever the person
+ * picks, the other becomes an outstanding item — and since the two are equal, the
+ * arithmetic lands in the same place either way, which is precisely why the matcher must
+ * not choose on its own. It has no way to be right, only a way to look decided.
+ */
+const ambiguousTwin = ambiguousPair ? ambiguousPair[1] : null;
+const ambiguousGap = ambiguousPair
+  ? Math.round((new Date(ambiguousPair[1].date) - new Date(ambiguousPair[0].date)) / 86400000)
+  : 0;
 const skip = new Set([unpresented?.id, inTransit?.id].filter(Boolean));
 
 const notes = [];
@@ -110,16 +129,28 @@ for (const m of inPeriod) {
     notes.push(`${m.direction === 'out' ? 'UNPRESENTED' : 'IN_TRANSIT'}  ${m.ref} ${m.date} ${m.amount} — in the book, deliberately absent from the statement`);
     continue;
   }
+  if (ambiguousTwin && m.id === ambiguousTwin.id) continue;   // the line it would have had is the one below
   let date = m.date;
   if (drifted && m.id === drifted.id) {
     date = shift(m.date, 4);
     notes.push(`DRIFT        ${m.ref} written ${m.date}, presented ${date}`);
   }
-  lines.push({ date, desc: narrate(m, lines.length), amount: m.amount, direction: m.direction, tag: m.ref });
+  // A narration carrying the voucher number would settle the tie, and so would landing on
+  // one of the two dates: the matcher runs an exact_date pass before its within_window one,
+  // so a line dated the same day as either payment matches that one cleanly and the other
+  // never gets a look in. That is what the first attempt at this did — the line sat on the
+  // earlier payment's own date and came back cleanly matched. The line has to fall BETWEEN
+  // them, close enough to both to be in the window and equal to neither.
+  let desc = narrate(m, lines.length);
+  if (ambiguousPair && m.id === ambiguousPair[0].id) {
+    desc = 'TFR TO BENEFICIARY';
+    date = shift(m.date, ambiguousGap === 1 ? 2 : Math.round(ambiguousGap / 2));
+  }
+  lines.push({ date, desc, amount: m.amount, direction: m.direction, tag: m.ref });
 }
 
 if (ambiguousPair) {
-  notes.push(`AMBIGUOUS    ${ambiguousPair[0].ref} and ${ambiguousPair[1].ref} are both ${ambiguousPair[0].amount} within ${Math.round((new Date(ambiguousPair[1].date) - new Date(ambiguousPair[0].date)) / 86400000)} days — one statement line fits both`);
+  notes.push(`AMBIGUOUS    ${ambiguousPair[0].ref} and ${ambiguousPair[1].ref} are both ${ambiguousPair[0].amount} within ${Math.round((new Date(ambiguousPair[1].date) - new Date(ambiguousPair[0].date)) / 86400000)} days. Only ONE line is printed, with no reference in the narration, so it fits both and the matcher must refuse to choose. ${ambiguousPair[1].ref} is therefore absent from the statement.`);
 } else {
   notes.push('AMBIGUOUS    none available in this period (no two same-amount payments close together)');
 }

@@ -213,7 +213,60 @@ const allMoves = (() => {
   return rows;
 })();
 
+/* ------------------------------- the line that fits two entries, decided by hand */
+
+/**
+ * Neither of these had ever run against real data.
+ *
+ * scripts/make-bank-statement.mjs claimed to plant an ambiguous case — "one statement line
+ * fits both" — and then printed a line for EACH of the two payments, so the matcher paired
+ * them off and reported nothing ambiguous. Every import this repo could produce came back
+ * "0 need a decision", and /bank-statements/decide, its form and the fifty lines that apply
+ * a decision were unreachable from any of them.
+ *
+ * Two things were needed to make one. The twin has to be absent from the statement, and the
+ * surviving line has to fall BETWEEN the two dates — the matcher runs an exact_date pass
+ * before its within_window one, so a line sitting on either payment's own date matches that
+ * payment cleanly and the other never gets a look in.
+ */
+const probeMatch = M.matchStatement({ lines: stored.lines, movements, driftDays: 5, prefixes: M.bookPrefixes(afterImport) });
+const ambiguous = probeMatch.results.find((r) => r.status === "ambiguous");
+ok('the generated statement really does carry a line that fits two entries',
+  Boolean(ambiguous) && (ambiguous.candidates || []).length === 2,
+  ambiguous
+    ? `line ${ambiguous.line.sourceLine}: ${ambiguous.candidates.map((c) => c.ref).join(" and ")} both fit`
+    : 'nothing ambiguous — the generator is advertising a case it does not create');
+
+let decisions = [];
+let unchosen = null;
+if (ambiguous) {
+  const chosen = ambiguous.candidates[ambiguous.candidates.length - 1];
+  unchosen = ambiguous.candidates.find((c) => c.movementId !== chosen.movementId);
+  const decided = await post('/bank-statements/decide', {
+    statement: stored.id, line: String(ambiguous.line.sourceLine), movementId: chosen.movementId
+  });
+  const reread = JSON.parse(readFileSync(BOOK, 'utf8'));
+  const st2 = (reread.bankStatements || []).find((x) => x.id === stored.id);
+  decisions = (st2 && st2.decisions) || [];
+  const d = decisions[0];
+  ok('a decision made by hand is recorded with who made it and when',
+    decided.status === 302 && decisions.length === 1 &&
+      d.movementId === chosen.movementId && Boolean(d.decidedBy) && Boolean(d.decidedAt),
+    d ? `line ${d.sourceLine} -> ${d.movementId} by ${d.decidedBy}` : `HTTP ${decided.status}`);
+}
+
 const match = M.matchStatement({ lines: stored.lines, movements, driftDays: 5, prefixes: M.bookPrefixes(afterImport) });
+/**
+ * The hand decisions are part of what the statement means, so they are applied — but NOT
+ * the classifications, because the checks immediately below exist to test the state where
+ * nobody has explained the bank-only lines yet.
+ *
+ * This suite used to apply neither, which was invisible while no statement it imported had
+ * an ambiguous line. The generator advertised one and never produced it; once it did, the
+ * unresolved 30,500 put the difference at -44,124.50 against an expected -13,624.50 and
+ * five checks went red at once.
+ */
+M.applyDecisions(match, { decisions }, movements);
 const rec = R.reconcile({
   match,
   bookOpening: bank.openingBalance + netOf(allMoves.filter((m) => m.date < FROM)),
@@ -247,12 +300,24 @@ ok('and the difference is EXACTLY what the unexplained lines are worth',
   rec.difference === unclassifiedNet,
   `difference ${rec.difference}, unexplained ${unclassifiedNet}`);
 ok('the statement agrees with itself', rec.selfConsistent === true, `span ${rec.statementSpan} vs lines ${rec.linesNet}`);
+
+/**
+ * Deciding one of the two does not make the other disappear. It was a real payment; the
+ * bank simply has not shown it. Quietly dropping it is how a reconciliation balances by
+ * losing something.
+ */
+ok('the entry that was not chosen stays outstanding rather than vanishing',
+  !unchosen || match.unmatchedMovements.some((u) => u.movement.id === unchosen.movementId),
+  unchosen
+    ? `${unchosen.ref} still outstanding`
+    : 'no ambiguous line in this statement to decide');
 ok('the draft offers to post NOTHING while they are unexplained',
   R.adjustmentDraft(rec, `BANK:${BANK}`).lines.length === 0, 'nothing is posted on a guess');
 
 /* --------------------------------------------- once a person explains them */
 
 const classifiedMatch = M.matchStatement({ lines: stored.lines, movements, carried: [], driftDays: 5, prefixes: M.bookPrefixes(afterImport) });
+M.applyDecisions(classifiedMatch, { decisions }, movements);
 for (const r of classifiedMatch.results) if (r.status === 'unmatched') r.classification = 'bank_only';
 const recClassified = R.reconcile({
   match: classifiedMatch,
@@ -475,6 +540,7 @@ ok('and a manager import is refused at the route', mgrImport.status === 403, `HT
   const st = (bookNow.bankStatements || []).find((x) => x.bankId === BANK && x.from === FROM);
 
   const classifiedAll = M.matchStatement({ lines: st.lines, movements, carried: [], driftDays: 5, prefixes: M.bookPrefixes(bookNow) });
+  M.applyDecisions(classifiedAll, { decisions }, movements);
   for (const r of classifiedAll.results) if (r.status === 'unmatched') r.classification = 'bank_only';
 
   const args = {
@@ -548,10 +614,9 @@ ok('and a manager import is refused at the route', mgrImport.status === 403, `HT
     .filter((l) => l.account === `BANK:${BANK}`)
     .reduce((t, l) => t + (l.debit || 0) - (l.credit || 0), 0);
   const liveMatch = M.matchStatement({ lines: st.lines, movements, carried: [], driftDays: 5, prefixes: M.bookPrefixes(bookNow) });
-  for (const cl of st.classifications || []) {
-    const t = liveMatch.results.find((r) => r.line.sourceLine === cl.sourceLine);
-    if (t && t.status === 'unmatched') t.classification = cl.as;
-  }
+  // The statement as stored — its hand decisions and its classifications both. This used
+  // to re-implement the classification loop inline, which was a third copy of it.
+  M.applyDecisions(liveMatch, st, movements);
   const live = R.reconcile({
     match: liveMatch,
     bookOpening: bank.openingBalance + netOf(allMoves.filter((m) => m.date < FROM)),

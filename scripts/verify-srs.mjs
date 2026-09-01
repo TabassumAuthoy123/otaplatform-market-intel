@@ -327,6 +327,53 @@ await check('No test residue is left in the book', () => {
   return [found.length === 0, found.length ? found.slice(0, 6).join(', ') : 'no probe markers in any collection'];
 });
 
+/**
+ * The same question asked of the JOURNAL, which is a different derivation and was wrong.
+ *
+ * The check below walks the records forward from bank.openingBalance. The journal posts an
+ * opening entry of its own, and that entry was dated at the financial year start —
+ * 2026-07-01 — while 176 of the book's documents are dated in the June before it, because
+ * the data straddles a year end that was never closed. So the ledger spent a fortnight
+ * spending money it had not yet been given:
+ *
+ *   general ledger as at 2026-06-30    Cash -81,320    Dutch-Bangla -62,23,400
+ *
+ * Every date-ranged report to a June cut-off showed the agency sixty-two lakh overdrawn
+ * with no equity. By 31 July it all added up again, because the opening posting was
+ * present and merely late — so only a report that stopped in between could see it, and
+ * nothing stopped in between. The check underneath this one passed throughout, because it
+ * reads the derivation that was right.
+ *
+ * Asked at every month end, since that is where a report is actually cut.
+ */
+await check('The journal never has an account overdrawn at a month end either', async () => {
+  const dates = [];
+  for (const [, rows] of Object.entries(book)) {
+    if (!Array.isArray(rows)) continue;
+    for (const r of rows) if (typeof r.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(r.date)) dates.push(r.date);
+  }
+  if (!dates.length) return [true, 'no dated records'];
+  dates.sort();
+  const monthEnds = [...new Set(dates.map((d) => d.slice(0, 7)))].map((m) => {
+    const [y, mo] = m.split('-').map(Number);
+    return new Date(Date.UTC(y, mo, 0)).toISOString().slice(0, 10);
+  });
+
+  const worst = [];
+  for (const to of monthEnds) {
+    const { body } = await get(`/api/accounts/export?format=csv&section=generalledger&to=${to}`);
+    for (const line of body.split(/\r?\n/)) {
+      const c = (line.match(/"[^"]*"/g) || []).map((x) => x.slice(1, -1));
+      if (!c.length) continue;
+      if (c[0] !== 'CASH' && c[0].indexOf('BANK:') !== 0) continue;
+      const balance = Number(c[5]);
+      if (balance < 0) worst.push(`${c[1]} at ${to}: ${balance.toLocaleString('en-IN')}`);
+    }
+  }
+  return [worst.length === 0,
+    worst.length ? worst.slice(0, 3).join('; ') : `${monthEnds.length} month end(s) checked, nothing overdrawn`];
+});
+
 await check('No cash or bank account ever goes negative', () => {
   const out = [];
   const walk = (isCash, bankId) => {

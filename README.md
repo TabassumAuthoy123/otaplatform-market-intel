@@ -1380,11 +1380,11 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 180 checks — specification, hardening, automation
+node scripts/verify-srs.mjs      # 181 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 50 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 31 checks — manual vouchers, and the reconciliation surviving them
-node scripts/verify-bank.mjs     # 63 checks — a bank statement against the book, and every refusal
+node scripts/verify-bank.mjs     # 66 checks — a bank statement against the book, and every refusal
 node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```
 
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**420 checks** across the six suites against the running app: each one loads a
+**424 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **180 + 50 + 39 + 31 + 63 + 57
+should accept on trust, including from me. It currently reports **181 + 50 + 39 + 31 + 66 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -2764,6 +2764,96 @@ Qatar Airways refunding ৳25,000 into Dutch-Bangla against SFT-BIL-0127 — the
 credit note in the book that is money rather than an offset — plus the three refusals that
 had never been triggered: crediting more than the bill is worth, taking back more than was
 ever paid out, and a refund that names no bank. All twelve reconciliation rows stay at zero.
+
+---
+
+## The decision a person makes, run for the first time
+
+When one statement line fits two book entries equally well, the matcher refuses to choose
+and asks. `/bank-statements/decide` records the answer, the reconciliation applies it, and
+the entry that was not chosen stays outstanding. None of that had ever run.
+
+### The generator advertised a case it did not create
+
+`scripts/make-bank-statement.mjs` documents seven things it deliberately does to a
+statement, and one of them is:
+
+```
+AMBIGUOUS    two book payments of the same amount inside the drift window, so one
+             statement line fits both. Must NOT auto-match either.
+```
+
+It found the pair, wrote that note — and then printed a line for **each** of them, so the
+matcher paired them off one-to-one and reported nothing ambiguous. Every import this repo
+could produce came back `0 need a decision`. The route, its form, and the fifty lines that
+apply a decision were unreachable from any statement the project could generate.
+
+Two things were needed to make a real one. The twin has to be **absent** from the
+statement, and the surviving line has to fall **between** the two dates — the matcher runs
+an `exact_date` pass before its `within_window` one, so a line sitting on either payment's
+own date matches that payment cleanly and the other never gets a look in. The first attempt
+at this fix put the line on the earlier payment's date and came back cleanly matched.
+
+Now: SFT-PAY-0061 (7 July) and SFT-PAY-0064 (8 July) are both ৳30,500, one line dated
+9 July says only `TFR TO BENEFICIARY`, and the screen asks. The nearer of the two was
+chosen; SFT-PAY-0061 stays outstanding, which it should, because it was a real payment the
+bank has not shown yet.
+
+### Two copies of the code that applies your decision
+
+`lib/bankrec.ts` had one for the screen and `admin/server.js` had one for the portal —
+thirty lines of judgement about somebody's money, written twice. **They had already
+drifted.** The screen recounted `unmatched` and `groupCandidate` after applying a decision
+and the portal did not; the portal recounted `unknownToBook` and the screen did not. So a
+line a person had just decided still counted as one that "looks grouped" in the portal's
+summary — and the portal is where a period gets signed off.
+
+Neither copy was wrong on its own, which is what makes the shape dangerous. There is now
+one `applyDecisions()` in `lib/bank-match.js`, it refreshes every count rather than the
+subset each caller happened to remember, and all three callers use it — the screen, the
+portal, and the suite, which had been re-implementing the classification loop as a third
+copy inside a fixture.
+
+### The opening balance was a fortnight late
+
+Found while trying to reconcile June. The journal posts opening balances dated at the
+financial year start, 2026-07-01 — and **176 of the book's documents are dated in the June
+before it**, because the data straddles a year end that was never closed. Bangladesh's
+fiscal year runs July to June, so June 2026 belongs to the year before.
+
+The ledger therefore spent a fortnight spending money it had not been given:
+
+| General ledger as at | Cash | Dutch-Bangla |
+|---|---|---|
+| 2026-06-30, before | −৳81,320 | −৳62,23,400 |
+| 2026-06-30, after | ৳11,18,680 | ৳1,00,76,600 |
+| 2026-07-31, either | ৳3,50,780 | ৳7,02,776 |
+
+Any report cut at a June date showed the agency sixty-two lakh overdrawn holding no equity.
+By 31 July it added up again — the opening posting was present, merely late — so only a
+report that stopped in between could see it, and nothing stopped in between.
+
+The suite could not see it either. *"No cash or bank account ever goes negative"* walks the
+records forward from `bank.openingBalance` and never reads the journal, so it was checking
+the one derivation that was right. There is now a second check that asks the **journal** the
+same question at every month end.
+
+The opening entry is now dated no later than the first thing it funds. The financial year
+start is still what the year is called; it is not what the book begins on, and using it as
+though it were is what put the balance a fortnight late.
+
+### Still open: the year boundary is enforced in exactly one place
+
+A journal voucher dated 2026-06-30 is refused — *"before the financial year starts"*. An
+invoice, a receipt, a bill, a payment, an expense, a supplier deposit and a transfer on that
+date are all accepted, and 176 of them exist. So a June bank statement can be imported and
+matched but never signed off: its bank charges cannot be posted.
+
+That is not fixed here. Retro-validating the other collections would make 176 existing
+records unsaveable, and the real answer is a **year-end close** — carrying June out and
+bringing it back in as an opening position — which this project does not have yet and which
+is listed among the gaps below. The June import was rolled back rather than left in the book
+as a reconciliation nobody can finish.
 
 ---
 
