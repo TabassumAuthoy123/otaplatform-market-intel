@@ -1380,7 +1380,7 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 187 checks — specification, hardening, automation
+node scripts/verify-srs.mjs      # 193 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 50 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 31 checks — manual vouchers, and the reconciliation surviving them
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**433 checks** across the six suites against the running app: each one loads a
+**439 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **187 + 50 + 39 + 31 + 69 + 57
+should accept on trust, including from me. It currently reports **193 + 50 + 39 + 31 + 69 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -3009,6 +3009,49 @@ brought forward at cost, the licence prepayment brought forward as an asset. Tha
 this project still has, and it is listed as one. Inventing the two vouchers here would move
 ৳4,65,000 through a demo book on figures nobody supplied, and would make the statement tidy
 while making the history wrong.
+
+---
+
+## Two screens that had only ever been opened empty
+
+### Statements
+
+The statements screen takes `kind`, `party`, `period`, `from` and `to`. It had only ever
+been rendered with **none of them** — which is the one case that proves nothing, because
+with no period it shows the whole book and the brought-forward is trivially zero and
+omitted. Six presets, a custom range, a customer side and a supplier side: ten combinations,
+not one of them asked for once.
+
+All ten work, and the arithmetic ties out to the taka:
+
+| | |
+|---|---|
+| Rodela International, 1–31 Aug | brought forward ৳1,19,500 + invoice ৳85,800 = **৳2,05,300** |
+| Balance from the vouchers as at 31 Jul | **৳1,19,500** |
+| Quarter from 1 Jul, brought forward | ৳0 — and the balance at 30 Jun really is ৳0 |
+
+The check that guards this got the supplier side wrong first. A receivable grows on a
+**debit** and shrinks on a credit; a payable is the mirror, so the balance owed grows with
+**credits**. Applying the customer convention to both reported the supplier statement out by
+twice its own balance — the page was right and the check was wrong, which is the failure
+mode worth being slow about.
+
+### The reminder letter
+
+Reachable only through `?show=<invoiceId>`, and no test had ever passed that parameter.
+Twenty-three invoices offer a draft; not one had been rendered by anything but a person
+clicking. They come out right — customer, invoice number and date, PNR, what is outstanding
+against what was billed, what has been received, how many days past terms, and who is
+asking.
+
+**Only two of the ten customers carry an email**, so the `mailto:` branch had never rendered
+at all — every draft anybody had ever seen offered WhatsApp and nothing else. Both branches
+are now checked against the customer record: the channel is offered when the contact exists
+and not when it does not.
+
+The three stages partition the list exactly — `watch 0 + chase 2 + escalate 21 = 23` — which
+is worth asserting, because a filter returning more rows than the list it filters is how a
+chase list gets worked twice.
 
 ---
 

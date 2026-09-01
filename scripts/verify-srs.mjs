@@ -2211,6 +2211,197 @@ await check('The stock register says out loud that it is not in the accounts', a
       : 'the page shows a figure larger than the balance sheet without saying it is outside it'];
 });
 
+section('Statements');
+
+/**
+ * The screen had only ever been rendered with no parameters at all.
+ *
+ * With no period it shows the whole book, so the brought-forward is trivially zero and
+ * omitted — which is the one case that proves nothing. Six presets, a custom range, a
+ * customer side and a supplier side, and not one of them had been asked for once.
+ */
+
+const statementPage = async (qs) => {
+  const { body } = await get(`/accounts/statements?${qs}`);
+  const rows = [...body.matchAll(/<tr\b[^>]*>([\s\S]*?)<\/tr>/g)].map((m) =>
+    [...m[1].matchAll(/<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/g)]
+      .map((c) => c[1].replace(/<[^>]+>/g, '').replace(/&#x27;/g, "'").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim()));
+  const money = (t) => Number(String(t).replace(/[^0-9.-]/g, '') || 0);
+  // The label sits in the Detail column, not the first one — and the brought-forward row
+  // carries a date of its own, so it has to be excluded from the movement or it would be
+  // counted twice.
+  const labelled = (r, text) => r.length === 6 && r[2] === text;
+  const brought = rows.find((r) => labelled(r, 'Brought forward'));
+  const totals = rows.find((r) => labelled(r, 'Totals'));
+  const movement = rows.filter((r) =>
+    r.length === 6 && /^\d{4}-\d{2}-\d{2}$/.test(r[0]) && r[2] !== 'Brought forward');
+  return { rows, money, brought, totals, movement };
+};
+
+/**
+ * The property that matters: a statement is only a statement if it closes where its own
+ * arithmetic says it should. Brought forward, plus everything charged, less everything
+ * received, is the closing balance — and the closing balance is the last row's running
+ * total, not a figure computed separately.
+ */
+await check('A statement closes at brought-forward plus its own movement', async () => {
+  const bad = [];
+  for (const kind of ['customer', 'supplier']) {
+    for (const [from, to] of [['2026-08-01', '2026-08-31'], ['2026-07-01', '2026-07-31']]) {
+      const st = await statementPage(`kind=${kind}&period=custom&from=${from}&to=${to}`);
+      if (!st.brought) { bad.push(`${kind} ${from}: no brought-forward row`); continue; }
+      const opening = st.money(st.brought[5]);
+      const debits = st.movement.reduce((t, r) => t + st.money(r[3]), 0);
+      const credits = st.movement.reduce((t, r) => t + st.money(r[4]), 0);
+      const last = st.movement.length ? st.money(st.movement[st.movement.length - 1][5]) : opening;
+      /**
+       * The two sides run opposite ways, and that is the accounting rather than a quirk.
+       *
+       * A receivable grows on a DEBIT — the invoice — and shrinks on a credit. A payable is
+       * the mirror: the supplier's bill is a credit and paying it is a debit, so the balance
+       * owed grows with credits. The first version of this check applied the customer
+       * convention to both and reported the supplier statement out by twice its own balance
+       * — the page was right and the check was wrong, which is the failure mode worth being
+       * slow about.
+       */
+      const closing = kind === 'customer' ? opening + debits - credits : opening - debits + credits;
+      if (Math.round(closing) !== Math.round(last)) {
+        bad.push(`${kind} ${from}..${to}: expected ${Math.round(closing)}, last row says ${last}`);
+      }
+    }
+  }
+  return [bad.length === 0, bad.length ? bad.join("; ") : 'four statements, each closing where its own rows put it'];
+});
+
+/**
+ * And the brought-forward is what the BOOK says was outstanding the day before — computed
+ * here from the vouchers, not from the same function that drew the page.
+ */
+await check('Brought-forward is the balance the day before the period opens', async () => {
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const cust = bk.customers[0];
+  const gross = (i) => Math.round((i.lines || []).reduce((t, l) => t + Number(l.qty) * Number(l.unitPrice), 0) * (Number(i.fxRate) || 1))
+    + Math.round(Math.round((i.lines || []).reduce((t, l) => t + Number(l.qty) * Number(l.unitPrice), 0) * (Number(i.fxRate) || 1)) * (Number(i.vatRate) || 0) / 100);
+  const balanceAt = (day) => {
+    let bal = 0;
+    for (const i of bk.invoices) if (i.customerId === cust.id && i.status !== 'draft' && i.date <= day) bal += gross(i);
+    for (const r of bk.receipts) if (r.customerId === cust.id && r.date <= day) bal -= r.amount;
+    for (const n of bk.creditNotes || []) if (n.customerId === cust.id && n.date <= day) bal -= n.amount;
+    return Math.round(bal);
+  };
+  const bad = [];
+  for (const [from, before] of [['2026-08-01', '2026-07-31'], ['2026-07-01', '2026-06-30']]) {
+    const st = await statementPage(`kind=customer&party=${cust.id}&period=custom&from=${from}&to=2026-08-31`);
+    if (!st.brought) { bad.push(`${from}: no brought-forward row`); continue; }
+    const shown = st.money(st.brought[5]);
+    const want = balanceAt(before);
+    if (shown !== want) bad.push(`${from}: page says ${shown}, the vouchers say ${want} as at ${before}`);
+  }
+  return [bad.length === 0,
+    bad.length ? bad.join("; ") : `${cust.name}: both openings tie to the vouchers`];
+});
+
+/**
+ * Every preset, both sides. A preset that throws or renders an empty page is the kind of
+ * thing nobody notices until a customer asks for last quarter.
+ */
+await check('Every period preset renders a statement on both sides', async () => {
+  const bad = [];
+  for (const kind of ['customer', 'supplier']) {
+    for (const period of ['day', 'week', 'month', 'quarter', 'year']) {
+      const st = await statementPage(`kind=${kind}&period=${period}`);
+      if (!st.brought) bad.push(`${kind}/${period}`);
+    }
+  }
+  return [bad.length === 0,
+    bad.length ? `no statement rendered for: ${bad.join(", ")}` : 'ten combinations, every one with an opening balance stated'];
+});
+
+section('Reminder letters');
+
+/**
+ * The letter generator is reachable only through ?show=<invoiceId>, and no test had ever
+ * passed that parameter. Twenty-three invoices offer a draft on the page; not one draft had
+ * been rendered by anything but a person clicking.
+ */
+
+const reminderPage = async (qs) => (await get(`/accounts/reminders${qs}`)).body;
+const letterIn = (html) => {
+  const m = /<textarea[^>]*>([\s\S]*?)<\/textarea>/.exec(html);
+  return m ? m[1].replace(/&#x27;/g, "'").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">") : null;
+};
+
+await check('A reminder letter names the invoice, the money and how late it is', async () => {
+  const list = await reminderPage('');
+  const ids = [...new Set([...list.matchAll(/show=(INV-\d+)/g)].map((m) => m[1]))];
+  if (!ids.length) return [true, 'nothing is on the chase list today'];
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const bad = [];
+  for (const id of ids.slice(0, 5)) {
+    const body = letterIn(await reminderPage(`?show=${id}`));
+    if (!body) { bad.push(`${id}: no draft rendered`); continue; }
+    const inv = bk.invoices.find((i) => i.id === id);
+    const cust = bk.customers.find((c) => c.id === inv.customerId);
+    const wants = [
+      [inv.no, 'the invoice number'],
+      [inv.date, 'the invoice date'],
+      [cust.name, 'the customer name'],
+      [bk.company.name, 'who is asking']
+    ];
+    for (const [text, what] of wants) if (!body.includes(text)) bad.push(`${id}: ${what} is missing`);
+    // A chase letter with no figure and no age is a letter nobody acts on.
+    if (!/৳[\d,]+ outstanding/.test(body)) bad.push(`${id}: no outstanding amount`);
+    if (!/\d+ days past/.test(body)) bad.push(`${id}: it does not say how late`);
+  }
+  return [bad.length === 0,
+    bad.length ? bad.slice(0, 3).join("; ") : `${Math.min(5, ids.length)} draft(s), each naming the invoice, the money and the age`];
+});
+
+/**
+ * Only two of the ten customers carry an email, so the mailto branch had never rendered at
+ * all — every draft anybody had looked at offered WhatsApp and nothing else.
+ */
+await check('A letter offers only the channels that customer actually has', async () => {
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const list = await reminderPage('');
+  const ids = [...new Set([...list.matchAll(/show=(INV-\d+)/g)].map((m) => m[1]))];
+  if (!ids.length) return [true, 'nothing is on the chase list today'];
+  const bad = [];
+  let withEmail = 0;
+  for (const id of ids) {
+    const inv = bk.invoices.find((i) => i.id === id);
+    const cust = bk.customers.find((c) => c.id === inv.customerId) || {};
+    const html = await reminderPage(`?show=${id}`);
+    const hasMailto = /href="mailto:/.test(html);
+    const hasWhatsapp = /wa\.me\//.test(html);
+    if (Boolean(cust.email) !== hasMailto) bad.push(`${id}: email ${cust.email ? "known" : "unknown"} but mailto ${hasMailto ? "offered" : "absent"}`);
+    if (Boolean(cust.phone) !== hasWhatsapp) bad.push(`${id}: phone ${cust.phone ? "known" : "unknown"} but WhatsApp ${hasWhatsapp ? "offered" : "absent"}`);
+    if (cust.email) withEmail++;
+  }
+  return [bad.length === 0,
+    bad.length ? bad.slice(0, 3).join("; ")
+      : `${ids.length} draft(s) checked, ${withEmail} of them offering email — the branch that had never rendered`];
+});
+
+/**
+ * A filter that returns more rows than the list it filters is the classic way a chase list
+ * gets worked twice. The three stages must partition it exactly.
+ */
+await check('The reminder stages partition the chase list exactly', async () => {
+  const count = (html) => {
+    const m = /(\d+)\s*to chase/.exec(html.replace(/<[^>]*>/g, " ").replace(/\s+/g, " "));
+    return m ? Number(m[1]) : null;
+  };
+  const all = count(await reminderPage(''));
+  const parts = {};
+  for (const stage of ['watch', 'chase', 'escalate']) {
+    parts[stage] = count(await reminderPage(`?stage=${stage}`));
+  }
+  const sum = Object.values(parts).reduce((t, n) => t + (n || 0), 0);
+  return [all !== null && sum === all,
+    `${Object.entries(parts).map(([k, v]) => k + " " + v).join(" + ")} = ${sum}, and the unfiltered list has ${all}`];
+});
+
 await check('Every check has run and none of them failed', async () => {
   const page = await fetch(`${ADMIN}/alerts`, { headers: { cookie: probe.cookie } });
   const csrf = ((await page.text()).match(/name="csrf" value="([^"]+)"/) || [])[1];
