@@ -2072,6 +2072,103 @@ await check('VAT on a foreign invoice is converted before it is added', () => {
   return [convertsFirst, convertsFirst ? 'VAT is charged on the converted value' : 'VAT is being added in document currency'];
 });
 
+section('Stock register');
+
+/**
+ * ৳2.58 crore on screen and not one assertion anywhere.
+ *
+ * The inventory screen is the largest figure in the product — larger than the balance
+ * sheet it sits next to — and no suite had ever checked a single number on it. Six blocks,
+ * four tiles, eleven columns, all of it rendering and none of it verified.
+ */
+
+const stockRows = async () => {
+  const { body } = await get('/api/accounts/export?format=csv&section=inventory');
+  // Every cell is quoted, and item names carry commas — so read quoted fields, never split
+  // on the comma. The first attempt at this split on commas and got NaN for every number.
+  const cells = (line) => (line.match(/"[^"]*"/g) || []).map((c) => c.slice(1, -1));
+  const lines = body.replace(/^\uFEFF/, '').split(/\r?\n/).filter((l) => l.includes(","));
+  const head = cells(lines[0]);
+  return lines.slice(1).map((l) => {
+    const c = cells(l);
+    const row = {};
+    head.forEach((h, i) => { row[h] = c[i]; });
+    return row;
+  }).filter((r) => r.Item);
+};
+
+await check('Every stock row is arithmetically consistent with itself', async () => {
+  const rows = await stockRows();
+  if (!rows.length) return [false, 'the inventory export is empty'];
+  const bad = [];
+  for (const r of rows) {
+    const purchased = Number(r.Purchased), sold = Number(r.Sold);
+    const cost = Number(r["Unit cost"]), sell = Number(r["Unit sell"]);
+    const remaining = Math.max(0, purchased - sold);
+    const want = {
+      Remaining: remaining,
+      "Cost committed": purchased * cost,
+      "Value at risk": remaining * cost,
+      "Realised margin": sold * (sell - cost),
+      "Potential margin": remaining * (sell - cost)
+    };
+    for (const [k, v] of Object.entries(want)) {
+      if (Math.round(Number(r[k])) !== Math.round(v)) bad.push(`${r.Item}: ${k} is ${r[k]}, should be ${v}`);
+    }
+    if (sold > purchased) bad.push(`${r.Item}: ${sold} sold out of ${purchased} bought`);
+  }
+  return [bad.length === 0, bad.length ? bad.slice(0, 3).join("; ") : `${rows.length} block(s), every derived column checked`];
+});
+
+await check('The stock tiles are the sum of the rows they sit above', async () => {
+  const rows = await stockRows();
+  const { body } = await get('/accounts/inventory');
+  const sum = (k) => rows.reduce((t, r) => t + Number(r[k]), 0);
+  /**
+   * Read off the page, not recomputed from the same function that drew it. moneyShort
+   * rounds to crore and lakh, so the comparison is to the rounded form — which is also
+   * what a person actually reads.
+   */
+  const flat = body.replace(/<[^>]*>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
+  const short = (n) => (n >= 1e7 ? (n / 1e7).toFixed(2) + " cr" : (n / 1e5).toFixed(1) + " lakh");
+  const want = [
+    ["Committed to stock", short(sum("Cost committed"))],
+    ["Unsold at cost", short(sum("Value at risk"))],
+    ["Margin realised", short(sum("Realised margin"))],
+    ["Margin still on the shelf", short(sum("Potential margin"))]
+  ];
+  const bad = want.filter(([label, v]) => {
+    const at = flat.indexOf(label);
+    return at < 0 || !flat.slice(at, at + 60).includes(v);
+  });
+  return [bad.length === 0,
+    bad.length ? `tile(s) disagree: ${bad.map((b) => b[0] + " should read " + b[1]).join(", ")}`
+      : want.map(([l, v]) => l + " " + v).join(" · ")];
+});
+
+/**
+ * The figure is bigger than the balance sheet and is in none of it.
+ *
+ * No supplier bill in the book is linked to a block, so the committed cost is not in
+ * Accounts payable, the unsold cost is not an asset, and these margins are not the P&L
+ * margins. The screen showed ৳2.58 cr of stock beside ৳2.39 cr of total assets and said
+ * nothing relating the two, which invites exactly the wrong reading.
+ */
+await check('The stock register says out loud that it is not in the accounts', async () => {
+  const { body } = await get('/accounts/inventory');
+  const flat = body.replace(/<[^>]*>/g, " ").replace(/&amp;/g, "&").replace(/\s+/g, " ");
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const linked = (bk.bills || []).filter((b) => b.inventoryId).length;
+  if (linked && linked === (bk.inventory || []).length) {
+    return [true, 'every block is billed, so there is nothing to disclose'];
+  }
+  const says = /stock register, not a ledger balance/.test(flat);
+  const named = /not an asset/.test(flat) && /Accounts payable/.test(flat);
+  return [says && named,
+    says ? 'the page states what the ledger does not carry, and against what total'
+      : 'the page shows a figure larger than the balance sheet without saying it is outside it'];
+});
+
 await check('Every check has run and none of them failed', async () => {
   const page = await fetch(`${ADMIN}/alerts`, { headers: { cookie: probe.cookie } });
   const csrf = ((await page.text()).match(/name="csrf" value="([^"]+)"/) || [])[1];

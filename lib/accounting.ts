@@ -1488,9 +1488,36 @@ export function inventory(book: Book, today?: string) {
     };
   });
 
+  /**
+   * How much of the committed cost the LEDGER knows about.
+   *
+   * Nothing links a supplier bill to a stock block — no bill carries an inventoryId — so
+   * today this is zero for the whole register, and that is the point of reporting it rather
+   * than leaving it to be inferred.
+   *
+   * WHY IT MATTERS MORE THAN IT LOOKS
+   *
+   * The screen showed "Committed to stock ৳2.58 cr" and "Unsold at cost ৳1.55 cr" beside a
+   * balance sheet whose total assets are ৳2.39 cr, and said nothing about the relationship.
+   * An owner reading both pages would reasonably take the stock to be inside the assets. It
+   * is not in them, not in Accounts payable, and not in cost of sales: the register is a
+   * parallel record of the same trade, kept by hand.
+   *
+   * Written as a filter over a field bills do not have yet, deliberately, so the disclosure
+   * shrinks on its own the day the link exists instead of having to be remembered.
+   */
+  const billedToStock = book.bills
+    .filter((b) => Boolean((b as { inventoryId?: string }).inventoryId))
+    .reduce((t, b) => t + Math.round(b.amount * (Number(b.fxRate) || 1)), 0);
+  const committed = rows.reduce((t, r) => t + r.costCommitted, 0);
+
   return {
     rows: rows.sort((a, b) => b.valueAtRisk - a.valueAtRisk),
-    totalCommitted: rows.reduce((t, r) => t + r.costCommitted, 0),
+    totalCommitted: committed,
+    /** Committed cost traceable to a supplier bill. */
+    postedToLedger: billedToStock,
+    /** Committed cost the accounts have never seen. */
+    unpostedToLedger: Math.max(0, committed - billedToStock),
     totalAtRisk: rows.reduce((t, r) => t + r.valueAtRisk, 0),
     realised: rows.reduce((t, r) => t + r.realisedMargin, 0),
     potential: rows.reduce((t, r) => t + r.potentialMargin, 0),

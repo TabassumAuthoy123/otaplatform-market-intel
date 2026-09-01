@@ -1,5 +1,5 @@
 import { PageHead, Panel, StatusChip, Table, Td, Tile } from '@/components/accounts/ui';
-import { getBook, inventory, INVENTORY_KIND, money, moneyShort, supplierDeposits } from '@/lib/accounting';
+import { balanceSheet, getBook, inventory, INVENTORY_KIND, money, moneyShort, supplierDeposits } from '@/lib/accounting';
 
 export const dynamic = 'force-dynamic';
 
@@ -8,6 +8,7 @@ export default async function InventoryPage() {
   const sym = book.company.currencySymbol;
   const inv = inventory(book);
   const dep = supplierDeposits(book);
+  const bs = balanceSheet(book);
 
   return (
     <div className="space-y-7">
@@ -23,6 +24,35 @@ export default async function InventoryPage() {
         <Tile label="Margin realised" value={moneyShort(inv.realised, sym)} sub="On units already sold" tone="good" />
         <Tile label="Margin still on the shelf" value={moneyShort(inv.potential, sym)} sub="If every remaining unit sells" />
       </div>
+
+      {/*
+        THE FIGURES ABOVE ARE NOT IN THE ACCOUNTS, AND THE SCREEN USED NOT TO SAY SO.
+
+        "Committed to stock ৳2.58 cr" and "Unsold at cost ৳1.55 cr" sat here beside a
+        balance sheet whose total assets are ৳2.39 cr, with nothing anywhere relating the
+        two. An owner reading both pages would reasonably take the stock to be inside the
+        assets. It is in neither the assets nor Accounts payable nor cost of sales: no
+        supplier bill in the book corresponds to a block, so the register is a parallel
+        record of the same trade, kept by hand.
+
+        The whole register was on screen and had not one assertion in any suite, which is
+        how a figure larger than the balance sheet goes unremarked.
+      */}
+      {inv.unpostedToLedger > 0 && (
+        <div className="rounded-xl2 border-l-[3px] border-navy-900 bg-panel px-5 py-4">
+          <p className="text-[13.5px] font-semibold text-navy-900">
+            {money(inv.unpostedToLedger, sym)} of this is a stock register, not a ledger balance.
+          </p>
+          <p className="mt-1 text-[12.5px] leading-relaxed text-ink">
+            No supplier bill in the book is linked to a block, so none of the committed cost is in
+            <strong> Accounts payable</strong>, the unsold cost is <strong>not an asset</strong>, and the
+            margins here are not the margins in the profit &amp; loss. For scale, total assets on the
+            balance sheet come to {money(bs.totalAssets, sym)} — the stock above is not inside that
+            figure. Bill the blocks to the supplier accounts, or carry an inventory asset, before
+            either number is used to decide anything.
+          </p>
+        </div>
+      )}
 
       {(inv.expiringSoon > 0 || inv.expired > 0) && (
         <div className="rounded-xl2 border-l-[3px] border-amber-700 bg-amber-700/5 px-5 py-4">

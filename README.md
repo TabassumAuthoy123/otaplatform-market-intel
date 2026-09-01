@@ -1380,7 +1380,7 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 183 checks — specification, hardening, automation
+node scripts/verify-srs.mjs      # 186 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 50 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 31 checks — manual vouchers, and the reconciliation surviving them
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**429 checks** across the six suites against the running app: each one loads a
+**432 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **183 + 50 + 39 + 31 + 69 + 57
+should accept on trust, including from me. It currently reports **186 + 50 + 39 + 31 + 69 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -2935,6 +2935,47 @@ whole matrix:
 
 The suite fixture now states what the book must contain to produce every verdict and fails
 when it cannot, rather than passing quietly over a book that has nothing to match.
+
+---
+
+## The biggest number in the product had no assertions
+
+The stock register shows **৳2.58 crore committed** and **৳1.55 crore unsold at cost**. It is
+the largest figure anywhere in the app — larger than the balance sheet it sits beside — and
+not one suite had ever checked a single number on it. Six blocks, four tiles, eleven derived
+columns, all of it rendering and none of it verified.
+
+### It is not in the accounts, and the screen did not say so
+
+| | |
+|---|---|
+| Committed to stock | ৳2,57,58,000 |
+| Total assets on the balance sheet | ৳2,39,24,824 |
+
+**No supplier bill in the book is linked to a block.** So none of the committed cost is in
+Accounts payable, the unsold cost is not an asset, and the margins on that screen are not
+the margins in the profit & loss. `lib/accounting.ts` has said as much in a comment since
+the P&L reconciliation was written — *"`book.inventory` never touches a bill or a posting"* —
+but the screen showed ৳2.58 crore beside a ৳2.39 crore balance sheet with nothing anywhere
+relating the two, and an owner reading both pages would reasonably take the stock to be
+inside the assets.
+
+The page now says it, with both figures named, and `inventory()` returns
+`postedToLedger` / `unpostedToLedger` so the disclosure is derived rather than written into
+the markup. It is a filter over an `inventoryId` that bills do not carry yet — deliberately,
+so the notice shrinks on its own the day the link exists instead of having to be remembered.
+
+### And the arithmetic is now checked
+
+Three checks: every derived column against its own inputs (`remaining`, `cost committed`,
+`value at risk`, both margins, and that nothing is sold beyond what was bought); the four
+tiles against the sum of the rows they sit above, read off the rendered page rather than
+recomputed from the function that drew it; and the disclosure itself.
+
+The first version of the parser split the CSV on commas. Block names contain commas and
+every cell is quoted, so it read `NaN` for every number and reported the whole register
+inconsistent — a test failing on its own bug, which is the cheapest kind to mistake for a
+finding.
 
 ---
 
