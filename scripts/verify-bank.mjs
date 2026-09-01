@@ -138,7 +138,10 @@ async function post(action, fields, cookie) {
   const page = await portal('/bank-statements', { cookie });
   const body = new URLSearchParams();
   body.set('csrf', csrfOf(page.body) || '');
-  for (const [k, v] of Object.entries(fields)) body.append(k, String(v));
+  // An array repeats the field, which is how the grouping form sends its three movementIds.
+  for (const [k, v] of Object.entries(fields)) {
+    for (const one of Array.isArray(v) ? v : [v]) body.append(k, String(one));
+  }
   return portal(action, { method: 'POST', cookie, headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() });
 }
 
@@ -255,6 +258,39 @@ if (ambiguous) {
     d ? `line ${d.sourceLine} -> ${d.movementId} by ${d.decidedBy}` : `HTTP ${decided.status}`);
 }
 
+/**
+ * Three cheques handed over the counter together, credited by the bank as ONE line.
+ *
+ * The other verdict a person resolves by hand, and the other one the generator described
+ * without producing. Nothing in the book matches the aggregate, all three receipts are left
+ * outstanding, and the two cancel out — so the difference stays at zero while four rows are
+ * wrong. Call the line a bank charge and money already in the book gets posted a second
+ * time. That is what /bank-statements/group exists for, and no statement this project could
+ * generate had ever contained one.
+ */
+const grouped = probeMatch.results.find((r) => r.status === "group_candidate");
+ok('the generated statement carries a deposit the bank banked as one line',
+  Boolean(grouped) && (grouped.groups || []).length >= 1,
+  grouped
+    ? `line ${grouped.line.sourceLine} of ${grouped.line.amount} = ${grouped.groups[0].map((m) => m.ref).join(" + ")}`
+    : 'nothing grouped — the generator is advertising a case it does not create');
+
+if (grouped) {
+  const members = grouped.groups[0];
+  const confirmed = await post('/bank-statements/group', {
+    statement: stored.id,
+    line: String(grouped.line.sourceLine),
+    movementId: members.map((m) => m.movementId || m.id)
+  });
+  const reread = JSON.parse(readFileSync(BOOK, 'utf8'));
+  const st3 = (reread.bankStatements || []).find((x) => x.id === stored.id);
+  decisions = (st3 && st3.decisions) || [];
+  const forLine = decisions.filter((d) => d.sourceLine === grouped.line.sourceLine);
+  ok('confirming a grouping records one decision per member, not one for the line',
+    confirmed.status === 302 && forLine.length === members.length,
+    `${forLine.length} of ${members.length} recorded`);
+}
+
 const match = M.matchStatement({ lines: stored.lines, movements, driftDays: 5, prefixes: M.bookPrefixes(afterImport) });
 /**
  * The hand decisions are part of what the statement means, so they are applied — but NOT
@@ -306,6 +342,29 @@ ok('the statement agrees with itself', rec.selfConsistent === true, `span ${rec.
  * bank simply has not shown it. Quietly dropping it is how a reconciliation balances by
  * losing something.
  */
+/**
+ * A confirmed grouping must still add up EXACTLY.
+ *
+ * A person asking for it is not a licence to close a gap: accepting a set that does not sum
+ * to the line buries the difference inside a matched pair, which is the one thing this
+ * whole feature exists to prevent — arrived at by consent instead of by accident.
+ */
+{
+  const three = [
+    { id: 'g1', ref: 'R1', date: '2026-07-10', amount: 1000, direction: 'in', kind: 'receipt', note: '' },
+    { id: 'g2', ref: 'R2', date: '2026-07-10', amount: 2000, direction: 'in', kind: 'receipt', note: '' }
+  ];
+  const line = [{ date: '2026-07-11', description: 'INWARD CLEARING 2 ITEMS', reference: '', amount: 3500, direction: 'in', balance: null, sourceLine: 2 }];
+  const m2 = M.matchStatement({ lines: line, movements: three, carried: [], driftDays: 5, prefixes: [] });
+  M.applyDecisions(m2, { decisions: [
+    { sourceLine: 2, movementId: 'g1', decidedBy: 'probe@local', decidedAt: '' },
+    { sourceLine: 2, movementId: 'g2', decidedBy: 'probe@local', decidedAt: '' }
+  ] }, three);
+  ok('a grouping confirmed by hand that does not add up is refused, not buried',
+    m2.results[0].status === 'ambiguous' && /add up to 3000 against a line of 3500/.test(m2.results[0].why || ''),
+    m2.results[0].status === 'ambiguous' ? 'the shortfall is named rather than absorbed' : m2.results[0].status);
+}
+
 ok('the entry that was not chosen stays outstanding rather than vanishing',
   !unchosen || match.unmatchedMovements.some((u) => u.movement.id === unchosen.movementId),
   unchosen

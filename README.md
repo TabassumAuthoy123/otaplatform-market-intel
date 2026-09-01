@@ -1384,7 +1384,7 @@ node scripts/verify-srs.mjs      # 181 checks — specification, hardening, auto
 node scripts/verify-admin.mjs    # 50 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 31 checks — manual vouchers, and the reconciliation surviving them
-node scripts/verify-bank.mjs     # 66 checks — a bank statement against the book, and every refusal
+node scripts/verify-bank.mjs     # 69 checks — a bank statement against the book, and every refusal
 node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```
 
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**424 checks** across the six suites against the running app: each one loads a
+**427 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **181 + 50 + 39 + 31 + 66 + 57
+should accept on trust, including from me. It currently reports **181 + 50 + 39 + 31 + 69 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -2798,6 +2798,27 @@ Now: SFT-PAY-0061 (7 July) and SFT-PAY-0064 (8 July) are both ৳30,500, one lin
 9 July says only `TFR TO BENEFICIARY`, and the screen asks. The nearer of the two was
 chosen; SFT-PAY-0061 stays outstanding, which it should, because it was a real payment the
 bank has not shown yet.
+
+### The other hand decision: a deposit the bank banked as one line
+
+Three customer cheques handed over the counter together come back as a single inward
+clearing for their total. Nothing in the book matches the aggregate, all three receipts are
+left outstanding, and the two cancel out — **so the difference stays at zero while four rows
+are wrong.** Call the line a bank charge and money already in the book is posted a second
+time.
+
+That is what `/bank-statements/group` is for, and the generator had never made one either.
+
+It now banks three deposits together — distinct amounts, within four days, the line dated on
+the last of them so every member sits inside the matcher's window — and the portal offers
+the grouping. Confirming it records **one decision per member**, not one for the line.
+
+A confirmed grouping still has to add up exactly. A person asking for it is not a licence to
+close a gap: a set that does not sum to the line is refused with the shortfall named, rather
+than buried inside a matched pair.
+
+On the July statement: `SFT-RCP-0032 + SFT-RCP-0033 + SFT-RCP-0042` = ৳4,97,900 against one
+line, confirmed by hand, and the period signs off at zero.
 
 ### Two copies of the code that applies your decision
 

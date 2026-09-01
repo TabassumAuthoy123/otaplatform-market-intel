@@ -115,6 +115,36 @@ const inTransit = ins[ins.length - 1];
  * arithmetic lands in the same place either way, which is precisely why the matcher must
  * not choose on its own. It has no way to be right, only a way to look decided.
  */
+/**
+ * Several deposits the bank credited as ONE line.
+ *
+ * The other verdict a person has to resolve by hand, and the other one this file described
+ * without producing. Three customer cheques handed over the counter together come back as a
+ * single inward clearing for their total: nothing in the book matches it, every one of the
+ * three is left outstanding, and the two cancel out so the difference stays at zero while
+ * four rows are wrong. Treating the line as a bank charge posts money that is already in
+ * the book — which is the case /bank-statements/group exists for, and which no statement
+ * this generator produced had ever contained.
+ *
+ * Deliberately not the same movements as the ambiguous pair, and deliberately money IN, so
+ * the two cases cannot interfere: the matcher only ever considers candidates going the same
+ * way as the line.
+ */
+const groupedSet = (() => {
+  const pool = ins.filter((m) => m !== inTransit && m !== ambiguousPair?.[0] && m !== ambiguousPair?.[1]);
+  for (let i = 0; i + 2 < pool.length; i++) {
+    const three = pool.slice(i, i + 3);
+    const span = (new Date(three[2].date) - new Date(three[0].date)) / 86400000;
+    // Every member must sit inside the matcher's window relative to the line, which is
+    // dated on the last of them, and no two may share an amount — a repeated amount would
+    // make the subset search offer several equally good groupings and muddle the case.
+    const amounts = new Set(three.map((m) => m.amount));
+    if (span >= 0 && span <= 4 && amounts.size === 3) return three;
+  }
+  return null;
+})();
+const groupedIds = new Set((groupedSet || []).map((m) => m.id));
+
 const ambiguousTwin = ambiguousPair ? ambiguousPair[1] : null;
 const ambiguousGap = ambiguousPair
   ? Math.round((new Date(ambiguousPair[1].date) - new Date(ambiguousPair[0].date)) / 86400000)
@@ -130,6 +160,7 @@ for (const m of inPeriod) {
     continue;
   }
   if (ambiguousTwin && m.id === ambiguousTwin.id) continue;   // the line it would have had is the one below
+  if (groupedIds.has(m.id)) continue;                         // the bank credited these as one
   let date = m.date;
   if (drifted && m.id === drifted.id) {
     date = shift(m.date, 4);
@@ -153,6 +184,18 @@ if (ambiguousPair) {
   notes.push(`AMBIGUOUS    ${ambiguousPair[0].ref} and ${ambiguousPair[1].ref} are both ${ambiguousPair[0].amount} within ${Math.round((new Date(ambiguousPair[1].date) - new Date(ambiguousPair[0].date)) / 86400000)} days. Only ONE line is printed, with no reference in the narration, so it fits both and the matcher must refuse to choose. ${ambiguousPair[1].ref} is therefore absent from the statement.`);
 } else {
   notes.push('AMBIGUOUS    none available in this period (no two same-amount payments close together)');
+}
+
+if (groupedSet) {
+  const total = groupedSet.reduce((t, m) => t + m.amount, 0);
+  lines.push({
+    date: groupedSet[groupedSet.length - 1].date,
+    desc: `INWARD CLEARING ${groupedSet.length} ITEMS`,
+    amount: total, direction: 'in', tag: 'GROUPED'
+  });
+  notes.push(`GROUPED      ${groupedSet.map((m) => m.ref).join(' + ')} were banked together and appear as ONE line of ${total}. None of them is on the statement in its own right.`);
+} else {
+  notes.push('GROUPED      none available in this period (no three deposits close together with distinct amounts)');
 }
 
 /** Things only the bank knows. Amounts are ordinary BD retail-banking charges. */
