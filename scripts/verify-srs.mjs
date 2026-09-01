@@ -374,6 +374,48 @@ await check('The journal never has an account overdrawn at a month end either', 
     worst.length ? worst.slice(0, 3).join('; ') : `${monthEnds.length} month end(s) checked, nothing overdrawn`];
 });
 
+/**
+ * A balance sheet that meets and is still wrong.
+ *
+ * The difference being zero says every voucher balances. It says nothing about whether a
+ * voucher should have existed. Two accounts in the seeded book hold balances that only a
+ * missing entry can explain:
+ *
+ *   Prepaid expenses        -12,500   a monthly release of an annual IATA licence has been
+ *                                     running against an advance that was never posted
+ *   Accumulated depreciation  8,750   charged against Office equipment — at cost, which
+ *                                     carries nothing
+ *
+ * A negative asset on the screen an owner decides from reads as owning minus twelve
+ * thousand taka of licence. It is not netted away or floored at zero, because the floor
+ * would hide the only useful fact — and this repo has already been bitten once by a floor
+ * that turned a wrong number into the right answer (see invoiceTotals and the exchange
+ * loss). So the statement names them instead.
+ */
+await check('A negative asset or an orphan contra-asset is named on the statement', async () => {
+  const { body } = await get('/api/accounts/export?format=csv&section=balance_sheet');
+  const cells = (line) => (line.match(/"[^"]*"/g) || []).map((c) => c.slice(1, -1));
+  const rows = body.split(/\r?\n/).filter((l) => l.includes(",")).slice(1).map(cells).filter((c) => c.length >= 3);
+  const negative = rows.filter((c) => c[0] === "Assets" && !/^Total/.test(c[1]) && Number(c[2]) < 0);
+  const contra = rows.filter((c) => /accumulated depreciation/i.test(c[1]) && Number(c[2]) !== 0);
+  const atCost = rows.find((c) => /at cost/i.test(c[1]));
+  const orphan = contra.length > 0 && !atCost;
+
+  if (!negative.length && !orphan) {
+    return [true, 'no negative asset and no depreciation without a cost — nothing to disclose'];
+  }
+  const page = (await get('/accounts/financials')).body.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ");
+  const named = /can only hold (?:that balance|those balances) because a matching entry was never made/.test(page);
+  const each = [...negative.map((c) => c[1]), ...(orphan ? contra.map((c) => c[1]) : [])]
+    .filter((name) => !page.includes(name));
+  return [named && each.length === 0,
+    named && !each.length
+      ? `${negative.length} negative asset(s)${orphan ? " and depreciation on an asset carried at nothing" : ""}, each named on the statement`
+      : each.length
+        ? `not named: ${each.join(", ")}`
+        : 'the statement balances and says nothing about the half-finished entries in it'];
+});
+
 await check('No cash or bank account ever goes negative', () => {
   const out = [];
   const walk = (isCash, bankId) => {

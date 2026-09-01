@@ -252,6 +252,40 @@ export default async function FinancialsPage({
             />
           </div>
         </div>
+
+        {/*
+          THE TWO SIDES CAN MEET AND STILL BE WRONG.
+
+          The difference above is zero because every voucher balances, and it says nothing
+          about whether a voucher should have existed. Prepaid expenses sits at -12,500
+          because a monthly release of an annual IATA licence has been running against an
+          advance that was never posted, and Accumulated depreciation carries 8,750 against
+          Office equipment — at cost, which carries nothing. Both add to zero and both are
+          half an entry.
+
+          A negative asset on the screen an owner decides things from is not a rounding
+          detail: it reads as owning minus twelve thousand taka of licence. It is not netted
+          away or floored, because the floor would hide the only useful fact here.
+        */}
+        {bs.halfEntries.length > 0 && (
+          <div className="border-t border-hair bg-amber-700/5 px-5 py-4">
+            <p className="text-[13.5px] font-semibold text-navy-900">
+              {`Both sides meet, and ${bs.halfEntries.length} account${bs.halfEntries.length > 1 ? "s" : ""} can only hold ${bs.halfEntries.length > 1 ? "those balances" : "that balance"} because a matching entry was never made.`}
+            </p>
+            <ul className="mt-2 space-y-1.5">
+              {bs.halfEntries.map((h) => (
+                <li key={h.account} className="text-[12.5px] leading-relaxed text-ink">
+                  <span className="font-semibold text-navy-900">{h.account} {money(h.amount, sym)}</span> — {h.why}
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-[12px] leading-relaxed text-muted">
+              The repair is an opening-balance import — the equipment brought forward at cost, the
+              licence prepayment brought forward as an asset — not an adjustment here. A balancing
+              entry invented at this end would make the statement tidy and the history wrong.
+            </p>
+          </div>
+        )}
       </Panel>
 
       {/* --------------------------------------------------------------- cash flow */}

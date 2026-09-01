@@ -1380,7 +1380,7 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 186 checks — specification, hardening, automation
+node scripts/verify-srs.mjs      # 187 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 50 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 31 checks — manual vouchers, and the reconciliation surviving them
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**432 checks** across the six suites against the running app: each one loads a
+**433 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **186 + 50 + 39 + 31 + 69 + 57
+should accept on trust, including from me. It currently reports **187 + 50 + 39 + 31 + 69 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -2976,6 +2976,39 @@ The first version of the parser split the CSV on commas. Block names contain com
 every cell is quoted, so it read `NaN` for every number and reported the whole register
 inconsistent — a test failing on its own bug, which is the cheapest kind to mistake for a
 finding.
+
+---
+
+## A balance sheet that meets and is still wrong
+
+*Difference — must be zero: ৳0.* That says every voucher balances. It says nothing about
+whether a voucher should have existed, and two accounts in the seeded book hold balances
+that only a missing entry can explain.
+
+| Account | Balance | What it means |
+|---|---|---|
+| Prepaid expenses | **−৳12,500** | a monthly release of an annual IATA licence has been running against an advance that was never posted |
+| Accumulated depreciation — office equipment | ৳8,750 | charged monthly against *Office equipment — at cost*, which carries nothing |
+
+A **negative asset** on the screen an owner decides from reads as owning minus twelve
+thousand taka of licence. It is not netted away and not floored at zero: the floor would
+hide the only useful fact, and this repo has already been bitten once by a floor that turned
+a wrong number into the right answer — see the exchange loss in `invoiceTotals`. So the
+statement names them instead, each with the reason, derived from the ledger rather than
+written into the markup.
+
+`ACCDEP` is grouped as a liability deliberately; its own note in the chart says it is *"held
+as a liability group so the balance sheet nets it against the cost above"*. It does not net
+it — it lists it under Liabilities beside Accrued expenses — so with the cost at zero the
+statement shows depreciation on equipment that appears nowhere. The grouping is left alone,
+because moving a contra-asset is a decision for whoever owns the chart; what changed is that
+the statement no longer stays quiet about the consequence.
+
+**The repair is an opening-balance import**, not an adjustment on this screen: the equipment
+brought forward at cost, the licence prepayment brought forward as an asset. That is a gap
+this project still has, and it is listed as one. Inventing the two vouchers here would move
+৳4,65,000 through a demo book on figures nobody supplied, and would make the statement tidy
+while making the history wrong.
 
 ---
 

@@ -2288,6 +2288,51 @@ export function balanceSheet(book: Book, asAt?: string) {
 
   const assets = of('asset').map((r) => ({ name: r.account.name, amount: r.balance }));
   const liabilities = of('liability').map((r) => ({ name: r.account.name, amount: r.balance }));
+
+  /**
+   * Half-finished entries, named on the statement rather than left to be noticed.
+   *
+   * Two of them are in the seeded book and both are the same shape — a release with nothing
+   * to release, a depreciation charge on something carried at nothing:
+   *
+   *   Prepaid expenses            -12,500   one month of an annual IATA licence "paid in
+   *                                         advance" is released every month, and the
+   *                                         advance itself was never posted
+   *   Accumulated depreciation      8,750   charged monthly against Office equipment — at
+   *                                         cost, which carries zero
+   *
+   * A NEGATIVE ASSET IS NOT A SMALL PRESENTATION PROBLEM. It is the balance sheet saying the
+   * agency owns minus twelve thousand taka of licence, on the screen an owner uses to decide
+   * things. It cannot be netted away or floored at zero — that would hide the missing entry,
+   * which is the only useful thing here.
+   *
+   * ACCDEP is grouped as a liability on purpose; its own note in the chart says "held as a
+   * liability group so the balance sheet nets it against the cost above". It does not net it
+   * — it lists it under Liabilities beside Accrued expenses — so with the cost at zero the
+   * statement shows depreciation on equipment that appears nowhere. The grouping is left
+   * alone because moving it is a presentation decision for whoever owns the chart; what is
+   * fixed here is that the statement no longer stays quiet about it.
+   *
+   * The real repair is an opening-balance import — the equipment at cost and the licence
+   * prepayment brought forward — which this project does not have yet and which is listed
+   * among the gaps. Inventing the two vouchers here would move 465,000 through a demo book
+   * on figures nobody supplied.
+   */
+  const negativeAssets = assets.filter((a) => a.amount < 0);
+  const orphanContra = liabilities.filter((l) => /accumulated depreciation/i.test(l.name) && l.amount !== 0)
+    .filter(() => (of('asset').find((r) => /at cost/i.test(r.account.name))?.balance ?? 0) === 0);
+  const halfEntries = [
+    ...negativeAssets.map((a) => ({
+      account: a.name,
+      amount: a.amount,
+      why: `${a.name} is negative, which means something was taken out of it that was never put in. The entry that should have created it is missing.`
+    })),
+    ...orphanContra.map((l) => ({
+      account: l.name,
+      amount: l.amount,
+      why: `${l.name} is being charged against an asset carried at zero. Either the asset was never brought forward at cost, or the depreciation is against something the book does not own.`
+    }))
+  ];
   const income = of('income').reduce((t, r) => t + r.balance, 0);
   const expense = of('expense').reduce((t, r) => t + r.balance, 0);
   const retained = income - expense;
@@ -2306,6 +2351,8 @@ export function balanceSheet(book: Book, asAt?: string) {
     asAt: asAt ?? 'today',
     assets, liabilities, equity,
     totalAssets, totalLiabilities, totalEquity,
+    /** Accounts whose balance can only exist because a matching entry was never made. */
+    halfEntries,
     difference: totalAssets - (totalLiabilities + totalEquity)
   };
 }
