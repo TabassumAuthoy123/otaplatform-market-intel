@@ -1380,7 +1380,7 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 193 checks — specification, hardening, automation
+node scripts/verify-srs.mjs      # 195 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 50 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 31 checks — manual vouchers, and the reconciliation surviving them
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**439 checks** across the six suites against the running app: each one loads a
+**441 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **193 + 50 + 39 + 31 + 69 + 57
+should accept on trust, including from me. It currently reports **195 + 50 + 39 + 31 + 69 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -3052,6 +3052,31 @@ and not when it does not.
 The three stages partition the list exactly — `watch 0 + chase 2 + escalate 21 = 23` — which
 is worth asserting, because a filter returning more rows than the list it filters is how a
 chase list gets worked twice.
+
+---
+
+## Treasury and credit notes, asserted rather than assumed
+
+Eight transfers and three credit notes were in the book from the start, appeared on the
+screens, and had never had a property checked. Both turned out to be right — which is worth
+recording, because "we ran it and it was correct" is a different statement from "nobody has
+looked".
+
+**Banking the day's takings is not income, and drawing an office float is not an expense.**
+Both legs of a transfer must be funds accounts; the moment one is not, the day a cashier
+banks eight lakh it lands in the profit and loss and every margin on every screen moves with
+it. All eight transfers post two legs, both `CASH` or `BANK:*`, equal and opposite, never
+the same account twice — ৳49,70,000 moved and none created.
+
+**A credit note settles exactly one way.** `credit_balance` relieves the receivable and
+moves no money; any other value is a pay method and takes the money back out of that
+account. Never both, because booking both would refund a customer and forgive the debt at
+the same time. All three values are in the book and each does only its own thing.
+
+The supplier leg is a third thing again, and easy to misread from its name: a
+`supplierRefund` on a customer credit note **credits the bill** rather than sending money.
+Money actually coming back from a supplier is a `supplierCreditNote` with a pay method — the
+path exercised further up. Both reduce what is owed and only one of them touches the bank.
 
 ---
 

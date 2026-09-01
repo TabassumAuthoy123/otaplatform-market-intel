@@ -1,9 +1,9 @@
 {
   "_meta": {
     "note": "Every string on the B2C portal comes from this file. Edit it through the admin portal (http://localhost:4001) — do not hand-edit unless the admin server is stopped.",
-    "revision": 351,
+    "revision": 355,
     "lastEditedBy": "verify-probe@local",
-    "lastEditedAt": "2026-09-01 16:34:59"
+    "lastEditedAt": "2026-09-01 16:39:44"
   },
   "brand": {
     "name": "OTA Platform",

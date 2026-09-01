@@ -2402,6 +2402,94 @@ await check('The reminder stages partition the chase list exactly', async () => 
     `${Object.entries(parts).map(([k, v]) => k + " " + v).join(" + ")} = ${sum}, and the unfiltered list has ${all}`];
 });
 
+section('Treasury and credit notes');
+
+const journalRows = async () => {
+  const { body } = await get('/api/accounts/export?format=csv&section=20_JOURNAL');
+  const cells = (line) => (line.match(/"[^"]*"/g) || []).map((c) => c.slice(1, -1));
+  const lines = body.split(/\r?\n/).filter((l) => l.includes(","));
+  const head = cells(lines[0]);
+  return lines.slice(1).map((l) => {
+    const c = cells(l);
+    const row = {};
+    head.forEach((h, i) => { row[h] = c[i]; });
+    return row;
+  }).filter((r) => r.Voucher);
+};
+
+/**
+ * Banking the day's takings is not income, and drawing an office float is not an expense.
+ *
+ * Both legs of a transfer must be funds accounts. The moment one of them is not, the day a
+ * cashier banks eight lakh it lands in the profit and loss, and every margin on every
+ * screen moves with it. Eight transfers in the book, and nothing had ever checked where
+ * their two legs went.
+ */
+await check('A transfer moves money between accounts and creates none', async () => {
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const transfers = bk.transfers || [];
+  if (!transfers.length) return [true, 'no transfers in the book'];
+  const rows = await journalRows();
+  const funds = (a) => a === "CASH" || a.indexOf("BANK:") === 0;
+  const bad = [];
+  let moved = 0;
+  for (const t of transfers) {
+    const legs = rows.filter((r) => r.Voucher === t.no);
+    if (legs.length !== 2) { bad.push(`${t.no}: ${legs.length} leg(s), not two`); continue; }
+    const strayed = legs.filter((l) => !funds(l.Account));
+    if (strayed.length) { bad.push(`${t.no}: ${strayed.map((l) => l.Account).join(", ")} is not a funds account`); continue; }
+    const dr = legs.reduce((x, l) => x + Number(l.Debit), 0);
+    const cr = legs.reduce((x, l) => x + Number(l.Credit), 0);
+    if (dr !== cr || dr !== t.amount) bad.push(`${t.no}: Dr ${dr} Cr ${cr} against an amount of ${t.amount}`);
+    if (new Set(legs.map((l) => l.Account)).size !== 2) bad.push(`${t.no}: both legs hit the same account`);
+    moved += t.amount;
+  }
+  return [bad.length === 0,
+    bad.length ? bad.slice(0, 3).join("; ")
+      : `${transfers.length} transfer(s) moving ${moved.toLocaleString("en-IN")}, every leg a funds account`];
+});
+
+/**
+ * The settlement field is the whole point of a credit note, and each value does something
+ * different: `credit_balance` relieves the receivable and moves no money; anything else is
+ * a pay method and takes the money back out of that account. Exactly one of the two, never
+ * both — booking both would refund a customer and forgive the debt at the same time.
+ *
+ * All three values are in the book and none of them had been asserted.
+ */
+await check('Each credit note settlement does one thing, and the right one', async () => {
+  const bk = JSON.parse(readFileSync('content/accounting.json', 'utf8'));
+  const notes = bk.creditNotes || [];
+  if (!notes.length) return [true, 'no credit notes in the book'];
+  const rows = await journalRows();
+  const funds = (a) => a === "CASH" || a.indexOf("BANK:") === 0;
+  const bad = [];
+  const seen = new Set();
+  for (const c of notes) {
+    seen.add(c.settlement);
+    const legs = rows.filter((r) => r.Voucher === c.no && r.Type === "Credit note" && Number(r.Debit) + Number(r.Credit) === c.amount);
+    const relief = legs.filter((l) => l.Account === "AR" && Number(l.Credit) === c.amount);
+    const cashOut = legs.filter((l) => funds(l.Account) && Number(l.Credit) === c.amount);
+    if (c.settlement === "credit_balance") {
+      if (relief.length !== 1 || cashOut.length) bad.push(`${c.no}: a credit balance should relieve the receivable and move no money`);
+    } else if (cashOut.length !== 1 || relief.length) {
+      bad.push(`${c.no}: settled by ${c.settlement}, so the money should leave that account and the receivable should not be relieved`);
+    }
+  }
+  /**
+   * And the supplier leg, which is a different thing again: the supplier credits the bill
+   * rather than sending money — money coming back is a supplierCreditNote with a pay method.
+   */
+  for (const c of notes.filter((x) => x.supplierRefund > 0)) {
+    const legs = rows.filter((r) => r.Voucher === c.no && Number(r.Debit) + Number(r.Credit) === c.supplierRefund);
+    const ap = legs.find((l) => l.Account === "AP" && Number(l.Debit) === c.supplierRefund);
+    if (!ap) bad.push(`${c.no}: the supplier leg does not reduce Accounts payable`);
+  }
+  return [bad.length === 0,
+    bad.length ? bad.slice(0, 3).join("; ")
+      : `${notes.length} note(s) covering ${[...seen].sort().join(", ")}, each settling exactly one way`];
+});
+
 await check('Every check has run and none of them failed', async () => {
   const page = await fetch(`${ADMIN}/alerts`, { headers: { cookie: probe.cookie } });
   const csrf = ((await page.text()).match(/name="csrf" value="([^"]+)"/) || [])[1];
