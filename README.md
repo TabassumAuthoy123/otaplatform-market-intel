@@ -1380,10 +1380,10 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 195 checks — specification, hardening, automation
+node scripts/verify-srs.mjs      # 197 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 50 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
-node scripts/verify-journal.mjs  # 31 checks — manual vouchers, and the reconciliation surviving them
+node scripts/verify-journal.mjs  # 36 checks — manual vouchers, and the reconciliation surviving them
 node scripts/verify-bank.mjs     # 69 checks — a bank statement against the book, and every refusal
 node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**441 checks** across the six suites against the running app: each one loads a
+**448 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **195 + 50 + 39 + 31 + 69 + 57
+should accept on trust, including from me. It currently reports **197 + 50 + 39 + 36 + 69 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -2863,19 +2863,63 @@ The opening entry is now dated no later than the first thing it funds. The finan
 start is still what the year is called; it is not what the book begins on, and using it as
 though it were is what put the balance a fortnight late.
 
-### Still open: the year boundary is enforced in exactly one place
+### The year boundary: fixed
 
-A journal voucher dated 2026-06-30 is refused — *"before the financial year starts"*. An
-invoice, a receipt, a bill, a payment, an expense, a supplier deposit and a transfer on that
-date are all accepted, and 176 of them exist. So a June bank statement can be imported and
-matched but never signed off: its bank charges cannot be posted.
+A journal voucher dated 2026-06-30 used to be refused — *"is before the financial year
+starts (2026-07-01)"* — while an invoice, a receipt, a bill, a payment, an expense, a
+supplier deposit and a transfer on that date were all accepted, and **176 of them are**. So
+the one voucher type that can post anything to anywhere was the only type forbidden from the
+period the book actively trades in.
 
-That is not fixed here. Retro-validating the other collections would make 176 existing
-records unsaveable, and the real answer is a **year-end close** — carrying June out and
-bringing it back in as an opening position — which this project does not have yet and which
-is listed among the gaps below. The June import was rolled back rather than left in the book
-as a reconciliation nobody can finish.
+It cost a real thing. A June bank statement could be imported, matched and never signed off,
+because the bank's own charges on it had no date they could be posted on. The screen said
+*4 item(s) need posting to the book* and there was nowhere to post them.
 
+**The financial year start is what the year is called.** This README already said so, in the
+section above about the opening balance: *"it is not what the book begins on, and using it as
+though it were is what put the opening balance a fortnight late."* A book straddling an
+unclosed year end has trading on both sides of that name, and the journal has to reach both.
+
+What genuinely has to be refused is a date before the book **exists** — the opening balances
+arrive on that day, and a voucher before it posts against money that has not been brought in.
+That is the same defect one step earlier. So the floor is now `openingDate(book)`, which is
+the earliest dated voucher in the book or the financial year start, whichever comes first:
+
+| Voucher dated | Before | Now |
+|---|---|---|
+| 2026-06-12 | refused (wrong reason) | refused — *before this book opens (2026-06-13)* |
+| 2026-06-24 | **refused** | accepted |
+| 2026-08-15 | accepted | accepted |
+
+`openingDate()` lives in `lib/journal-rules.js` and is called by both the rule that refuses a
+voucher and the engine that dates the opening entry. Computed twice they would agree the day
+they were written and not for long after, and the drift would be a voucher the portal accepts
+and the journal posts before the money exists.
+
+**The period lock is what closes a year**, and it always was — `isLocked` uses `<=`, so a
+voucher dated on the boundary is inside the closed period. That ordering is now asserted,
+because anything that closes a year has to write its own vouchers first and set the lock
+second.
+
+A note on how these are tested: they call the shared rule directly rather than posting
+through the portal. A posted voucher can only be **reversed** — there is no delete — so a
+check that posts one to find out whether it may leaves it in the book forever. Two boundary
+probes of mine did exactly that before this was written, and the residue check did not see
+them because a journal voucher carries its text in `narration` and that field was not being
+scanned. It is now.
+
+### Still open: the close itself
+
+The boundary is fixed; **the year-end close is not built yet**. Closing FY2025-26 at
+2026-06-30 would carry out ৳2,06,09,100 of assets against ৳2,04,65,000 of opening equity and
+a result of **৳1,44,100** — the arithmetic ties to the taka, and Accounts payable at that
+date is zero because every June bill was paid in June. What is missing is the operation:
+a stored record of what was closed and at what figure, retained earnings split into brought
+forward and this year, and the lock set as part of the same act rather than as a text box.
+
+Until then `GLA-0009 — Retained earnings brought forward`, whose own note reads *"where last
+year lands once a year is closed"*, is still empty, and the balance sheet still shows one
+fused retained figure of ৳7,41,236 covering both years.
 ---
 
 ## Two BSP verdicts that could not happen

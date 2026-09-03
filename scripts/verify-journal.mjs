@@ -20,6 +20,11 @@
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { signedInProbe } from './lib/probe-session.mjs';
+import { createRequire } from 'node:module';
+
+const require = createRequire(import.meta.url);
+const JV = require('../lib/journal-rules.js');
+const LOCK = require('../lib/period-lock.js');
 
 const ADMIN = 'http://127.0.0.1:4001';
 const APP = 'http://127.0.0.1:3002';
@@ -325,6 +330,84 @@ ok('an accountant may post', acctPost.status === 302, `HTTP ${acctPost.status}`)
     bare.length <= 1, `${bare.length} such row(s)`);
   ok('and the summary says which figure it is',
     /Net profit — trading only, before journal adjustments/.test(csv), 'labelled rather than silently changed');
+}
+
+/* ------------------------- what a voucher may be dated, and why that changed */
+
+/**
+ * THE FINANCIAL YEAR IS A NAME, NOT A FLOOR.
+ *
+ * validateVoucher refused any voucher dated before company.financialYearStart, and nothing
+ * else in the product enforced that boundary at all — 176 invoices, receipts, bills,
+ * payments, expenses, supplier deposits and transfers are dated in the prior year and every
+ * one of them was accepted. So the single voucher type that can post anything to anywhere
+ * was the only type forbidden from the period the book actively traded in.
+ *
+ * It cost a real thing: a June bank statement could be imported and matched and never signed
+ * off, because the bank's own charges on it had no date they could be posted on. The screen
+ * said "4 item(s) need posting to the book" and there was nowhere to post them.
+ *
+ * These call the shared rule directly rather than through the portal. A voucher, once
+ * posted, can only be REVERSED — there is no delete — so a check that posts one to see
+ * whether it may leaves it in the book forever, which is how two probe vouchers ended up in
+ * this book before this was written.
+ */
+{
+  const live = JSON.parse(readFileSync(BOOK, 'utf8'));
+  const opens = JV.openingDate(live);
+  const fy = live.company.financialYearStart;
+  const dayBefore = new Date(Date.parse(opens) - 86400000).toISOString().slice(0, 10);
+
+  const errorsOn = (date) => JV.validateVoucher(live, {
+    date,
+    narration: 'A dated adjustment in the year being closed',
+    lines: [
+      { account: 'GL:BANKCHG', debit: 500, credit: 0 },
+      { account: 'BANK:' + live.banks[0].id, debit: 0, credit: 500 }
+    ]
+  }, LOCK.isLocked).errors;
+
+  ok('the book opens before the year it is named for',
+    Boolean(opens) && opens < fy,
+    `opens ${opens}, financial year named ${fy}`);
+
+  const prior = errorsOn(opens);
+  ok('a voucher in the prior financial year is accepted',
+    prior.length === 0,
+    prior.length ? prior.join(' | ') : `${opens} is before ${fy} and takes a posting`);
+
+  const tooEarly = errorsOn(dayBefore);
+  ok('a voucher before the book opens is refused, and says on what day it does',
+    tooEarly.some((e) => e.includes('before this book opens') && e.includes(opens)),
+    tooEarly[0] ? tooEarly[0].slice(0, 90) : 'accepted, which would post against money not yet brought in');
+
+  /**
+   * One date, two readers. lib/accounting.ts dates the opening entry with openingDate() and
+   * this rule refuses anything before it. Computed separately they would agree the day they
+   * were written and not for long after, and the drift would be a voucher the portal accepts
+   * and the journal posts before the money exists.
+   */
+  const engine = readFileSync('lib/accounting.ts', 'utf8');
+  ok('the opening entry and the floor read the same date from one place',
+    /openingDate\(book\)/.test(engine) && /openingDate/.test(readFileSync('lib/journal-rules.js', 'utf8')),
+    'both call openingDate() in lib/journal-rules.js');
+
+  /**
+   * And the lock is what actually protects a closed year. It uses <=, so a voucher dated ON
+   * the boundary is inside it — which is why anything that closes a period has to write its
+   * own vouchers first and set the lock second.
+   */
+  const locked = { ...live, lockedThrough: opens };
+  const onBoundary = JV.validateVoucher(locked, {
+    date: opens, narration: 'x',
+    lines: [
+      { account: 'GL:BANKCHG', debit: 500, credit: 0 },
+      { account: 'BANK:' + live.banks[0].id, debit: 0, credit: 500 }
+    ]
+  }, LOCK.isLocked).errors;
+  ok('the lock, not the year, is what closes a period — and it includes its own last day',
+    onBoundary.some((e) => e.includes('closed period')),
+    'so a close writes its vouchers first and sets the lock second');
 }
 
 const failed = results.filter((r) => !r).length;

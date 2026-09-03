@@ -1,7 +1,7 @@
 // eslint-disable-next-line @typescript-eslint/no-var-requires -- shared with the zero-dependency admin portal
 import { floatRows } from '@/lib/supplier-float.js';
 import type { BankReconciliation, BankStatement } from '@/lib/bankrec';
-import { chartAccounts } from '@/lib/journal-rules.js';
+import { chartAccounts, openingDate } from '@/lib/journal-rules.js';
 import { adjustmentFor, controlAdjustments } from '@/lib/journals';
 // Type-only, so the cycle with lib/journals.ts is erased at compile time rather than
 // existing at runtime. The voucher type lives with its rules, not with the engine.
@@ -1771,20 +1771,13 @@ function buildJournal(book: Book): JournalLine[] {
    * position — is still missing and is tracked as such; this makes the arithmetic honest
    * in the meantime rather than pretending the June data is not there.
    */
-  const earliestDated = [
-    ...book.invoices, ...book.receipts, ...book.bills, ...book.payments, ...book.expenses,
-    ...(book.supplierDeposits ?? []), ...(book.transfers ?? []),
-    ...(book.creditNotes ?? []), ...(book.supplierCreditNotes ?? [])
-  ].reduce<string | null>((min, r) => {
-    const d = (r as { date?: string }).date;
-    return d && (!min || d < min) ? d : min;
-  }, null);
-  const openingDate =
-    earliestDated && earliestDated < book.company.financialYearStart
-      ? earliestDated
-      : book.company.financialYearStart;
+  // One definition, shared with the rule that refuses a voucher before it — see openingDate
+  // in lib/journal-rules.js. Computed here as well, the two would agree today and drift later,
+  // and the drift would be a voucher the portal accepts and the journal posts before the
+  // money exists.
+  const opening = openingDate(book) ?? book.company.financialYearStart;
   const openingTotal = book.company.openingCash + book.banks.reduce((t, b) => t + b.openingBalance, 0);
-  post(openingDate, 'OPENING', 'Opening', '', 'Opening balances brought forward', [
+  post(opening, 'OPENING', 'Opening', '', 'Opening balances brought forward', [
     { account: AC.CASH, debit: book.company.openingCash },
     ...book.banks.map((b) => ({ account: AC.bank(b.id), debit: b.openingBalance })),
     { account: AC.EQUITY, credit: openingTotal }

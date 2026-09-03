@@ -356,7 +356,11 @@ await check('No test residue is left in the book', () => {
   for (const [col, rows] of Object.entries(book)) {
     if (!Array.isArray(rows)) continue;
     for (const r of rows) {
-      const text = [r.notes, r.ref, r.reason, r.description].filter((v) => typeof v === 'string').join(' ');
+      // narration too. Two boundary-probe journal vouchers sat in the book and this check did
+      // not see them, because a journal voucher carries its text in narration and nothing else —
+      // and a voucher, once posted, can only be reversed, so residue there is permanent.
+      const text = [r.notes, r.ref, r.reason, r.description, r.narration]
+        .filter((v) => typeof v === 'string').join(' ');
       if (marker.test(text)) found.push(`${col}/${r.id}`);
     }
   }
