@@ -427,11 +427,17 @@ function buildSheets(book: Book, from?: string, to?: string): Sheet[] {
   sheets.push({
     name: '19_GENERAL_LEDGER',
     title: 'General ledger — account balances',
-    head: ['Code', 'Account', 'Group', 'Debits', 'Credits', 'Balance'],
-    widths: [16, 38, 14, 18, 18, 18],
-    note: `Period: ${period}. Balance is signed by the account's natural side.`,
+    head: ['Code', 'Account', 'Group', 'Opening', 'Debits', 'Credits', 'Balance'],
+    widths: [16, 38, 14, 18, 18, 18, 18],
+    // Opening is what the account carried into the window. Without it a bounded ledger prints
+    // debits, credits and a balance that cannot be reconciled to each other by eye — and for
+    // income and expense, which do not carry, it is always zero and says so.
+    note: `Period: ${period}. Balance is signed by the account's natural side. Assets, ` +
+      `liabilities and equity carry their opening into the window; income and expense start ` +
+      `each period at nothing, which is what closing them to retained earnings means.`,
     rows: gl.summary.map((r): Row => [
-      r.account.code, r.account.name, r.account.group, n0(r.debit), n0(r.credit), n0(r.balance)
+      r.account.code, r.account.name, r.account.group,
+      n0(r.opening), n0(r.debit), n0(r.credit), n0(r.balance)
     ])
   });
 

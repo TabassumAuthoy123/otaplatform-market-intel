@@ -110,6 +110,42 @@ async function reconciliationRows() {
     return row;
   });
 }
+/**
+ * One account off the general ledger, BY COLUMN NAME.
+ *
+ * Two checks read this report at c[3], c[4], c[5]. The export then grew an Opening column and
+ * they were silently reading Opening, Debits and Credits while calling them Debits, Credits and
+ * Balance — so the exchange-loss check reported 'gains only, which is what the old allocate()
+ * could produce' about a book that had just been given a loss. A green-to-red flip would have
+ * been obvious; this was a check confidently describing the wrong column.
+ *
+ * The rule is already in this file, learned expensively, in the check named right below the
+ * integrity job: no monitoring job reads a report column by position. Adding one column found
+ * four places that did it anyway, two of them written in the last few days.
+ */
+const glRows = async (window = '') => {
+  const { body } = await get(`/api/accounts/export?format=csv&section=generalledger${window}`);
+  const cell = (line) => (line.match(/"[^"]*"/g) || []).map((c) => c.slice(1, -1));
+  const lines = body.split(/\r?\n/).filter((l) => l.includes(','));
+  const head = cell(lines[0]);
+  return lines.slice(1).map((line) => {
+    const c = cell(line);
+    const row = {};
+    head.forEach((h, i) => { row[h] = c[i]; });
+    return row;
+  }).filter((r) => r.Code);
+};
+
+const ledgerRow = async (code) => {
+  const r = (await glRows()).find((x) => x.Code === code);
+  if (!r) return null;
+  return {
+    code: r.Code, name: r.Account, group: r.Group,
+    opening: Number(r.Opening ?? 0),
+    debits: Number(r.Debits), credits: Number(r.Credits), balance: Number(r.Balance)
+  };
+};
+
 /** Never 'the fourth cell' again. */
 const difference = (row) => Number(row.Difference);
 
@@ -346,6 +382,80 @@ await check('No test residue is left in the book', () => {
  *
  * Asked at every month end, since that is where a report is actually cut.
  */
+/**
+ * A DATE-RANGED LEDGER USED TO REPORT ITS MOVEMENTS AS BALANCES.
+ *
+ * buildBalances dropped every posting before `from` and reported what was left as the
+ * account balance. For income and expense that is right and is the point — a year's sales
+ * are that year's sales. For cash it is nonsense. Asked for the ledger from 2026-07-01 the
+ * book said Cash -8,11,350 and Dutch-Bangla -97,76,324, and carried no equity at all,
+ * because the opening entry is dated 2026-06-13 and fell outside the window too.
+ *
+ * Nothing was wrong with the numbers; they were July's movements wearing the word Balance.
+ * The agency did not spend ninety-seven lakh it did not have — it started the window holding
+ * it. Every screen offering a period does this: the statements presets, the financials
+ * range, the export.
+ *
+ * The distinction is the oldest one in the subject and is the same one a year-end close is
+ * built on: real accounts carry a position across a boundary, nominal accounts do not, which
+ * is what makes closing them to retained earnings mean something.
+ */
+await check('A ledger window carries a position in, rather than starting at nothing', async () => {
+  const cut = book.company.financialYearStart;
+  const dayBefore = new Date(Date.parse(cut) - 86400000).toISOString().slice(0, 10);
+  const whole = await glRows();
+  const upTo = await glRows(`&to=${dayBefore}`);
+  const window = await glRows(`&from=${cut}`);
+  const by = (rs) => Object.fromEntries(rs.map((r) => [r.Code, r]));
+  const W = by(whole), U = by(upTo), N = by(window);
+
+  const real = (r) => r.Group === "asset" || r.Group === "liability" || r.Group === "equity";
+  const bad = [];
+  let carried = 0;
+  for (const code of Object.keys(W)) {
+    const row = N[code];
+    if (!row || !real(row)) continue;
+    const opening = Number(row.Opening);
+    const closing = Number(row.Balance);
+    const positionAtCut = U[code] ? Number(U[code].Balance) : 0;
+    // What it held at the cut IS what the window brings forward.
+    if (opening !== positionAtCut) {
+      bad.push(`${code}: window opens at ${opening}, but the book says ${positionAtCut} as at ${dayBefore}`);
+    }
+    // And carrying it forward has to land on the same closing figure as never cutting at all.
+    if (closing !== Number(W[code].Balance)) {
+      bad.push(`${code}: window closes at ${closing}, whole book says ${W[code].Balance}`);
+    }
+    if (opening !== 0) carried++;
+  }
+  if (!carried) return [false, 'no real account carries anything into the window — the cut is in the wrong place to test this'];
+  return [bad.length === 0,
+    bad.length ? bad.slice(0, 3).join("; ")
+      : `${carried} account(s) bring a position into ${cut}, and every one closes where the uncut book does`];
+});
+
+/**
+ * The other half of the same rule, and the one a close depends on: a nominal account starts
+ * every window at nothing. Its opening is reported — an accountant wants to see last year
+ * beside this one — but it is not added in, or a year-end close could never mean anything.
+ */
+await check('Income and expense start each window at nothing, however much they did before', async () => {
+  const cut = book.company.financialYearStart;
+  const window = await glRows(`&from=${cut}`);
+  const nominal = window.filter((r) => r.Group === "income" || r.Group === "expense");
+  if (!nominal.length) return [true, 'no income or expense inside the window'];
+  const bad = nominal.filter((r) => {
+    const movement = Number(r.Debits) - Number(r.Credits);
+    const signed = r.Group === "expense" ? movement : -movement;
+    return Number(r.Balance) !== signed;
+  });
+  const withHistory = nominal.filter((r) => Number(r.Opening) !== 0);
+  return [bad.length === 0,
+    bad.length
+      ? `carried a prior balance into the window: ${bad.map((r) => r.Code).join(", ")}`
+      : `${nominal.length} nominal account(s), ${withHistory.length} with a prior year shown beside them and none of it counted`];
+});
+
 await check('The journal never has an account overdrawn at a month end either', async () => {
   const dates = [];
   for (const [, rows] of Object.entries(book)) {
@@ -362,12 +472,22 @@ await check('The journal never has an account overdrawn at a month end either', 
   const worst = [];
   for (const to of monthEnds) {
     const { body } = await get(`/api/accounts/export?format=csv&section=generalledger&to=${to}`);
-    for (const line of body.split(/\r?\n/)) {
-      const c = (line.match(/"[^"]*"/g) || []).map((x) => x.slice(1, -1));
+    // BY NAME, never by position. This read c[5] until the export gained an Opening column,
+    // at which point c[5] became Credits and the check would have been comparing a month's
+    // credits against zero. Same mistake, same file, as the integrity job that indexed the
+    // reconciliation difference at c[3] and then raised ten alerts against a correct book.
+    const cells = (line) => (line.match(/"[^"]*"/g) || []).map((x) => x.slice(1, -1));
+    const lines = body.split(/\r?\n/).filter((l) => l.includes(','));
+    const head = cells(lines[0]);
+    const at = (name) => head.indexOf(name);
+    if (at('Balance') < 0 || at('Code') < 0) return [false, 'the general ledger export has no Code/Balance column'];
+    for (const line of lines.slice(1)) {
+      const c = cells(line);
       if (!c.length) continue;
-      if (c[0] !== 'CASH' && c[0].indexOf('BANK:') !== 0) continue;
-      const balance = Number(c[5]);
-      if (balance < 0) worst.push(`${c[1]} at ${to}: ${balance.toLocaleString('en-IN')}`);
+      const code = c[at('Code')];
+      if (code !== 'CASH' && code.indexOf('BANK:') !== 0) continue;
+      const balance = Number(c[at('Balance')]);
+      if (balance < 0) worst.push(`${c[at('Account')]} at ${to}: ${balance.toLocaleString('en-IN')}`);
     }
   }
   return [worst.length === 0,
@@ -1104,15 +1224,10 @@ await check('The control side and the journal share one allocation', async () =>
  * worse one, and a customer who rounded 9,600 up to 10,000 in taka.
  */
 await check('An exchange gain and an overpayment are told apart, not merged', async () => {
-  const { body } = await get('/api/accounts/export?format=csv&section=generalledger');
-  const row = (code) => {
-    const line = body.split(/\r?\n/).find((l) => l.startsWith('"' + code + '"'));
-    if (!line) return null;
-    const c = line.split('","').map((x) => x.replace(/"/g, ''));
-    return { group: c[2], debits: Number(c[3]), credits: Number(c[4]), balance: Number(c[5]) };
-  };
-  const fx = row('FX_GAIN');
-  const cc = row('CUSTOMER_CREDIT');
+  // The shared helper rather than a second copy — this was the fourth positional read of
+  // this report in this file.
+  const fx = await ledgerRow('FX_GAIN');
+  const cc = await ledgerRow('CUSTOMER_CREDIT');
   if (!fx || !cc) return [false, 'the two accounts are not both in the general ledger'];
   if (fx.balance === 0 && cc.balance === 0) return [false, 'neither account has ever been posted to'];
   const separated = fx.group === 'income' && cc.group === 'liability' && cc.debits === 0;
@@ -2011,14 +2126,6 @@ section('Foreign settlement');
  * rather than source checks wherever possible, because reading the source is what missed
  * them the first time.
  */
-
-const ledgerRow = async (code) => {
-  const { body } = await get('/api/accounts/export?format=csv&section=generalledger');
-  const line = body.split(/\r?\n/).find((l) => l.startsWith('"' + code + '"'));
-  if (!line) return null;
-  const c = line.split('","').map((x) => x.replace(/"/g, ''));
-  return { code: c[0], name: c[1], group: c[2], debits: Number(c[3]), credits: Number(c[4]), balance: Number(c[5]) };
-};
 
 /**
  * allocate() could only ever report a GAIN. It asked whether cash was left over once the

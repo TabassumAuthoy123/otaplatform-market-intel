@@ -2052,7 +2052,7 @@ export function generalLedger(book: Book, account?: string, from?: string, to?: 
 
   // The whole-book summary is asked for by four different callers on one page.
   const summaryKey = `glSummary:${from ?? ''}:${to ?? ''}`;
-  const balances = oncePerBook(book, summaryKey, () => buildBalances(all, inRange));
+  const balances = oncePerBook(book, summaryKey, () => buildBalances(all, inRange, from));
 
   if (!account) {
     const summary = summariseBalances(chart, balances);
@@ -2061,20 +2061,67 @@ export function generalLedger(book: Book, account?: string, from?: string, to?: 
   return ledgerCard(book, chart, all, balances, account, from, to);
 }
 
-type Balances = Map<string, { debit: number; credit: number }>;
+type Balances = Map<string, { debit: number; credit: number; openingDebit: number; openingCredit: number }>;
 
 /** Debit-natured groups carry a positive balance on the debit side. */
 const naturalSign = (g: AccountGroup) => (g === 'asset' || g === 'expense' ? 1 : -1);
 
-/** One pass over the postings, totalled per account. */
-function buildBalances(all: JournalLine[], inRange: (d: string) => boolean): Balances {
+/**
+ * One pass over the postings, totalled per account — and separately, what the account had
+ * already done BEFORE the window opened.
+ *
+ * WHY A BOUNDED LEDGER NEEDED A BROUGHT-FORWARD AT ALL
+ *
+ * This dropped every line before `from` and reported what was left as the account's balance.
+ * For an income or expense account that is right and is the whole point: a year's sales are
+ * that year's sales. For cash it is nonsense. Asked for the ledger from 2026-07-01 the book
+ * said:
+ *
+ *   Cash                    -8,11,350
+ *   Dutch-Bangla Bank      -97,76,324
+ *   Opening equity          (not on the report at all)
+ *
+ * Those are July's MOVEMENTS wearing the word Balance. The agency did not spend ninety-seven
+ * lakh it did not have; it started the window holding it. The opening entry is dated
+ * 2026-06-13, so a window opening on 1 July dropped that too and the report carried no equity
+ * whatsoever while still calling itself a ledger.
+ *
+ * The distinction is the oldest one in the subject, and it is the same distinction a year-end
+ * close is built on: REAL accounts — assets, liabilities, equity — carry their position across
+ * a period boundary, and NOMINAL accounts — income and expense — do not, which is what makes
+ * closing them to retained earnings meaningful. So the bound is applied to both and they are
+ * reported separately: `opening` for what was carried in, `movement` for what the window did,
+ * and `balance` for whichever of the two that account is actually asking about.
+ *
+ * ledgerCard() has computed exactly this per account since it was written (see `opening`
+ * below it) and cashFlow() computes it for funds. Only the summary — which is what the P&L,
+ * the trial balance and every export are built from — went without.
+ */
+function buildBalances(all: JournalLine[], inRange: (d: string) => boolean, from?: string): Balances {
   const balances: Balances = new Map();
+  const at = (code: string) => {
+    let cur = balances.get(code);
+    if (!cur) {
+      cur = { debit: 0, credit: 0, openingDebit: 0, openingCredit: 0 };
+      balances.set(code, cur);
+    }
+    return cur;
+  };
+
   for (const l of all) {
+    // Before the window is brought forward. After it is neither — a report to 30 June must not
+    // be told about July, and an opening is a position at a moment, not everything that is not
+    // in range.
+    if (from && l.date < from) {
+      const cur = at(l.account);
+      cur.openingDebit += l.debit;
+      cur.openingCredit += l.credit;
+      continue;
+    }
     if (!inRange(l.date)) continue;
-    const cur = balances.get(l.account) ?? { debit: 0, credit: 0 };
+    const cur = at(l.account);
     cur.debit += l.debit;
     cur.credit += l.credit;
-    balances.set(l.account, cur);
   }
   return balances;
 }
@@ -2083,15 +2130,28 @@ function buildBalances(all: JournalLine[], inRange: (d: string) => boolean): Bal
 function summariseBalances(chart: Account[], balances: Balances) {
   const summary = chart
     .map((a) => {
-      const b = balances.get(a.code) ?? { debit: 0, credit: 0 };
+      const b = balances.get(a.code) ?? { debit: 0, credit: 0, openingDebit: 0, openingCredit: 0 };
+      const sign = naturalSign(a.group);
+      const opening = (b.openingDebit - b.openingCredit) * sign;
+      const movement = (b.debit - b.credit) * sign;
+      /**
+       * A real account carries; a nominal one does not. Unbounded, `opening` is always 0 and
+       * `balance` is what it always was, so nothing that does not ask for a window changes.
+       */
+      const carries = a.group === 'asset' || a.group === 'liability' || a.group === 'equity';
       return {
         account: a,
         debit: b.debit,
         credit: b.credit,
-        balance: (b.debit - b.credit) * naturalSign(a.group)
+        opening,
+        movement,
+        carries,
+        balance: carries ? opening + movement : movement
       };
     })
-    .filter((r) => r.debit !== 0 || r.credit !== 0);
+    // An account that only moved before the window still has a position to report, and
+    // dropping it is how a report loses its equity.
+    .filter((r) => r.debit !== 0 || r.credit !== 0 || (r.carries && r.opening !== 0));
 
   /**
    * Postings whose account is no longer in the chart, kept rather than dropped.
@@ -2116,7 +2176,7 @@ function summariseBalances(chart: Account[], balances: Balances) {
   const known = new Set(chart.map((a) => a.code));
   for (const [code, b] of balances) {
     if (known.has(code)) continue;
-    if (b.debit === 0 && b.credit === 0) continue;
+    if (b.debit === 0 && b.credit === 0 && b.openingDebit === 0 && b.openingCredit === 0) continue;
     const account: Account = {
       code,
       name: `${code} — account no longer in the chart`,
@@ -2124,7 +2184,12 @@ function summariseBalances(chart: Account[], balances: Balances) {
       // a classification to trust.
       group: 'asset'
     };
-    summary.push({ account, debit: b.debit, credit: b.credit, balance: b.debit - b.credit });
+    const opening = b.openingDebit - b.openingCredit;
+    summary.push({
+      account, debit: b.debit, credit: b.credit,
+      opening, movement: b.debit - b.credit, carries: true,
+      balance: opening + (b.debit - b.credit)
+    });
   }
   return summary;
 }
