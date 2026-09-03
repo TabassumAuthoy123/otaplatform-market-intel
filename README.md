@@ -1380,10 +1380,10 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 197 checks — specification, hardening, automation
+node scripts/verify-srs.mjs      # 203 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 50 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
-node scripts/verify-journal.mjs  # 36 checks — manual vouchers, and the reconciliation surviving them
+node scripts/verify-journal.mjs  # 40 checks — manual vouchers, and the reconciliation surviving them
 node scripts/verify-bank.mjs     # 69 checks — a bank statement against the book, and every refusal
 node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**448 checks** across the six suites against the running app: each one loads a
+**458 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **197 + 50 + 39 + 36 + 69 + 57
+should accept on trust, including from me. It currently reports **203 + 50 + 39 + 40 + 69 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -2908,18 +2908,97 @@ probes of mine did exactly that before this was written, and the residue check d
 them because a journal voucher carries its text in `narration` and that field was not being
 scanned. It is now.
 
-### Still open: the close itself
+### The close
 
-The boundary is fixed; **the year-end close is not built yet**. Closing FY2025-26 at
-2026-06-30 would carry out ৳2,06,09,100 of assets against ৳2,04,65,000 of opening equity and
-a result of **৳1,44,100** — the arithmetic ties to the taka, and Accounts payable at that
-date is zero because every June bill was paid in June. What is missing is the operation:
-a stored record of what was closed and at what figure, retained earnings split into brought
-forward and this year, and the lock set as part of the same act rather than as a text box.
+Closing FY2026 at 2026-06-30 on the demo book:
 
-Until then `GLA-0009 — Retained earnings brought forward`, whose own note reads *"where last
-year lands once a year is closed"*, is still empty, and the balance sheet still shows one
-fused retained figure of ৳7,41,236 covering both years.
+| | |
+|---|---|
+| Retained earnings brought forward | ৳1,44,100 |
+| Profit for the year | ৳5,97,136 |
+| **Unchanged** | **৳7,41,236** |
+
+Total assets, total liabilities and total equity do not move. The balance sheet difference
+stays zero, both trial balances stay zero, and all twelve reconciliation rows still agree.
+**A close moves no money** — it re-labels equity and seals the period.
+
+#### It posts nothing, and that is the design
+
+The obvious implementation is a closing journal voucher. It would land on `SALES`,
+`SALES_RETURNS`, every `EXP:*`, `AR`, `AP`, `CUSTOMER_CREDIT` and every bank — all of them
+control accounts — so **every closed year would add twenty-odd permanent rows to the
+reconciling-items list**. `reconciliation()` would stay green either way, because
+`control + adjustment − ledger` nets to zero. But that list exists so a person reads it item
+by item, and burying it under annual housekeeping is how it stops being read.
+
+A posted close also inherits the hazard this README already records for the work-in-progress
+problem: *"a voucher can be posted twice, and posting it twice takes the difference to MINUS
+867,000 with every check still reading clean."*
+
+So the cut is **evidence**, and one rule keeps it honest:
+
+> The cut exports a **date** to the reports and a **figure** to nothing.
+
+`balanceSheet` splits retained earnings at the close date and re-derives both halves from the
+same journal. It never reads the recorded profit, even though the two must be equal — they
+must be equal, and `closedYearDrift` is where that is *asserted* rather than assumed. The
+recorded figures are read by exactly one function, whose output feeds no other calculation.
+
+#### Every cut records both derivations
+
+What the journal said, and what the vouchers said. One number is a claim; two derived by
+routes that cannot see each other, landing in the same place, is evidence. **A year the book
+cannot agree with itself about is refused rather than filed** — on this book both routes came
+to ৳1,44,100.
+
+#### Both or neither, by construction
+
+One `guardedSave` writes the cut, the lock and the year's name together, so there is no
+instant in which the period is sealed and nothing says why. That also dodges an ordering trap
+a posted close cannot: `isLocked` uses `<=`, so a lock set first makes a voucher dated on the
+boundary unwritable.
+
+Refused: a year that has not finished, a date that is not a year end, a year already closed,
+drafts inside the period that could never afterwards be confirmed, bank statements overlapping
+it that were never signed off, a book that moved between the preview and the click, and any
+half-finished entry inside the year that has not been acknowledged in writing.
+
+#### The portal derives no figure
+
+It has no TypeScript and no build step, so it cannot run the ledger — and a second
+implementation of *"what did this year make"*, living inside the thing that files the answer,
+would be a copy nothing checks. It asks the app, renders what comes back, and asks **again**
+server-side at the moment of the close. What is recorded is the second answer: a figure that
+made a round trip through a form is a figure somebody could have edited.
+
+#### Watched, not guarded
+
+`lib/period-lock.js` reads four field names, so a date can reach a closed year without being
+on the record that was written — a bank's `openingBalance` moves the opening entry, a
+repointed invoice line moves a deferral. Catching those means asking the guard what a record
+posts on, which means calling the journal from the guard, and then **the guard and the journal
+are one derivation**. So the holes are not closed. Every filed year is re-derived on every page
+load and anything that has moved is named, on the screen and at
+`/api/accounts/year-end/drift`.
+
+A filed year is never deleted. Reopening stamps the cut with who, when and why, and restores
+exactly what the close recorded moving — so *"who reopened June, and what has moved since"* is
+answerable from the book itself, not only from the audit log, which a backup restore can
+overwrite.
+
+Closing a year is its own capability now. It lived under `design`, alongside the storefront
+theme, which put sealing a year in the same hands as changing a hero image and **out** of the
+hands of the Accountant who would actually do it.
+
+#### Two things the close found in the suites
+
+`verify-journal` restored `lockedThrough` to `null` rather than to what it was, which silently
+unlocked a filed year for the rest of the run. Harmless while the answer was always null.
+
+And a boundary check asserted that a prior-year date is *accepted* — true until somebody closed
+the prior year, after which it is correctly refused by the lock. It had memorised a state
+rather than a rule and went red on the feature working. It now asserts the rule: a date is
+never refused for being before the financial year **start**.
 ---
 
 ## Two BSP verdicts that could not happen
