@@ -2601,6 +2601,129 @@ await check('Each credit note settlement does one thing, and the right one', asy
       : `${notes.length} note(s) covering ${[...seen].sort().join(", ")}, each settling exactly one way`];
 });
 
+section('Year end');
+
+/**
+ * A CLOSE MOVES NO MONEY.
+ *
+ * It records what both derivations said about the year, seals the period, and moves the
+ * year's name forward. It posts nothing. So the three totals on the balance sheet cannot
+ * change and neither trial balance can stop being zero — and the one figure that DOES change
+ * has to change by redistribution: retained earnings splits into what last year made and
+ * what this year has, and the two halves still add to income less expense over the same
+ * journal.
+ *
+ * If that sum ever moves, the close has invented or lost something, which is the whole
+ * failure worth guarding against.
+ */
+await check('Retained earnings, split at the close, still equals income less expense', async () => {
+  const bs = await (await fetch(`${APP}/api/accounts/export?format=csv&section=balance_sheet`)).text();
+  const cells = (line) => (line.match(/"[^"]*"/g) || []).map((c) => c.slice(1, -1));
+  const rows = bs.split(/\r?\n/).filter((l) => l.includes(",")).map(cells).filter((c) => c.length >= 3);
+  const equity = rows.filter((c) => c[0] === "Equity" && !/^Total/i.test(c[1]));
+  const retainedRows = equity.filter((c) => /retained|profit for/i.test(c[1]));
+  const retained = retainedRows.reduce((t, c) => t + Number(c[2]), 0);
+
+  const gl = await glRows();
+  const grp = (g) => gl.filter((r) => r.Group === g).reduce((t, r) => t + Number(r.Balance), 0);
+  const ledger = grp("income") - grp("expense");
+
+  return [Math.round(retained) === Math.round(ledger),
+    `${retainedRows.length} retained line(s) totalling ${retained.toLocaleString("en-IN")} against ${ledger.toLocaleString("en-IN")} in the ledger`];
+});
+
+await check('A closed year is split out rather than fused into this year', async () => {
+  const closed = (book.closes || []).filter((c) => !c.reopened);
+  if (!closed.length) return [true, 'no year has been closed'];
+  const bs = await (await fetch(`${APP}/api/accounts/export?format=csv&section=balance_sheet`)).text();
+  const cells = (line) => (line.match(/"[^"]*"/g) || []).map((c) => c.slice(1, -1));
+  const rows = bs.split(/\r?\n/).filter((l) => l.includes(",")).map(cells).filter((c) => c.length >= 3);
+  const brought = rows.find((c) => c[0] === "Equity" && /brought forward/i.test(c[1]));
+  const thisYear = rows.find((c) => c[0] === "Equity" && /profit for/i.test(c[1]));
+  const last = closed[closed.length - 1];
+  if (!brought || !thisYear) return [false, 'the balance sheet still shows one fused retained figure'];
+  /**
+   * The brought-forward figure is RE-DERIVED by the balance sheet, never read from the cut.
+   * They must be equal, and asserting that here is the point: reading the stored number
+   * there instead would make the statement and the close share a term, and two derivations
+   * that share a term agreeing is not evidence.
+   */
+  return [Number(brought[2]) === last.ledger.cumulativeProfit,
+    `balance sheet brings forward ${Number(brought[2]).toLocaleString("en-IN")}, the cut filed ${last.ledger.cumulativeProfit.toLocaleString("en-IN")}, and this year stands at ${Number(thisYear[2]).toLocaleString("en-IN")}`];
+});
+
+/**
+ * The close records BOTH derivations because one number is a claim and two that agree are
+ * evidence. Filing a year the book cannot agree with itself about is refused, so a cut that
+ * exists must have agreed when it was filed.
+ */
+await check('Every filed year agreed with itself when it was filed', async () => {
+  const closed = book.closes || [];
+  if (!closed.length) return [true, 'no year has been closed'];
+  const bad = closed.filter((c) => c.ledger.yearProfit !== c.control.netProfit);
+  return [bad.length === 0,
+    bad.length
+      ? bad.map((c) => `${c.label}: journal ${c.ledger.yearProfit} vs vouchers ${c.control.netProfit}`).join("; ")
+      : closed.map((c) => `${c.label} at ${c.ledger.yearProfit.toLocaleString("en-IN")}, both ways`).join(", ")];
+});
+
+/**
+ * And it is still true NOW. The lock guards the dates a record carries, and a date can reach
+ * a closed year without being on the record that was written — a bank opening balance moves
+ * the opening entry, a repointed invoice line moves a deferral. Those holes are not closed,
+ * because closing them means asking the guard what a record posts on, which means calling the
+ * journal from the guard. They are watched instead.
+ */
+await check('A filed year still derives to what was filed', async () => {
+  const res = await fetch(`${APP}/api/accounts/year-end/drift`);
+  const j = await res.json();
+  if (!j.closes) return [true, 'no year has been closed'];
+  const moved = j.drift.filter((d) => !d.clean);
+  return [j.clean,
+    moved.length
+      ? moved.map((d) => `${d.cut.label}: ${d.moved.map((m) => m.what + " " + m.filed + " -> " + m.now).join(", ")}`).join("; ")
+      : `${j.closes} filed year(s), every figure still where it was left`];
+});
+
+/**
+ * With no dates the P&L means "since the last close", not "ever". A closed year's trading
+ * still counted would be reporting a profit the owner already took, which is the entire
+ * reason a year gets closed.
+ */
+await check('A P&L with no dates means since the last close', async () => {
+  const closed = (book.closes || []).filter((c) => !c.reopened);
+  if (!closed.length) return [true, 'no year has been closed'];
+  const through = closed[closed.length - 1].closedThrough;
+  const pl = await (await fetch(`${APP}/api/accounts/export?format=csv&section=profit_and_loss`)).text();
+  const line = pl.split(/\r?\n/).find((l) => /^"Net profit"/.test(l.trim()));
+  if (!line) return [false, 'no net profit row on the P&L'];
+  const shown = Number((line.match(/"([^"]*)"$/) || [])[1]);
+  const gl = await glRows();
+  const grp = (g) => gl.filter((r) => r.Group === g).reduce((t, r) => t + Number(r.Balance), 0);
+  const wholeBook = grp("income") - grp("expense");
+  const filed = closed[closed.length - 1].ledger.cumulativeProfit;
+  return [Math.round(shown) === Math.round(wholeBook - filed),
+    `P&L says ${shown.toLocaleString("en-IN")}; whole book ${wholeBook.toLocaleString("en-IN")} less ${filed.toLocaleString("en-IN")} filed to ${through}`];
+});
+
+/**
+ * A close posts NOTHING, and that is what keeps the reconciling-items list readable. A
+ * closing voucher would land on SALES, every EXP:*, AR, AP and every bank — all control
+ * accounts — putting twenty-odd permanent rows there per closed year. The list exists so a
+ * person reads it item by item.
+ */
+await check('Closing a year adds nothing to the reconciling items', async () => {
+  const closed = (book.closes || []).filter((c) => !c.reopened);
+  if (!closed.length) return [true, 'no year has been closed'];
+  const through = closed[closed.length - 1].closedThrough;
+  const inside = (book.journalEntries || []).filter((v) => v.date && v.date <= through);
+  const closing = inside.filter((v) => /clos(e|ing)|year[- ]end|carry|carried forward/i.test(v.narration || ""));
+  return [closing.length === 0,
+    closing.length
+      ? `${closing.length} closing voucher(s) were posted: ${closing.map((v) => v.no).join(", ")}`
+      : `${inside.length} voucher(s) inside the closed year, none of them the close`];
+});
+
 await check('Every check has run and none of them failed', async () => {
   const page = await fetch(`${ADMIN}/alerts`, { headers: { cookie: probe.cookie } });
   const csrf = ((await page.text()).match(/name="csrf" value="([^"]+)"/) || [])[1];

@@ -125,6 +125,16 @@ ok('an account not in the chart is refused', unknown.status === 422 && /not an a
 /* ------------------------------------------------------ the period lock */
 {
   const cur = JSON.parse(readFileSync(BOOK, 'utf8'));
+  /**
+   * Put back what was there, not null.
+   *
+   * This restored `lockedThrough = null` unconditionally, which was harmless for as long as
+   * the answer was always null anyway. Once a year could actually be closed it silently
+   * unlocked a filed year for the whole rest of the run — and the check that noticed was the
+   * one asserting a closed year stays sealed, which read like the lock was broken rather than
+   * like the test had opened it.
+   */
+  const was = cur.lockedThrough ?? null;
   cur.lockedThrough = '2026-08-31';
   writeFileSync(BOOK, JSON.stringify(cur, null, 2));
   const locked = await post({
@@ -134,7 +144,7 @@ ok('an account not in the chart is refused', unknown.status === 422 && /not an a
   ok('a voucher dated inside a closed period is refused',
     locked.status === 422 && /closed period/.test(locked.body), `HTTP ${locked.status}`);
   const reopened = JSON.parse(readFileSync(BOOK, 'utf8'));
-  reopened.lockedThrough = null;
+  reopened.lockedThrough = was;
   writeFileSync(BOOK, JSON.stringify(reopened, null, 2));
 }
 
@@ -371,10 +381,25 @@ ok('an accountant may post', acctPost.status === 302, `HTTP ${acctPost.status}`)
     Boolean(opens) && opens < fy,
     `opens ${opens}, financial year named ${fy}`);
 
+  /**
+   * PHRASED AS A PROPERTY, BECAUSE THE ANSWER CHANGES AND THE RULE DOES NOT.
+   *
+   * This asserted that a prior-year date is ACCEPTED, which was right until the day somebody
+   * closed the prior year — after which it is refused, correctly, by the lock. The check had
+   * memorised a state rather than a rule and went red on the feature working.
+   *
+   * What must hold either way: a date is never refused for being before the financial year
+   * START. If it is refused it is because a person closed that period or because the book did
+   * not exist yet — both of them acts or facts, not a setting that rolls forward on its own.
+   */
   const prior = errorsOn(opens);
-  ok('a voucher in the prior financial year is accepted',
-    prior.length === 0,
-    prior.length ? prior.join(' | ') : `${opens} is before ${fy} and takes a posting`);
+  const forTheYearName = prior.filter((e) => /before the financial year starts/i.test(e));
+  const forAnAct = prior.filter((e) => /closed period|before this book opens/i.test(e));
+  ok('a prior-year date is never refused for being before the financial year start',
+    forTheYearName.length === 0 && prior.length === forAnAct.length,
+    prior.length === 0
+      ? `${opens} is before ${fy} and takes a posting`
+      : `refused, but only because: ${forAnAct.map((e) => e.split('.')[0]).join('; ').slice(0, 90)}`);
 
   const tooEarly = errorsOn(dayBefore);
   ok('a voucher before the book opens is refused, and says on what day it does',
@@ -408,6 +433,69 @@ ok('an accountant may post', acctPost.status === 302, `HTTP ${acctPost.status}`)
   ok('the lock, not the year, is what closes a period — and it includes its own last day',
     onBoundary.some((e) => e.includes('closed period')),
     'so a close writes its vouchers first and sets the lock second');
+}
+
+/* ------------------------------------------ closing a year, and closing it twice */
+
+/**
+ * POSTING THE CLOSE TWICE IS THE HAZARD THIS REPO ALREADY DOCUMENTED.
+ *
+ * lib/accounting.ts rejected a period-end journal voucher for the work-in-progress problem
+ * on exactly this ground: "a voucher can be posted twice, and posting it twice takes the
+ * difference to MINUS 867,000 with every check still reading clean."
+ *
+ * A close inherits that hazard the moment it is a thing somebody can do twice, and it is
+ * defensible only because the door closes behind it. Two independent refusals, both asserted
+ * here: the close itself refuses a date already closed, and the period lock refuses anything
+ * on or before it. Either alone would do; both is what makes it structural rather than
+ * remembered.
+ */
+{
+  const FYM = require('../lib/financial-year.js');
+  const live = JSON.parse(readFileSync(BOOK, 'utf8'));
+  const filed = FYM.closes(live).filter((c) => !c.reopened);
+
+  if (!filed.length) {
+    ok('closing a year that is already closed is refused', true, 'no year has been closed on this book');
+  } else {
+    const last = filed[filed.length - 1];
+    const again = FYM.closeRefusals(live, last.closedThrough, { today: '2027-01-01', openingDate: JV.openingDate(live) });
+    ok('closing a year that is already closed is refused',
+      again.some((e) => /already closed/i.test(e)),
+      again[0] ? again[0].slice(0, 96) : 'accepted, which would file the same year twice');
+
+    const onLast = JV.validateVoucher(live, {
+      date: last.closedThrough, narration: 'x',
+      lines: [
+        { account: 'GL:BANKCHG', debit: 500, credit: 0 },
+        { account: 'BANK:' + live.banks[0].id, debit: 0, credit: 500 }
+      ]
+    }, LOCK.isLocked).errors;
+    ok('and the lock seals the closed year including its own last day',
+      onLast.some((e) => /closed period/i.test(e)),
+      onLast[0] ? onLast[0].slice(0, 88) : 'the last day of a filed year is still writable');
+
+    /**
+     * The close recorded what it moved, so a reopen can put back exactly that and not a
+     * guess. A cut is never deleted — "who reopened June, and what has moved since" has to
+     * be answerable from the book, not only from the audit log, which a restore can
+     * overwrite.
+     */
+    ok('a filed year records what it moved, so reopening restores rather than guesses',
+      Boolean(last.moved && last.moved.lockedThrough && last.moved.financialYearStart) &&
+        last.moved.lockedThrough.after === last.closedThrough,
+      `lock ${JSON.stringify(last.moved && last.moved.lockedThrough)}, year ${JSON.stringify(last.moved && last.moved.financialYearStart)}`);
+
+    /**
+     * And it records BOTH derivations. One number is a claim; two derived by routes that
+     * cannot see each other, landing in the same place, is evidence — and it is the only
+     * thing that makes the drift check meaningful later.
+     */
+    ok('a filed year carries both derivations, not just the one that was convenient',
+      typeof last.ledger.yearProfit === 'number' && typeof last.control.netProfit === 'number' &&
+        last.ledger.yearProfit === last.control.netProfit,
+      `journal ${last.ledger.yearProfit}, vouchers ${last.control.netProfit}`);
+  }
 }
 
 const failed = results.filter((r) => !r).length;

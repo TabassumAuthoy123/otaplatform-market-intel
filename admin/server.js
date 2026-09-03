@@ -806,7 +806,8 @@ function page({ title, session, body, active = '' }) {
         ${vis.books ? `<div class="sep">Accounting</div>
         <a href="/books" class="${active === 'books' ? 'on' : ''}">Records${RBAC.canWriteBooks(session.role) ? ' — add / edit / delete' : ' — read only'}</a>
         <a href="/journal" class="${active === 'journal' ? 'on' : ''}">Journal vouchers</a>
-        <a href="/bank-statements" class="${active === 'bank-statements' ? 'on' : ''}">Bank statements</a>` : ''}
+        <a href="/bank-statements" class="${active === 'bank-statements' ? 'on' : ''}">Bank statements</a>
+        ${vis.close ? `<a href="/year-end" class="${active === 'year-end' ? 'on' : ''}">Year end</a>` : ''}` : ''}
         ${vis.design || vis.integrations ? '<div class="sep">Storefront</div>' : ''}
         ${vis.design ? `<a href="/design" class="${active === 'design' ? 'on' : ''}">Design &amp; layout</a>` : ''}
         ${vis.integrations ? `<a href="/integrations" class="${active === 'integrations' ? 'on' : ''}">API integrations</a>` : ''}
@@ -1555,6 +1556,8 @@ const bookFile = () => readJson(path.join(CONTENT_DIR, 'accounting.json'), {});
 
 const JV = require('../lib/journal-rules.js');
 const FLOAT = require('../lib/supplier-float.js');
+const FY = require('../lib/financial-year.js');
+const YEAREND = require('./year-end.js');
 /* ============================================== bank statements & reconciliation === */
 
 const BSTMT = require('../lib/bank-statement.js');
@@ -5117,6 +5120,169 @@ const server = http.createServer(async (req, res) => {
         before: gone
       });
       return redirect(res, '/bank-statements?saved=' + encodeURIComponent('Import removed. The book itself is unchanged.'));
+    }
+
+    /* ======================================================= year end === */
+
+    /**
+     * Ask the app what closing this year would record.
+     *
+     * The portal derives no accounting figure, ever. It has no TypeScript and no build step, so
+     * it cannot run the ledger — and a second implementation of "what did this year make",
+     * living inside the thing that files the answer, would be a copy nothing checks.
+     *
+     * Called twice per close: once to render the confirmation, and AGAIN server-side at the
+     * moment of the close. What gets recorded is the second answer. A figure that made a round
+     * trip through a form is a figure somebody could have edited.
+     */
+    async function yearEndPreview(through) {
+      const qs = through ? `?through=${encodeURIComponent(through)}` : '';
+      const res = await fetch(`${APP_URL}/api/accounts/year-end/preview${qs}`);
+      const body = await res.json().catch(() => null);
+      if (!body) throw new Error(`no answer from ${APP_URL}`);
+      return body;
+    }
+
+    if (pathname === '/year-end' && req.method === 'GET') {
+      const book = bookFile();
+      let preview = null;
+      let error = url.searchParams.get('error');
+      try {
+        preview = await yearEndPreview(url.searchParams.get('through'));
+      } catch (e) {
+        error = `The app on ${APP_URL} could not be reached, so nothing can be derived: ${e.message}`;
+      }
+      let drift = [];
+      try {
+        const d = await fetch(`${APP_URL}/api/accounts/year-end/drift`);
+        drift = (await d.json()).drift || [];
+      } catch { drift = []; }
+      return send(res, 200, YEAREND.view({ esc, page, csrfFor }, session, {
+        book, preview, error, drift,
+        saved: url.searchParams.get('saved')
+      }));
+    }
+
+    if (pathname === '/year-end/close' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) {
+        return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      }
+      const through = String(form.through || '').trim();
+      const claimed = String(form.revision || '');
+
+      /**
+       * Derived AGAIN, server-side. The screen's figures are not trusted and are not read: the
+       * form carries a date, a revision and the acknowledgements, and nothing else.
+       */
+      let p;
+      try {
+        p = await yearEndPreview(through);
+      } catch (e) {
+        return redirect(res, '/year-end?error=' + encodeURIComponent(`Could not reach the app to derive the year: ${e.message}`));
+      }
+
+      const stop = (why) => redirect(res, '/year-end?error=' + encodeURIComponent(why));
+      if (!p.ok || (p.refusals || []).length) return stop((p.refusals || []).join(' ') || 'The year cannot be closed.');
+      if (p.ledger.yearProfit !== p.control.netProfit) {
+        return stop(`The journal and the vouchers disagree about this year by ${p.ledger.yearProfit - p.control.netProfit}. A year the book cannot agree with itself about is not one to file.`);
+      }
+      if (String(p.bookRevision) !== claimed) {
+        return stop(`The book changed while this screen was open (revision ${claimed} became ${p.bookRevision}). Nothing was closed — look at it again.`);
+      }
+
+      const acknowledged = (p.halfEntries || []).map((h, i) => ({
+        account: h.account, amount: h.amount, why: h.why,
+        note: String(form['ack_' + i] || '').trim()
+      }));
+      if (acknowledged.some((a) => a.note.length < 20)) {
+        return stop('Every half-finished entry inside the year has to be acknowledged in writing before it is sealed.');
+      }
+
+      const previous = FY.lastClose(bookFile());
+      const cut = {
+        id: `CUT-${through}`,
+        label: p.label,
+        closedThrough: through,
+        opensOn: p.opensOn,
+        closedAt: new Date().toISOString(),
+        closedBy: session.email,
+        moved: p.moved,
+        ledger: p.ledger,
+        control: p.control,
+        counted: p.counted,
+        acknowledged,
+        reopened: null
+      };
+
+      let refused = null;
+      await guardedSave(path.join(CONTENT_DIR, 'accounting.json'), session, (b) => {
+        /**
+         * Checked again against the FRESH book inside the lock. Two writing processes and two
+         * screens is not a hypothetical here.
+         */
+        if (String((b._meta && b._meta.revision) || '') !== claimed) {
+          refused = `The book changed while this was being written. Nothing was closed.`;
+          return;
+        }
+        if (FY.closedThrough(b) && through <= FY.closedThrough(b)) {
+          refused = `Everything up to ${FY.closedThrough(b)} is already closed.`;
+          return;
+        }
+        /**
+         * BOTH OR NEITHER, BY CONSTRUCTION. One save writes the cut, the lock and the year's
+         * name together, so there is no instant in which the period is sealed and no record
+         * says why — and none in which a year is filed and still editable.
+         */
+        b.closes = [...(b.closes || []), cut];
+        b.lockedThrough = through;
+        b.company.financialYearStart = FY.maxISO(b.company.financialYearStart, FY.nextDay(through));
+      });
+      if (refused) return stop(refused);
+
+      await audit(session, 'update', {
+        collection: 'company', id: 'year-end',
+        summary: `Closed ${p.label} through ${through} — result ${p.ledger.yearProfit}, ${p.counted.vouchers} voucher(s) sealed`,
+        before: { lockedThrough: p.moved.lockedThrough.before, financialYearStart: p.moved.financialYearStart.before, closes: (previous ? 1 : 0) },
+        after: { lockedThrough: through, financialYearStart: p.moved.financialYearStart.after, closes: 'one more' }
+      });
+      return redirect(res, '/year-end?saved=' + encodeURIComponent(`${p.label} is closed. Everything on or before ${through} now refuses edits.`));
+    }
+
+    if (pathname === '/year-end/reopen' && req.method === 'POST') {
+      const form = parseForm(await readBody(req));
+      if (form.csrf !== csrfFor(session)) {
+        return send(res, 403, page({ title: 'Blocked', session, body: '<h1>CSRF check failed</h1>' }));
+      }
+      const id = String(form.id || '');
+      const reason = String(form.reason || '').trim();
+      if (reason.length < 12) {
+        return redirect(res, '/year-end?error=' + encodeURIComponent('Reopening a filed year needs a reason in writing.'));
+      }
+
+      let reopened = null;
+      await guardedSave(path.join(CONTENT_DIR, 'accounting.json'), session, (b) => {
+        const cut = (b.closes || []).find((c) => c.id === id);
+        if (!cut || cut.reopened) return;
+        cut.reopened = { at: new Date().toISOString(), by: session.email, reason };
+        /**
+         * Put back exactly what the close moved, from what the close recorded moving. A cut is
+         * never deleted — "who reopened June, and what has moved since" has to be answerable
+         * from the book itself, not only from the audit log, which a restore can overwrite.
+         */
+        b.lockedThrough = cut.moved.lockedThrough.before;
+        b.company.financialYearStart = cut.moved.financialYearStart.before;
+        reopened = cut;
+      });
+      if (!reopened) return redirect(res, '/year-end?error=' + encodeURIComponent('That year is not closed.'));
+
+      await audit(session, 'update', {
+        collection: 'company', id: 'year-end',
+        summary: `Reopened ${reopened.label} (through ${reopened.closedThrough}) — ${reason}`,
+        before: { lockedThrough: reopened.closedThrough },
+        after: { lockedThrough: reopened.moved.lockedThrough.before }
+      });
+      return redirect(res, '/year-end?saved=' + encodeURIComponent(`${reopened.label} is open again. It is still on record, and still checked for drift.`));
     }
 
     if (pathname === '/journal' && req.method === 'GET') {

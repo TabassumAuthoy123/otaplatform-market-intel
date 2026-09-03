@@ -68,6 +68,24 @@ const CAPS = {
    * numbers should not also be the person who can adjust them.
    */
   books_journal: 'Post and reverse manual journal vouchers',
+  /*
+   * Closing a financial year, and reopening one.
+   *
+   * It lived under `design` — the capability that also controls the storefront theme and
+   * which sections of the marketing site are switched on — because the period lock happens to
+   * be rendered on the /design screen. That put sealing a year in the same hands as changing
+   * a hero image, and put it OUT of the hands of the Accountant, who holds books_journal and
+   * is the person who would actually do it.
+   *
+   * Separate from books_journal on the same reasoning that separates books_journal from the
+   * rest: posting an adjustment inside an open year and declaring a year finished are
+   * different acts with different consequences, and the second one is the one that stops
+   * anybody correcting the first.
+   *
+   * Held by Super Admin and Accountant. Deliberately NOT by Manager — the person who reviews
+   * the numbers should not be the person who can declare them final.
+   */
+  books_close: 'Close a financial year, and reopen a closed one',
   leads_read: 'View demo requests from the storefront',
   users: 'Add, edit and remove admin users',
   audit: 'Read the audit log — who changed what',
@@ -90,7 +108,7 @@ const ROLES = {
   accountant: {
     label: 'Accountant',
     summary: 'All vouchers, reports and statements. No settings, no user management',
-    caps: ['books_read', 'books_financials', 'books_journal', 'books_sales', 'books_purchase', 'books_masters', 'books_credit', 'books_delete', 'leads_read', 'agencies_read', 'audit', 'alerts', 'alerts_ack']
+    caps: ['books_read', 'books_financials', 'books_journal', 'books_close', 'books_sales', 'books_purchase', 'books_masters', 'books_credit', 'books_delete', 'leads_read', 'agencies_read', 'audit', 'alerts', 'alerts_ack']
   },
   sales_exec: {
     label: 'Sales Executive',
@@ -164,6 +182,12 @@ function requiredCap(pathname, method, col) {
   // open to any signed-in user
   if (['/', '/dashboard', '/login', '/logout'].includes(pathname)) return null;
 
+  /**
+   * The year end, and the period lock that goes with it. /design/lock still exists and still
+   * locks a month — a lock is a smaller act than a close — but declaring a YEAR finished is
+   * its own right and no longer travels with the storefront theme.
+   */
+  if (pathname.startsWith('/year-end')) return 'books_close';
   if (pathname.startsWith('/design')) return 'design';
   if (pathname.startsWith('/integrations')) return 'integrations';
   /**
@@ -284,6 +308,7 @@ function visible(role) {
     crm: can(role, 'crm_read'),
     agencies: can(role, 'agencies_read'),
     books: can(role, 'books_read'),
+    close: can(role, 'books_close'),
     leads: can(role, 'leads_read'),
     users: can(role, 'users'),
     audit: can(role, 'audit'),

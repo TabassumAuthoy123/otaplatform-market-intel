@@ -2,6 +2,7 @@
 import { floatRows } from '@/lib/supplier-float.js';
 import type { BankReconciliation, BankStatement } from '@/lib/bankrec';
 import { chartAccounts, openingDate } from '@/lib/journal-rules.js';
+import * as FY from '@/lib/financial-year.js';
 import { adjustmentFor, controlAdjustments } from '@/lib/journals';
 // Type-only, so the cycle with lib/journals.ts is erased at compile time rather than
 // existing at runtime. The voucher type lives with its rules, not with the engine.
@@ -361,6 +362,15 @@ export type Book = {
    * existed. A lock is opted into, one period at a time.
    */
   lockedThrough?: string | null;
+  /**
+   * Every year end that has been filed, oldest first, and never deleted.
+   *
+   * A close records what both derivations said at the moment it was filed, seals the period
+   * and advances the year's name. It posts nothing. Reopening stamps the cut rather than
+   * removing it, so "who reopened June, and what has moved since" is answerable from the book
+   * itself — not only from audit-log.json, which a backup restore can overwrite.
+   */
+  closes?: YearEndClose[];
   documents?: TravelDocument[];
   inventory: InventoryItem[];
   airlines: Airline[];
@@ -970,8 +980,24 @@ function voucherDerivedPl(book: Book): Set<string> {
 
 /** Profit & loss for a window. */
 export function profitAndLoss(book: Book, from?: string, to?: string) {
-  const s = summarise(book, from, to);
-  const byCat = expensesByCategory(book, from, to);
+  /**
+   * WITH NO RANGE THIS MEANS "SINCE THE LAST CLOSE", NOT "EVER".
+   *
+   * Until a year is closed, openYearStart() is null and this is the whole book exactly as it
+   * always was. After one, a P&L with no dates that still counted last year's trading would
+   * be reporting a profit the owner already took — which is the entire reason a year gets
+   * closed. The screens say which period they are showing.
+   *
+   * Only the LOWER bound is supplied. An absent `to` still means today-and-after, because a
+   * forward-dated voucher is a fact about the book and hiding it would be a different lie.
+   *
+   * summarise()'s memo is not range-keyed, so once a close exists this walks the vouchers
+   * rather than reading the cache. That is the price of the boundary being real, and it is
+   * paid once per render.
+   */
+  const opens = from ?? FY.openYearStart(book) ?? undefined;
+  const s = summarise(book, opens, to);
+  const byCat = expensesByCategory(book, opens, to);
 
   /**
    * Income and expense that exists ONLY in the journal.
@@ -1015,7 +1041,7 @@ export function profitAndLoss(book: Book, from?: string, to?: string) {
     const sign = code === AC.SALES || code === AC.RETURNS ? -1 : 1;
     let net = 0;
     for (const v of book.journalEntries ?? []) {
-      if (from && v.date < from) continue;
+      if (opens && v.date < opens) continue;
       if (to && v.date > to) continue;
       for (const l of v.lines) {
         if (l.account !== code) continue;
@@ -1027,7 +1053,7 @@ export function profitAndLoss(book: Book, from?: string, to?: string) {
     return Math.round(net * sign * 100) / 100;
   };
 
-  const gl = generalLedger(book, undefined, from, to).summary
+  const gl = generalLedger(book, undefined, opens, to).summary
     .filter((r) => r.account.group === 'income' || r.account.group === 'expense')
     .map((r) => ({
       account: r.account,
@@ -1080,8 +1106,11 @@ export function profitAndLoss(book: Book, from?: string, to?: string) {
  * ignored check is worse than none.
  */
 export function plAgreesWithLedger(book: Book, from?: string, to?: string) {
-  const pl = profitAndLoss(book, from, to);
-  const gl = generalLedger(book, undefined, from, to).summary;
+  // The same bound the P&L just applied, or the bridge would compare a closed-year ledger
+  // against an open-year P&L and report the closed year's profit as unexplained.
+  const opens = from ?? FY.openYearStart(book) ?? undefined;
+  const pl = profitAndLoss(book, opens, to);
+  const gl = generalLedger(book, undefined, opens, to).summary;
   const bal = (g: AccountGroup) =>
     gl.filter((r) => r.account.group === g).reduce((t, r) => t + r.balance, 0);
   const ledgerProfit = bal('income') - bal('expense');
@@ -1126,7 +1155,7 @@ export function plAgreesWithLedger(book: Book, from?: string, to?: string) {
    * legitimate left to explain, so the check asserts the difference itself is zero.
    */
   const unbilledOnPurchases = Math.round(
-    (gl.find((r) => r.account.code === AC.PURCHASES)?.balance ?? 0) - summarise(book, from, to).cost
+    (gl.find((r) => r.account.code === AC.PURCHASES)?.balance ?? 0) - summarise(book, opens, to).cost
   );
 
   /**
@@ -1136,7 +1165,7 @@ export function plAgreesWithLedger(book: Book, from?: string, to?: string) {
    * supplier cost is sitting in the ledger and out of the P&L, so the reader can open one
    * and either finalise it or find out why it never was.
    */
-  const gl2 = generalLedger(book, undefined, from, to).summary;
+  const gl2 = generalLedger(book, undefined, opens, to).summary;
   const notLive = new Set(book.invoices.filter((i) => i.status === 'draft').map((i) => i.no.replace(/^.*?INV-/, 'INV-')));
   const stranded = book.bills.filter((b) => notLive.has(b.invoiceRef));
   const strandedTotal = Math.round(stranded.reduce((t, b) => t + billBase(b), 0));
@@ -2224,13 +2253,34 @@ function ledgerCard(
  * Trial balance built from the journal, as opposed to `trialBalance()` which is
  * built from the control accounts. Both must agree; `reconciliation()` checks.
  */
-export function journalTrialBalance(book: Book, to?: string) {
-  const { summary } = generalLedger(book, undefined, undefined, to);
-  const rows = summary.map((r) => ({
-    account: r.account,
-    debit: Math.max(0, r.debit - r.credit),
-    credit: Math.max(0, r.credit - r.debit)
-  }));
+export function journalTrialBalance(book: Book, to?: string, from?: string) {
+  /**
+   * `from` IS OPTIONAL AND reconciliation() DELIBERATELY DOES NOT PASS IT.
+   *
+   * The cross-check compares this against the control-basis trial balance, which is built
+   * from every voucher in the book with no period at all. Bounding one side and not the other
+   * would make them disagree by a year's trading and the check would be reporting the bound
+   * rather than the book. So the safety property keeps asking its whole-book question, and the
+   * bound exists for the other caller: an accountant asking for THIS year's trial balance,
+   * which after a close is the only one that means anything.
+   */
+  const { summary } = generalLedger(book, undefined, from, to);
+  /**
+   * Taken from the signed balance rather than from the raw debits and credits, because those
+   * are the WINDOW's movements. Unbounded the two are identical — opening is zero, so the net
+   * is (debit − credit) exactly as before. Bounded, a real account has to bring its position
+   * in or the columns do not add up: a trial balance for a period that starts every asset at
+   * nothing is not a trial balance, it is a movement report that happens to be laid out in
+   * two columns.
+   */
+  const rows = summary.map((r) => {
+    const net = r.balance * naturalSign(r.account.group);
+    return {
+      account: r.account,
+      debit: Math.max(0, net),
+      credit: Math.max(0, -net)
+    };
+  });
   const totalDebit = rows.reduce((t, r) => t + r.debit, 0);
   const totalCredit = rows.reduce((t, r) => t + r.credit, 0);
   return { rows, totalDebit, totalCredit, difference: totalDebit - totalCredit };
@@ -2340,6 +2390,107 @@ export function reconciliation(book: Book) {
  * the same journal. That is what makes the two sides meet without a plug
  * figure — and if they ever do not, `difference` says so.
  */
+/** One filed year end. See lib/financial-year.js for what a close is and is not. */
+export type YearEndClose = {
+  id: string;
+  label: string;
+  /** The last day of the closed year. The lock is inclusive, so this date is inside it. */
+  closedThrough: string;
+  opensOn: string;
+  closedAt: string;
+  closedBy: string;
+  moved: { lockedThrough: Moved; financialYearStart: Moved };
+  /** What the journal said at the cut. Evidence for drift, never an input to anything. */
+  ledger: {
+    income: number;
+    expense: number;
+    cumulativeProfit: number;
+    yearProfit: number;
+    positions: { code: string; name: string; group: AccountGroup; balance: number }[];
+  };
+  /** What the voucher side said at the same moment, for the same reason. */
+  control: { sales: number; cost: number; expenses: number; memoCost: number; netProfit: number };
+  counted: { vouchers: number; drafts: number; journalEntries: number };
+  acknowledged: { account: string; amount: number; why: string; note: string }[];
+  reopened?: { at: string; by: string; reason: string } | null;
+};
+
+type Moved = { before: string | null; after: string | null };
+
+/**
+ * WHAT HAS MOVED INSIDE A YEAR SOMEBODY ALREADY FILED.
+ *
+ * This is the only function in the product that reads the figures recorded on a close, and
+ * its output feeds no other calculation. That restriction is the design, not an accident:
+ *
+ *   THE CUT EXPORTS A DATE TO THE REPORTS AND A FIGURE TO NOTHING.
+ *
+ * balanceSheet splits retained earnings at the close by re-deriving both halves from the same
+ * journal; it never reads cut.ledger.cumulativeProfit, even though the two must be equal. They
+ * must be equal, and THIS is where that equality is asserted rather than assumed. Reading the
+ * stored figure there instead would make the balance sheet and the close share a term, and two
+ * derivations that share a term agreeing is not evidence.
+ *
+ * WHY IT IS NEEDED AT ALL
+ *
+ * The period lock is a write guard on a scalar date, and it has holes it cannot close without
+ * becoming the journal. lib/period-lock.js datesOf reads four field names, so a date can reach
+ * a closed year without being on the record that was written: a bank's openingBalance moves the
+ * opening entry, and repointing an invoice line at a document whose travelDate sits in the
+ * closed year moves the deferral. Extending datesOf to catch those means asking "what dates
+ * does this record post on", which means calling buildJournal from the guard — and then the
+ * guard and the journal are one derivation.
+ *
+ * So the holes are not closed. They are WATCHED. A filed year that no longer derives to what
+ * was filed is reported, with the account and both figures, wherever the accounts are read.
+ */
+export function closedYearDrift(book: Book) {
+  const carries = (g: AccountGroup) => g === 'asset' || g === 'liability' || g === 'equity';
+
+  return FY.closes(book).map((cut: YearEndClose) => {
+    const summary = generalLedger(book, undefined, undefined, cut.closedThrough).summary;
+    const group = (g: AccountGroup) =>
+      summary.filter((r) => r.account.group === g).reduce((t, r) => t + r.balance, 0);
+
+    const now = {
+      income: Math.round(group('income')),
+      expense: Math.round(group('expense')),
+      cumulativeProfit: Math.round(group('income') - group('expense'))
+    };
+
+    const moved: { what: string; filed: number; now: number; difference: number }[] = [];
+    const compare = (what: string, filed: number, current: number) => {
+      if (Math.round(filed) !== Math.round(current)) {
+        moved.push({ what, filed: Math.round(filed), now: Math.round(current), difference: Math.round(current - filed) });
+      }
+    };
+
+    compare('Income to the cut', cut.ledger.income, now.income);
+    compare('Expense to the cut', cut.ledger.expense, now.expense);
+    compare('Profit carried forward', cut.ledger.cumulativeProfit, now.cumulativeProfit);
+
+    const positionsNow = new Map(
+      summary.filter((r) => carries(r.account.group)).map((r) => [r.account.code, r])
+    );
+    for (const filed of cut.ledger.positions) {
+      const live = positionsNow.get(filed.code);
+      compare(filed.name, filed.balance, live ? live.balance : 0);
+      positionsNow.delete(filed.code);
+    }
+    // An account that did not exist at the cut and carries a balance inside it now.
+    for (const [, r] of positionsNow) {
+      if (Math.round(r.balance) !== 0) {
+        moved.push({
+          what: `${r.account.name} — no balance when the year was filed`,
+          filed: 0, now: Math.round(r.balance), difference: Math.round(r.balance)
+        });
+      }
+    }
+
+    return { cut, moved, clean: moved.length === 0 };
+  });
+}
+
 export function balanceSheet(book: Book, asAt?: string) {
   const { summary } = generalLedger(book, undefined, undefined, asAt);
   const of = (g: AccountGroup) => summary.filter((r) => r.account.group === g);
@@ -2394,11 +2545,46 @@ export function balanceSheet(book: Book, asAt?: string) {
   const income = of('income').reduce((t, r) => t + r.balance, 0);
   const expense = of('expense').reduce((t, r) => t + r.balance, 0);
   const retained = income - expense;
-  const openingEquity = of('equity').reduce((t, r) => t + r.balance, 0);
 
+  /**
+   * Retained earnings, split at the close — by DATE, never by a stored figure.
+   *
+   * Until a year is closed this is one number covering everything the book has ever traded,
+   * which is right, because nothing has been carried out. After a close it has to separate:
+   * a balance sheet at 2027-06-30 that folds FY2025-26's June profit into current-year
+   * retained earnings is a statement nobody can use.
+   *
+   * BOTH HALVES COME FROM THE SAME JOURNAL. broughtForward is income less expense up to the
+   * cut, profitForPeriod is the rest, and their sum is `retained` unchanged — so the two
+   * sides still meet without a plug and `difference` stays the zero identity this function's
+   * header claims it is. Nothing is read from the recorded close except its DATE.
+   *
+   * That restriction is the whole discipline. A stored profit figure read back here would be
+   * a term the balance sheet and the close share, and two derivations that share a term
+   * agreeing is not evidence. The recorded figures exist so drift can be NAMED — see
+   * closedYearDrift — not so anything can be built on them.
+   */
+  const cut = FY.closedThrough(book);
+  const priorTo = cut && (!asAt || cut < asAt) ? cut : null;
+  const broughtForward = priorTo
+    ? (() => {
+        const prior = generalLedger(book, undefined, undefined, priorTo).summary;
+        const g = (grp: AccountGroup) =>
+          prior.filter((r) => r.account.group === grp).reduce((t, r) => t + r.balance, 0);
+        return g('income') - g('expense');
+      })()
+    : 0;
+  const profitForPeriod = retained - broughtForward;
+
+  /**
+   * Equity rows come from the chart now rather than from a hard-coded pair. GL:RETAINED is
+   * group 'equity', so anyone posting a manual voucher to it was previously swept into a row
+   * labelled 'Opening balances' — the figure landed in the right total under the wrong name.
+   */
   const equity = [
-    { name: 'Opening balances', amount: openingEquity },
-    { name: 'Retained earnings', amount: retained }
+    ...of('equity').map((r) => ({ name: r.account.name, amount: r.balance })),
+    ...(priorTo ? [{ name: `Retained earnings brought forward (to ${priorTo})`, amount: broughtForward }] : []),
+    { name: priorTo ? 'Profit for the year' : 'Retained earnings', amount: profitForPeriod }
   ];
 
   const totalAssets = assets.reduce((t, r) => t + r.amount, 0);
@@ -2409,6 +2595,10 @@ export function balanceSheet(book: Book, asAt?: string) {
     asAt: asAt ?? 'today',
     assets, liabilities, equity,
     totalAssets, totalLiabilities, totalEquity,
+    /** The close this statement is split at, or null when nothing has been closed. */
+    closedThrough: priorTo,
+    broughtForward,
+    profitForPeriod,
     /** Accounts whose balance can only exist because a matching entry was never made. */
     halfEntries,
     difference: totalAssets - (totalLiabilities + totalEquity)
