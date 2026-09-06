@@ -1383,7 +1383,7 @@ npm run verify
 node scripts/verify-srs.mjs      # 207 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 50 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
-node scripts/verify-journal.mjs  # 41 checks — manual vouchers, and the reconciliation surviving them
+node scripts/verify-journal.mjs  # 44 checks — manual vouchers, and the reconciliation surviving them
 node scripts/verify-bank.mjs     # 69 checks — a bank statement against the book, and every refusal
 node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**463 checks** across the six suites against the running app: each one loads a
+**466 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **207 + 50 + 39 + 41 + 69 + 57
+should accept on trust, including from me. It currently reports **207 + 50 + 39 + 44 + 69 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -3259,6 +3259,27 @@ The check that guards it compares the ledger balance against those two fields. I
 stated where it lives: it cannot see an edit to the **settings**, because both sides move
 together. That case belongs to the drift check, which re-derives the filed year and names
 what moved.
+
+---
+
+### The door beside the seal
+
+The lock is what seals a closed year, and Settings has a text box that sets the lock. Blanking
+it would have left a filed year writable again — with nothing on the Year end screen saying so,
+nothing stamped on the cut, and an audit line reading *"Reopened the whole book"*, which is true
+and is not the same as telling anyone that FY2026 is no longer sealed.
+
+Reopening a year is a different act and has its own route: it demands a reason in writing,
+stamps the cut with who and when, restores the previous lock rather than clearing it, and keeps
+the cut so the drift check can still say what has moved since. The Settings box now refuses any
+value that would leave a filed year unsealed and points at the Year end screen. Locking a **later**
+month is untouched, because that is what the box was for.
+
+The filed cut also records three things it did not: the **role** that closed it (`books_close` is
+held by more than one, so an address alone does not say who filed it), the **book revision** the
+figures were derived from (checked twice before the write; recording it is what makes that check
+auditable afterwards), and the **previous cut's id** (`yearProfit` is defined as this cut less the
+one before it, and a derived figure whose other term is unnamed cannot be re-derived).
 
 ---
 

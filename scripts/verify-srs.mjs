@@ -359,7 +359,10 @@ await check('No test residue is left in the book', () => {
       // narration too. Two boundary-probe journal vouchers sat in the book and this check did
       // not see them, because a journal voucher carries its text in narration and nothing else —
       // and a voucher, once posted, can only be reversed, so residue there is permanent.
-      const text = [r.notes, r.ref, r.reason, r.description, r.narration]
+      // Every field a person types free text into. narration was added after two boundary
+      // probes hid there; label, note and reason are the year-end close's own, and a filed
+      // year is the last place anybody wants to find the word 'test'.
+      const text = [r.notes, r.ref, r.reason, r.description, r.narration, r.label, r.note]
         .filter((v) => typeof v === 'string').join(' ');
       if (marker.test(text)) found.push(`${col}/${r.id}`);
     }

@@ -5207,6 +5207,22 @@ const server = http.createServer(async (req, res) => {
         opensOn: p.opensOn,
         closedAt: new Date().toISOString(),
         closedBy: session.email,
+        /**
+         * Three fields that only matter when somebody is asking how a filed year came to say
+         * what it says, which is the moment a cut earns its keep.
+         *
+         * closedByRole because books_close is held by more than one role, so "who filed it"
+         * is not answered by an address alone. bookRevision because the figures were derived
+         * from one specific state of the book and the revision is the only handle on which
+         * one — it is already checked twice before the write, and recording it is what makes
+         * that check auditable afterwards rather than only enforced at the time.
+         * previousCloseId because yearProfit is DEFINED as this cut's cumulative profit less
+         * the one before it, and a derived figure whose other term is unnamed is a figure
+         * nobody can re-derive.
+         */
+        closedByRole: session.role || null,
+        bookRevision: p.bookRevision ?? null,
+        previousCloseId: previous ? previous.id : null,
         moved: p.moved,
         ledger: p.ledger,
         control: p.control,
@@ -5933,6 +5949,30 @@ const server = http.createServer(async (req, res) => {
       const through = String(form.lockedThrough || '').trim();
       if (through && !/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(through)) {
         return send(res, 422, lockedPage(session, `"${through}" is not a date. Use YYYY-MM-DD, or clear the field to reopen everything.`));
+      }
+
+      /**
+       * THIS BOX MAY NOT UNDO A FILED YEAR.
+       *
+       * The lock is what seals a closed year, and this text box sets the lock. Blanking it —
+       * or typing any earlier date — would leave a filed year writable again, with nothing on
+       * the year-end screen saying so and nothing stamped on the cut. The audit line would
+       * read "Reopened the whole book", which is true and is not the same as telling anyone
+       * that FY2026 is no longer sealed.
+       *
+       * Reopening a year is a different act and has its own route: it demands a reason in
+       * writing, stamps the cut with who and when, restores the previous lock rather than
+       * clearing it, and keeps the cut so the drift check can still say what has moved since.
+       * This one is for locking a month pending review, which is what it was for.
+       */
+      const filed = FY.closedThrough(bookFile());
+      if (filed && (!through || through < filed)) {
+        return send(res, 422, lockedPage(session,
+          `The financial year to ${filed} has been closed, and this lock is what seals it. ` +
+          `${through ? `Moving it back to ${through}` : 'Clearing it'} would leave that year ` +
+          `writable with nothing recorded to say so. Reopen the year on the Year end screen ` +
+          `instead — that asks for a reason, stamps the filed year, and puts the lock back ` +
+          `where it was.`));
       }
       let before = null;
       await guardedSave(path.join(CONTENT_DIR, 'accounting.json'), session, (book) => {

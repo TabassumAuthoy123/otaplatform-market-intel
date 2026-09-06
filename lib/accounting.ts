@@ -2408,6 +2408,12 @@ export type YearEndClose = {
   opensOn: string;
   closedAt: string;
   closedBy: string;
+  /** books_close is held by more than one role, so an address alone does not say who filed it. */
+  closedByRole?: string | null;
+  /** The book state the figures were derived from — checked before the write, recorded after. */
+  bookRevision?: number | null;
+  /** yearProfit is this cut less the one before it; a derived figure needs its other term named. */
+  previousCloseId?: string | null;
   moved: { lockedThrough: Moved; financialYearStart: Moved };
   /** What the journal said at the cut. Evidence for drift, never an input to anything. */
   ledger: {

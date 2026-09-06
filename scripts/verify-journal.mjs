@@ -342,6 +342,60 @@ ok('an accountant may post', acctPost.status === 302, `HTTP ${acctPost.status}`)
     /Net profit — trading only, before journal adjustments/.test(csv), 'labelled rather than silently changed');
 }
 
+/* ------------------------- the seal on a filed year, and the door beside it */
+
+/**
+ * The lock is what seals a closed year, and Settings has a text box that sets the lock.
+ *
+ * Blanking it would have left a filed year writable again with nothing on the year-end
+ * screen saying so and nothing stamped on the cut — the audit line reads "Reopened the whole
+ * book", which is true and is not the same as telling anyone that FY2026 is no longer
+ * sealed. Reopening a year is a different act with its own route: it demands a reason in
+ * writing, stamps the cut, and restores the previous lock rather than clearing it.
+ *
+ * Locking a LATER month is still allowed, because that is what the box was for.
+ */
+{
+  const live = JSON.parse(readFileSync(BOOK, 'utf8'));
+  const filed = (live.closes || []).filter((c) => !c.reopened).pop();
+  if (!filed) {
+    ok('the Settings lock cannot unseal a filed year', true, 'no year is filed on this book');
+  } else {
+    const setLock = async (value) => {
+      const page = await portal('/design?tab=lock', { cookie: suCookie });
+      const body = new URLSearchParams();
+      body.set('csrf', csrfOf(page.body));
+      body.set('lockedThrough', value);
+      const r = await portal('/design/lock', {
+        method: 'POST', cookie: suCookie,
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: body.toString()
+      });
+      const after = JSON.parse(readFileSync(BOOK, 'utf8'));
+      return { status: r.status, body: r.body, lock: after.lockedThrough };
+    };
+
+    const cleared = await setLock('');
+    ok('clearing the Settings lock cannot unseal a filed year',
+      cleared.status === 422 && cleared.lock === filed.closedThrough,
+      cleared.lock === filed.closedThrough
+        ? `refused, still sealed through ${cleared.lock}`
+        : `the lock became ${JSON.stringify(cleared.lock)}`);
+
+    const back = await setLock('2026-05-31');
+    ok('nor can it be moved back behind one',
+      back.status === 422 && back.lock === filed.closedThrough && /Year end/.test(back.body),
+      back.status === 422 ? 'refused, and it points at the Year end screen' : `HTTP ${back.status}`);
+
+    const later = await setLock('2026-08-31');
+    ok('but a later month can still be locked, which is what the box is for',
+      later.status === 302 && later.lock === '2026-08-31',
+      `HTTP ${later.status}, lock ${JSON.stringify(later.lock)}`);
+
+    await setLock(filed.closedThrough);
+  }
+}
+
 /* ----------------------- the account a voucher may not reach, through the real form */
 
 /**
