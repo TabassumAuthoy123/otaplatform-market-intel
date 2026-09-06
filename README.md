@@ -1380,7 +1380,7 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 207 checks — specification, hardening, automation
+node scripts/verify-srs.mjs      # 208 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 50 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 44 checks — manual vouchers, and the reconciliation surviving them
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**466 checks** across the six suites against the running app: each one loads a
+**467 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **207 + 50 + 39 + 44 + 69 + 57
+should accept on trust, including from me. It currently reports **208 + 50 + 39 + 44 + 69 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -3280,6 +3280,39 @@ held by more than one, so an address alone does not say who filed it), the **boo
 figures were derived from (checked twice before the write; recording it is what makes that check
 auditable afterwards), and the **previous cut's id** (`yearProfit` is defined as this cut less the
 one before it, and a derived figure whose other term is unnamed cannot be re-derived).
+
+---
+
+### The eleventh door
+
+The storefront sells this, on `/portal/accounting`:
+
+> Lock a month and every voucher type refuses to write into it, journal vouchers included.
+
+Every voucher reaches the book by one of five routes. Four of them were true:
+
+| Route | What stops it |
+|---|---|
+| `/books/edit` | `lockRefusal` on the **old** and the **new** dates, so a voucher cannot be edited inside a closed period nor walked out of one |
+| `/books/delete` | the same — deleting out of a closed month restates it just as surely |
+| `/books/new` | dates the blank record **today**, so it cannot be born in a closed period; moving it there is an edit, refused above |
+| the journal | refused in `validateVoucher`, in the rule file both processes read |
+| `lib/bookings.ts` | **nothing** |
+
+The fifth is the storefront's own writer: it appends an invoice and a supplier bill straight
+to `accounting.json` and consulted no guard at all. In ordinary trading its date is the
+booking's `createdAt`, so it is today and the question never arises — but it arises for a
+booking posted late, for a backdated one, and for any future path that replays a stored
+booking. **A claim that is true of four doors out of five is a claim that is not true.**
+
+It now consults the lock and returns `null`, which is the failure this function already had
+for an unreadable book: the booking is still taken and simply carries no invoice number,
+which is visible rather than silent. Refusing the **sale** because the accounts are closed
+would lose a customer over a bookkeeping boundary.
+
+The check that guards it names all five routes, so a sixth cannot be added quietly. It is a
+source check and says so — *"does this code path call the guard"* is a fact about the source,
+and the behaviour it implies is covered by the refusal checks that go through the real form.
 
 ---
 

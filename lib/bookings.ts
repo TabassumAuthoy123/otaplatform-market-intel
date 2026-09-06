@@ -4,6 +4,7 @@ import { commissionFor } from '@/lib/contracts';
 import { CreditLimitError, wouldBreach } from '@/lib/credit';
 import type { TravelDocument } from '@/lib/documents';
 import { travelDateOf } from '@/lib/documents';
+import { isLocked } from '@/lib/period-lock.js';
 import path from 'node:path';
 import type { Offer, Supplier } from '@/lib/offers';
 
@@ -102,6 +103,30 @@ function nextRef(existing: Booking[]): string {
 async function postToAccounts(booking: Booking, customerName: string): Promise<string | null> {
   const book = await readJson<Record<string, unknown> | null>(ACCOUNTING_FILE, null);
   if (!book) return null;
+
+  /**
+   * THE ELEVENTH DOOR.
+   *
+   * Every other way a voucher reaches the book runs through the portal, where the lock is
+   * checked: an edit and a delete call lockRefusal, a new record is dated today so it cannot
+   * land in a closed period without an edit, and a journal voucher is refused in the shared
+   * rule. This function is the exception — the storefront's own writer, appending an invoice
+   * and a supplier bill straight to accounting.json — and it consulted nothing.
+   *
+   * The date it uses is the booking's own createdAt, so in ordinary trading it is today and
+   * the question never arises. It arises for a booking posted late, for a backdated one, and
+   * for any future path that replays a stored booking — and the storefront page sells this
+   * as "lock a month and every voucher type refuses to write into it". A claim that is true
+   * of ten doors out of eleven is a claim that is not true.
+   *
+   * Returning null is the failure this function already has for an unreadable book: the
+   * booking is still taken and simply carries no invoice number, which is visible rather than
+   * silent. It is the right answer here too — refusing the SALE because the accounts are
+   * closed would lose a customer over a bookkeeping boundary.
+   */
+  const closedThrough = (book.lockedThrough as string | null) ?? null;
+  const on = booking.createdAt.slice(0, 10);
+  if (isLocked(closedThrough, on)) return null;
 
   const invoices = (book.invoices as Record<string, unknown>[]) ?? [];
   const bills = (book.bills as Record<string, unknown>[]) ?? [];

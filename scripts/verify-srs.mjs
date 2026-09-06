@@ -2794,6 +2794,63 @@ await check('The closed year and the open one add back to the whole book', async
  * year is filed is that case, and it belongs to the drift check, which re-derives the filed
  * year and names what moved.
  */
+/**
+ * THE STOREFRONT SELLS THIS, SO IT HAD BETTER BE TRUE.
+ *
+ * /portal/accounting says: "Lock a month and every voucher type refuses to write into it,
+ * journal vouchers included." Every voucher reaches the book by one of four routes, and
+ * this names all four so a fifth cannot be added quietly:
+ *
+ *   /books/edit    calls lockRefusal on the OLD and the NEW dates, so a voucher cannot be
+ *                  edited inside a closed period nor walked out of one
+ *   /books/delete  the same, because deleting out of a closed month restates it
+ *   /books/new     dates the blank record today, so it cannot land in a closed period at
+ *                  all; moving it there is an edit, which is refused above
+ *   the journal    refused in validateVoucher, in the rule file both processes read
+ *
+ * And the fifth, which was the exception: lib/bookings.ts writes an invoice and a supplier
+ * bill straight to the book from the storefront, and consulted nothing. In ordinary trading
+ * its date is today so the question never arose — but a claim that is true of ten doors out
+ * of eleven is a claim that is not true.
+ *
+ * This is a source check and says so. "Does this code path call the guard" is a fact about
+ * the source; the behaviour it implies is covered by the refusal checks in verify-journal.
+ */
+await check('Every route that can write a voucher consults the period lock', () => {
+  const portal = readFileSync('admin/server.js', 'utf8');
+  const rules = readFileSync('lib/journal-rules.js', 'utf8');
+  const bookings = readFileSync('lib/bookings.ts', 'utf8');
+  const missing = [];
+
+  const routeBody = (path) => {
+    const at = portal.indexOf(`pathname === '${path}' && req.method === 'POST'`);
+    return at < 0 ? null : portal.slice(at, at + 3000);
+  };
+
+  const edit = routeBody('/books/edit');
+  if (!edit || !/lockRefusal\(/.test(edit)) missing.push('/books/edit does not call lockRefusal');
+
+  const del = routeBody('/books/delete');
+  if (!del || !/lockRefusal\(/.test(del)) missing.push('/books/delete does not call lockRefusal');
+
+  // Not guarded, and does not need to be: it pins the date to today, so the record cannot
+  // be born inside a closed period. If that ever stops being true it needs the guard.
+  const create = routeBody('/books/new');
+  if (!create || !/if \('date' in rec\) rec\.date = todayISO\(\)/.test(create)) {
+    missing.push('/books/new no longer dates a new record today, so it needs the lock');
+  }
+
+  if (!/isLocked\(book\.lockedThrough/.test(rules)) missing.push('validateVoucher does not check the lock');
+
+  if (!/isLocked\(closedThrough, on\)/.test(bookings)) {
+    missing.push('lib/bookings.ts writes vouchers from the storefront without consulting the lock');
+  }
+
+  return [missing.length === 0,
+    missing.length ? missing.join('; ')
+      : 'edit, delete, the journal and the storefront writer all consult it; a new record is dated today'];
+});
+
 await check('The opening balance in the ledger is still the two settings that define it', async () => {
   const gl = await glRows();
   const row = gl.find((r) => r.Code === "EQUITY_OPENING");
