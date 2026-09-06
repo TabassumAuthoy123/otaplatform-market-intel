@@ -342,6 +342,43 @@ ok('an accountant may post', acctPost.status === 302, `HTTP ${acctPost.status}`)
     /Net profit — trading only, before journal adjustments/.test(csv), 'labelled rather than silently changed');
 }
 
+/* ----------------------- the account a voucher may not reach, through the real form */
+
+/**
+ * The derivation-level rule is checked in verify-srs. This is the same refusal through the
+ * portal a person actually uses, because a rule the form never reaches is a rule in name
+ * only — and this one exists to stop the single most natural wrong move in the product.
+ */
+{
+  const live = JSON.parse(readFileSync(BOOK, 'utf8'));
+  const page = await portal('/journal', { cookie: suCookie });
+  const csrf = (page.body.match(/name="csrf" value="([^"]*)"/) || [])[1];
+  const body = new URLSearchParams();
+  body.set('csrf', csrf);
+  body.set('date', live.company.financialYearStart);
+  body.set('narration', 'Bring last year in as an opening entry');
+  for (const l of [
+    { a: "CASH", d: "1000", c: "" },
+    { a: "EQUITY_OPENING", d: "", c: "1000" }
+  ]) {
+    body.append('line_account', l.a);
+    body.append('line_debit', l.d);
+    body.append('line_credit', l.c);
+  }
+  const res = await portal('/journal/new', {
+    method: 'POST', cookie: suCookie,
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: body.toString()
+  });
+  const after = JSON.parse(readFileSync(BOOK, 'utf8'));
+  const wrote = (after.journalEntries || []).length !== (live.journalEntries || []).length;
+  ok('the portal refuses a voucher against the derived opening balance',
+    res.status === 422 && /derived, not posted/.test(res.body) && !wrote,
+    res.status === 422
+      ? 'refused, and nothing was written'
+      : `HTTP ${res.status}${wrote ? " and it posted" : ""}`);
+}
+
 /* ------------------------- what a voucher may be dated, and why that changed */
 
 /**

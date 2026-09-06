@@ -2707,11 +2707,122 @@ await check('A P&L with no dates means since the last close', async () => {
 });
 
 /**
+ * ASKING FOR THE CLOSED YEAR HAS TO ANSWER WITH THE CLOSED YEAR.
+ *
+ * The default lower bound was substituted whenever `from` was absent — including when the
+ * caller had named a `to`. So "everything up to 30 June" became the window 1 July to 30
+ * June: inverted, empty, and silent. Measured on this book the day the close shipped:
+ *
+ *   profit & loss to 2026-06-30     revenue 0          net profit 0
+ *   the same year named in full     revenue 69,62,100  net profit 1,44,100
+ *
+ * And the bridge read Difference 0 over it, because both of its sides were empty. Every
+ * number on the page was internally consistent and all of them were zero, which is this
+ * file's own warning about a balancing check proving nothing — reached through a default
+ * rather than through a mistake in the arithmetic.
+ *
+ * The property, and it is falsifiable in a way `difference` is not: a P&L bounded only at
+ * the top of the closed year must report exactly what was filed for that year.
+ */
+await check('Asking for the closed year answers with the closed year, not with nothing', async () => {
+  const closed = (book.closes || []).filter((c) => !c.reopened);
+  if (!closed.length) return [true, 'no year has been closed'];
+  const cut = closed[closed.length - 1];
+  const netProfitIn = (csv) => {
+    const line = csv.split(/\r?\n/).find((l) => /^"Net profit"/.test(l.trim()));
+    return line ? Number((line.match(/"([^"]*)"$/) || [])[1]) : null;
+  };
+  const bounded = netProfitIn(await (await fetch(
+    `${APP}/api/accounts/export?format=csv&section=profit_and_loss&to=${cut.closedThrough}`)).text());
+  const named = netProfitIn(await (await fetch(
+    `${APP}/api/accounts/export?format=csv&section=profit_and_loss&from=${cut.ledger.openedOn || book.company.financialYearStart}&to=${cut.closedThrough}`)).text());
+
+  const filed = cut.ledger.cumulativeProfit;
+  const agrees = bounded !== null && Math.round(bounded) === Math.round(filed);
+  return [agrees,
+    agrees
+      ? `${cut.closedThrough}: the P&L answers ${bounded.toLocaleString("en-IN")}, which is what was filed`
+      : `the P&L to ${cut.closedThrough} says ${bounded}, the cut filed ${filed}${bounded === 0 ? " — an inverted window answers with nothing at all" : ""}`];
+});
+
+/**
+ * And the two halves still add up. The closed year plus the open one is the whole book —
+ * a close redistributes the profit between two windows and creates none.
+ */
+await check('The closed year and the open one add back to the whole book', async () => {
+  const closed = (book.closes || []).filter((c) => !c.reopened);
+  if (!closed.length) return [true, 'no year has been closed'];
+  const cut = closed[closed.length - 1];
+  const netProfitIn = (csv) => {
+    const line = csv.split(/\r?\n/).find((l) => /^"Net profit"/.test(l.trim()));
+    return line ? Number((line.match(/"([^"]*)"$/) || [])[1]) : null;
+  };
+  const before = netProfitIn(await (await fetch(
+    `${APP}/api/accounts/export?format=csv&section=profit_and_loss&to=${cut.closedThrough}`)).text());
+  const since = netProfitIn(await (await fetch(
+    `${APP}/api/accounts/export?format=csv&section=profit_and_loss`)).text());
+  const gl = await glRows();
+  const grp = (g) => gl.filter((r) => r.Group === g).reduce((t, r) => t + Number(r.Balance), 0);
+  const wholeBook = grp("income") - grp("expense");
+  const adds = Math.round(before + since) === Math.round(wholeBook);
+  return [adds,
+    `${before.toLocaleString("en-IN")} to ${cut.closedThrough} + ${since.toLocaleString("en-IN")} since = ${(before + since).toLocaleString("en-IN")}, whole book ${wholeBook.toLocaleString("en-IN")}`];
+});
+
+/**
  * A close posts NOTHING, and that is what keeps the reconciling-items list readable. A
  * closing voucher would land on SALES, every EXP:*, AR, AP and every bank — all control
  * accounts — putting twenty-odd permanent rows there per closed year. The list exists so a
  * person reads it item by item.
  */
+/**
+ * The opening position is two settings fields, and the ledger has to still say so.
+ *
+ * EQUITY_OPENING is derived — buildJournal raises the whole of it from company.openingCash
+ * and each bank's openingBalance every render. If it ever stops equalling their sum, some
+ * posting has reached it that should not have, and a balanced voucher against it is
+ * invisible to every other guard: measured, a 20,609,100 opening voucher doubles total
+ * assets and leaves the reconciliation, both trial balances, the balance-sheet difference,
+ * the P&L bridge and the drift check all clean.
+ *
+ * WHAT THIS CHECK CANNOT SEE, stated because a check whose limits are unstated gets
+ * trusted past them: it compares the ledger against the settings, so an edit to the
+ * SETTINGS moves both sides together and passes. Changing a bank's opening balance after a
+ * year is filed is that case, and it belongs to the drift check, which re-derives the filed
+ * year and names what moved.
+ */
+await check('The opening balance in the ledger is still the two settings that define it', async () => {
+  const gl = await glRows();
+  const row = gl.find((r) => r.Code === "EQUITY_OPENING");
+  if (!row) return [false, 'no opening balance in the ledger at all'];
+  const settings = Math.round(book.company.openingCash + book.banks.reduce((t, b) => t + b.openingBalance, 0));
+  const ledger = Math.round(Number(row.Balance));
+  return [ledger === settings,
+    ledger === settings
+      ? `${ledger.toLocaleString("en-IN")} in the ledger, ${settings.toLocaleString("en-IN")} from cash + ${book.banks.length} bank(s)`
+      : `ledger ${ledger.toLocaleString("en-IN")} against settings ${settings.toLocaleString("en-IN")} — something posted to a derived account`];
+});
+
+/**
+ * And the rule that keeps it that way, refusing the entry rather than detecting it after.
+ */
+await check('A manual voucher may not post to the derived opening balance', () => {
+  const JVR = createRequire(import.meta.url)("../lib/journal-rules.js");
+  const LOCKR = createRequire(import.meta.url)("../lib/period-lock.js");
+  const v = JVR.validateVoucher(book, {
+    date: book.company.financialYearStart,
+    narration: 'Bring last year in as an opening entry',
+    lines: [
+      { account: "CASH", debit: 1000, credit: 0 },
+      { account: "EQUITY_OPENING", debit: 0, credit: 1000 }
+    ]
+  }, LOCKR.isLocked);
+  const named = v.errors.some((e) => /derived, not posted/.test(e) && /Settings/.test(e));
+  return [!v.ok && named,
+    v.ok ? 'accepted — the instinct of anyone who has closed a year before, and invisible to every other check'
+      : 'refused, and the message names the two settings that do move it'];
+});
+
 await check('Closing a year adds nothing to the reconciling items', async () => {
   const closed = (book.closes || []).filter((c) => !c.reopened);
   if (!closed.length) return [true, 'no year has been closed'];

@@ -1380,10 +1380,10 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 203 checks — specification, hardening, automation
+node scripts/verify-srs.mjs      # 207 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 50 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
-node scripts/verify-journal.mjs  # 40 checks — manual vouchers, and the reconciliation surviving them
+node scripts/verify-journal.mjs  # 41 checks — manual vouchers, and the reconciliation surviving them
 node scripts/verify-bank.mjs     # 69 checks — a bank statement against the book, and every refusal
 node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**458 checks** across the six suites against the running app: each one loads a
+**463 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **203 + 50 + 39 + 40 + 69 + 57
+should accept on trust, including from me. It currently reports **207 + 50 + 39 + 41 + 69 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -3200,6 +3200,65 @@ The supplier leg is a third thing again, and easy to misread from its name: a
 `supplierRefund` on a customer credit note **credits the bill** rather than sending money.
 Money actually coming back from a supplier is a `supplierCreditNote` with a pay method — the
 path exercised further up. Both reduce what is owed and only one of them touches the bank.
+
+---
+
+## Two ways the close was wrong, found by reviewing it
+
+The close shipped and every check was green. A review pass against the design found two
+defects, both of which every existing guard reported as fine.
+
+### Asking for the closed year answered with nothing
+
+The open-year start was substituted as the lower bound whenever `from` was absent —
+including when the caller **had** named a `to`. So asking for the closed year, "everything
+up to 30 June", produced the window 1 July → 30 June: inverted, empty, silent.
+
+| Asked for | Net revenue | Net profit |
+|---|---|---|
+| `to=2026-06-30` | **৳0** | **৳0** |
+| `from=2026-06-13&to=2026-06-30` | ৳69,62,100 | ৳1,44,100 |
+
+And the P&L-against-the-ledger bridge read **Difference ৳0** over it, because both of its
+sides were empty. Every number on the page was internally consistent and all of them were
+zero — this README's own warning that a balancing check proves nothing, reached through a
+default rather than through a mistake in the arithmetic.
+
+`FY.openWindow()` now substitutes **only when neither bound is given**, resolved once and
+handed to every consumer. A caller who names an end has said what they want. The property
+asserted is falsifiable in a way `difference` is not: a P&L bounded only at the top of the
+closed year must report exactly what was filed for that year — ৳1,44,100 — and the closed
+year plus the open one must add back to the whole book.
+
+### The most natural wrong move in the product
+
+Anyone who has closed a year before reaches for the same thing: *bring last year in as an
+opening entry.* This product does not carry a year forward that way — the close records a
+cut and posts nothing — so that voucher is not a correction, it is a duplicate of a position
+the journal already raises every render from two settings fields.
+
+Measured on the closed book, a balanced ৳2,06,09,100 voucher crediting `EQUITY_OPENING`:
+
+| | |
+|---|---|
+| Total assets | ৳2,39,24,824 → **৳4,45,33,924** |
+| Reconciliation | clean |
+| Both trial balances | ৳0 |
+| Balance sheet difference | ৳0 |
+| P&L bridge | ৳0 |
+| Year-end drift | clean |
+
+**Every guard in the product stays green while the balance sheet doubles**, because a
+balanced voucher is balanced whatever it says. So it is refused rather than detected: a
+manual voucher may not post to `EQUITY_OPENING`, and the refusal names the two settings —
+the company's opening cash and each bank's opening balance — that do move it, because
+somebody reaching for that account wants an opening position and there is a right place to
+set one.
+
+The check that guards it compares the ledger balance against those two fields. Its limit is
+stated where it lives: it cannot see an edit to the **settings**, because both sides move
+together. That case belongs to the drift check, which re-derives the filed year and names
+what moved.
 
 ---
 

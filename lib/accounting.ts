@@ -988,16 +988,22 @@ export function profitAndLoss(book: Book, from?: string, to?: string) {
    * be reporting a profit the owner already took — which is the entire reason a year gets
    * closed. The screens say which period they are showing.
    *
-   * Only the LOWER bound is supplied. An absent `to` still means today-and-after, because a
-   * forward-dated voucher is a fact about the book and hiding it would be a different lie.
+   * SUBSTITUTED ONLY WHEN THE CALLER NAMED NEITHER BOUND. Substituting the lower bound
+   * whenever `from` was absent meant that asking for the closed year — everything up to 30
+   * June — produced the window 1 July to 30 June: inverted, empty, and silent. Revenue 0,
+   * net profit 0, and the bridge reading Difference 0 over it because both its sides were
+   * empty. See openWindow in lib/financial-year.js; the rule lives there so the P&L and the
+   * bridge cannot answer it differently.
    *
    * summarise()'s memo is not range-keyed, so once a close exists this walks the vouchers
    * rather than reading the cache. That is the price of the boundary being real, and it is
    * paid once per render.
    */
-  const opens = from ?? FY.openYearStart(book) ?? undefined;
-  const s = summarise(book, opens, to);
-  const byCat = expensesByCategory(book, opens, to);
+  const win = FY.openWindow(book, from, to);
+  const opens = win.from;
+  const ends = win.to;
+  const s = summarise(book, opens, ends);
+  const byCat = expensesByCategory(book, opens, ends);
 
   /**
    * Income and expense that exists ONLY in the journal.
@@ -1042,7 +1048,7 @@ export function profitAndLoss(book: Book, from?: string, to?: string) {
     let net = 0;
     for (const v of book.journalEntries ?? []) {
       if (opens && v.date < opens) continue;
-      if (to && v.date > to) continue;
+      if (ends && v.date > ends) continue;
       for (const l of v.lines) {
         if (l.account !== code) continue;
         net += (l.debit ?? 0) - (l.credit ?? 0);
@@ -1053,7 +1059,7 @@ export function profitAndLoss(book: Book, from?: string, to?: string) {
     return Math.round(net * sign * 100) / 100;
   };
 
-  const gl = generalLedger(book, undefined, opens, to).summary
+  const gl = generalLedger(book, undefined, opens, ends).summary
     .filter((r) => r.account.group === 'income' || r.account.group === 'expense')
     .map((r) => ({
       account: r.account,
@@ -1106,11 +1112,14 @@ export function profitAndLoss(book: Book, from?: string, to?: string) {
  * ignored check is worse than none.
  */
 export function plAgreesWithLedger(book: Book, from?: string, to?: string) {
-  // The same bound the P&L just applied, or the bridge would compare a closed-year ledger
-  // against an open-year P&L and report the closed year's profit as unexplained.
-  const opens = from ?? FY.openYearStart(book) ?? undefined;
-  const pl = profitAndLoss(book, opens, to);
-  const gl = generalLedger(book, undefined, opens, to).summary;
+  // The same window the P&L just applied, resolved once here and handed to every consumer —
+  // or the bridge would compare a closed-year ledger against an open-year P&L and report the
+  // closed year's profit as unexplained.
+  const win = FY.openWindow(book, from, to);
+  const opens = win.from;
+  const ends = win.to;
+  const pl = profitAndLoss(book, opens, ends);
+  const gl = generalLedger(book, undefined, opens, ends).summary;
   const bal = (g: AccountGroup) =>
     gl.filter((r) => r.account.group === g).reduce((t, r) => t + r.balance, 0);
   const ledgerProfit = bal('income') - bal('expense');
@@ -1155,7 +1164,7 @@ export function plAgreesWithLedger(book: Book, from?: string, to?: string) {
    * legitimate left to explain, so the check asserts the difference itself is zero.
    */
   const unbilledOnPurchases = Math.round(
-    (gl.find((r) => r.account.code === AC.PURCHASES)?.balance ?? 0) - summarise(book, opens, to).cost
+    (gl.find((r) => r.account.code === AC.PURCHASES)?.balance ?? 0) - summarise(book, opens, ends).cost
   );
 
   /**
@@ -1165,7 +1174,7 @@ export function plAgreesWithLedger(book: Book, from?: string, to?: string) {
    * supplier cost is sitting in the ledger and out of the P&L, so the reader can open one
    * and either finalise it or find out why it never was.
    */
-  const gl2 = generalLedger(book, undefined, opens, to).summary;
+  const gl2 = generalLedger(book, undefined, opens, ends).summary;
   const notLive = new Set(book.invoices.filter((i) => i.status === 'draft').map((i) => i.no.replace(/^.*?INV-/, 'INV-')));
   const stranded = book.bills.filter((b) => notLive.has(b.invoiceRef));
   const strandedTotal = Math.round(stranded.reduce((t, b) => t + billBase(b), 0));
