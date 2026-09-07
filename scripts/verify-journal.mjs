@@ -342,6 +342,107 @@ ok('an accountant may post', acctPost.status === 302, `HTTP ${acctPost.status}`)
     /Net profit — trading only, before journal adjustments/.test(csv), 'labelled rather than silently changed');
 }
 
+/* --------------------- the detection half of the close, actually made to detect */
+
+/**
+ * THE LOCK IS THE PREVENTION. THE DRIFT PANEL IS THE DETECTION. THIS IS THE DETECTION.
+ *
+ * Two restatements walk past the write guard and always will, because period-lock's
+ * datesOf() reads four field names and neither of these is on the record being written:
+ *
+ *   banks[].openingBalance   drives the OPENING journal entry, which is dated inside the
+ *                            closed year
+ *   an invoice line repointed at a document whose travelDate sits in the closed year,
+ *                            which moves the Deferral/Recognition pair
+ *
+ * Extending datesOf to catch them means asking "what dates does this record post on", which
+ * means calling buildJournal from the guard — and then the guard and the journal are one
+ * derivation, which is the one thing this codebase does not do. So they are detected instead,
+ * and the close's whole answer to "the lock cannot see everything" is that panel.
+ *
+ * WHICH MAKES "drift is clean on the shipped book" A CHECK THAT CANNOT FAIL. A drift function
+ * that returned clean unconditionally would pass it. So this plants the restatement and
+ * measures what every guard says, which is the only way to know the panel is load-bearing:
+ *
+ *   total assets            2,39,24,824  ->  2,44,24,824
+ *   reconciliation          clean        ->  clean
+ *   balance sheet diff      0            ->  0
+ *   both trial balances     0            ->  0
+ *   drift                   clean        ->  2 rows, named, with both figures
+ *
+ * Half a million added to a closed year, and one thing in the product notices.
+ */
+{
+  const filed = JSON.parse(readFileSync(BOOK, 'utf8'));
+  const cut = (filed.closes || []).filter((c) => !c.reopened).pop();
+
+  if (!cut) {
+    ok('the drift panel notices a restatement the lock cannot refuse', true, 'no year is filed on this book');
+  } else {
+    const drift = async () => {
+      const r = await fetch(`${APP}/api/accounts/year-end/drift`);
+      const j = await r.json();
+      const row = (j.drift || []).find((d) => d.cut && d.cut.id === cut.id);
+      return { clean: j.clean, moved: (row && row.moved) || [] };
+    };
+    const guards = async () => {
+      const cells = (l) => (l.match(/"[^"]*"/g) || []).map((c) => c.slice(1, -1));
+      const num = (v) => Number(String(v ?? '').replace(/[^0-9.-]/g, '') || 0);
+      const grab = async (section) =>
+        (await (await fetch(`${APP}/api/accounts/export?format=csv&section=${section}`)).text())
+          .split(/\r?\n/).filter((l) => l.includes(",")).map(cells);
+      const rec = await grab("reconciliation");
+      const bs = await grab("balance_sheet");
+      const tb = await grab("trial_balance");
+      return {
+        recBad: rec.slice(1).filter((c) => c.length && num(c[c.length - 1]) !== 0).length,
+        bsDiff: num((bs.find((c) => c[0] === "Check" && /Difference/i.test(c[1] || "")) || [])[2]),
+        tbDiff: tb.filter((c) => /difference/i.test(c[0] || "")).map((c) => num(c[1])),
+        assets: num((bs.find((c) => c[0] === "Assets" && /Total assets/i.test(c[1] || "")) || [])[2])
+      };
+    };
+
+    const beforeGuards = await guards();
+    const beforeDrift = await drift();
+    ok('the filed year still derives to what was filed',
+      beforeDrift.clean === true && beforeDrift.moved.length === 0,
+      beforeDrift.clean ? `drift clean against ${cut.id}` : `${beforeDrift.moved.length} row(s) already moved`);
+
+    /* plant it — nothing in the product refuses this, which is the point */
+    const planted = JSON.parse(readFileSync(BOOK, 'utf8'));
+    const bank = planted.banks[0];
+    const was = bank.openingBalance;
+    bank.openingBalance = was + 500000;
+    writeFileSync(BOOK, JSON.stringify(planted, null, 2));
+
+    const afterGuards = await guards();
+    const afterDrift = await drift();
+
+    ok('a bank opening balance can be moved inside a closed year without refusal',
+      afterGuards.assets === beforeGuards.assets + 500000,
+      `total assets ${beforeGuards.assets.toLocaleString("en-IN")} -> ${afterGuards.assets.toLocaleString("en-IN")}`);
+
+    ok('and every ordinary guard still reads clean over it',
+      afterGuards.recBad === 0 && afterGuards.bsDiff === 0 && afterGuards.tbDiff.every((d) => d === 0),
+      `reconciliation ${afterGuards.recBad ? afterGuards.recBad + " disagree" : "clean"}, balance sheet ${afterGuards.bsDiff}, trial balances ${afterGuards.tbDiff.join("/")}`);
+
+    const named = afterDrift.moved.filter((m) =>
+      typeof m.what === "string" && Number.isFinite(m.filed) && Number.isFinite(m.now) && m.difference !== 0);
+    ok('so the drift panel is the only thing that notices, and it names what moved',
+      afterDrift.clean === false && named.length >= 1 &&
+        named.some((m) => Math.abs(m.difference) === 500000),
+      named.length
+        ? named.map((m) => `${m.what} filed ${m.filed.toLocaleString("en-IN")}, now ${m.now.toLocaleString("en-IN")}`).join("; ")
+        : 'drift reported nothing — the close has no detection at all');
+
+    writeFileSync(BOOK, JSON.stringify(filed, null, 2));
+    const back = await drift();
+    ok('and it goes quiet again once the restatement is put back',
+      back.clean === true,
+      back.clean ? 'clean' : `${back.moved.length} row(s) still moved`);
+  }
+}
+
 /* ------------------------- the seal on a filed year, and the door beside it */
 
 /**

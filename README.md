@@ -1383,7 +1383,7 @@ npm run verify
 node scripts/verify-srs.mjs      # 208 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 50 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
-node scripts/verify-journal.mjs  # 44 checks — manual vouchers, and the reconciliation surviving them
+node scripts/verify-journal.mjs  # 49 checks — manual vouchers, and the reconciliation surviving them
 node scripts/verify-bank.mjs     # 69 checks — a bank statement against the book, and every refusal
 node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**467 checks** across the six suites against the running app: each one loads a
+**472 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **208 + 50 + 39 + 44 + 69 + 57
+should accept on trust, including from me. It currently reports **208 + 50 + 39 + 49 + 69 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -3313,6 +3313,45 @@ would lose a customer over a bookkeeping boundary.
 The check that guards it names all five routes, so a sixth cannot be added quietly. It is a
 source check and says so — *"does this code path call the guard"* is a fact about the source,
 and the behaviour it implies is covered by the refusal checks that go through the real form.
+
+---
+
+### The detection half, made to actually detect
+
+The close's bargain is: **the lock is the prevention, the drift panel is the detection.**
+Two restatements walk past the write guard and always will, because `datesOf()` reads four
+field names and neither of these is on the record being written — a bank's `openingBalance`,
+which drives the OPENING journal entry dated inside the closed year, and an invoice line
+repointed at a document whose `travelDate` sits in the closed year.
+
+Extending `datesOf` to catch them means asking *"what dates does this record post on"*, which
+means calling `buildJournal` from the guard — and then the guard and the journal are one
+derivation, which is the thing this codebase does not do. So they are detected instead, and
+that panel is the whole of the answer.
+
+**Which makes "drift is clean on the shipped book" a check that cannot fail.** A drift
+function returning clean unconditionally would pass it. So the check plants the restatement
+and measures what every guard says:
+
+| | Filed | ৳5,00,000 added to a bank inside the closed year |
+|---|---|---|
+| Total assets | ৳2,39,24,824 | **৳2,44,24,824** |
+| Reconciliation | clean | clean |
+| Balance sheet difference | ৳0 | ৳0 |
+| Both trial balances | ৳0 | ৳0 |
+| **Drift** | clean | **2 rows, named, with both figures** |
+
+```
+Dutch-Bangla Bank — Current   filed 1,00,76,600   now 1,05,76,600   difference 5,00,000
+Opening balances              filed 2,04,65,000   now 2,09,65,000   difference 5,00,000
+```
+
+The write was not refused — that is the `datesOf` hole, working as documented. Half a million
+reached a filed year and **one thing in the product noticed**. The check asserts all of it in
+order: the filed year derives to what was filed, the edit lands unrefused, every ordinary
+guard still reads clean over it, drift names what moved with both figures, and drift goes
+quiet again when the restatement is put back. That last clause is what stops a drift function
+that simply always complains from passing.
 
 ---
 
