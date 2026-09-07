@@ -2423,8 +2423,26 @@ export type YearEndClose = {
     yearProfit: number;
     positions: { code: string; name: string; group: AccountGroup; balance: number }[];
   };
-  /** What the voucher side said at the same moment, for the same reason. */
-  control: { sales: number; cost: number; expenses: number; memoCost: number; netProfit: number };
+  /**
+   * What the voucher side said about THE SAME YEAR, derived the same way, for the same reason.
+   *
+   * `from` is the first date the figures cover — null means the book's beginning — and it is
+   * optional because cuts filed before the window was recorded do not carry it. So is
+   * netProfitBeforeJournal. A reader of an old cut gets undefined, which is the truth: nobody
+   * wrote down what window those figures were derived over.
+   */
+  control: {
+    from?: string | null;
+    to?: string;
+    sales: number;
+    cost: number;
+    expenses: number;
+    memoCost: number;
+    netProfitBeforeJournal?: number;
+    journalNet?: number;
+    netProfit: number;
+    cashClosing?: number;
+  };
   counted: { vouchers: number; drafts: number; journalEntries: number };
   acknowledged: { account: string; amount: number; why: string; note: string }[];
   reopened?: { at: string; by: string; reason: string } | null;

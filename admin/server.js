@@ -5184,8 +5184,23 @@ const server = http.createServer(async (req, res) => {
 
       const stop = (why) => redirect(res, '/year-end?error=' + encodeURIComponent(why));
       if (!p.ok || (p.refusals || []).length) return stop((p.refusals || []).join(' ') || 'The year cannot be closed.');
+      /**
+       * THE GATE. Both sides are now bounded to the same year and counted the same way — see
+       * the note on the control block in the preview route for what happened when they were
+       * not, and for the two figures that would have gone on refusing every close of this
+       * book for ever.
+       *
+       * The message names the window and both terms, because "the book disagrees with itself"
+       * is the least actionable sentence a person can be shown at the moment they are trying
+       * to file a year.
+       */
       if (p.ledger.yearProfit !== p.control.netProfit) {
-        return stop(`The journal and the vouchers disagree about this year by ${p.ledger.yearProfit - p.control.netProfit}. A year the book cannot agree with itself about is not one to file.`);
+        const over = p.control.from ? `${p.control.from} to ${through}` : `the whole book to ${through}`;
+        return stop(
+          `Over ${over} the journal says the year made ${p.ledger.yearProfit} and the vouchers say ${p.control.netProfit} ` +
+            `(${p.control.netProfitBeforeJournal} trading, ${p.control.journalNet} by journal voucher) — a gap of ${p.ledger.yearProfit - p.control.netProfit}. ` +
+            `A year the book cannot agree with itself about is not one to file.`
+        );
       }
       if (String(p.bookRevision) !== claimed) {
         return stop(`The book changed while this screen was open (revision ${claimed} became ${p.bookRevision}). Nothing was closed — look at it again.`);

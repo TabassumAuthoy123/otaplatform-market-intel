@@ -778,6 +778,114 @@ ok('an accountant may post', acctPost.status === 302, `HTTP ${acctPost.status}`)
   }
 }
 
+/* ========================================================================= */
+/*  THE CLOSE'S AGREEMENT GATE, WHICH REFUSED EVERY FUTURE CLOSE OF THIS BOOK  */
+/* ========================================================================= */
+/**
+ * The close derives the year two ways and refuses to file one the book cannot agree with
+ * itself about. That gate compared a YEAR against a LIFETIME, and separately compared a
+ * journal-inclusive figure against a trading-only one. It agreed on the first close of this
+ * book for one reason — there was no previous cut to subtract, so the year WAS the lifetime,
+ * and no journal voucher was dated before the cut, so the two origins matched. Both
+ * coincidences were spent the moment the first year was filed.
+ *
+ * Measured for a second close at 2027-06-30 before the fix:
+ *
+ *   journal, this year                                      597,136
+ *   what the gate compared it to (whole book, trading)      812,360   gap -215,224
+ *   window fixed and nothing else (this year, trading)      668,260   gap  -71,124
+ *   window and origin both fixed                           597,136   gap        0
+ *
+ * Two wrongnesses in one comparison. Fixing either alone still refuses, which is why the
+ * middle line is checked below and not only the last one.
+ */
+{
+  const previousCut = FYR.lastClose(db);
+  const through = '2027-06-30';
+
+  /* --- the window itself, no app needed --- */
+  const shapes = [
+    [{ company: db.company }, null, 'nothing closed'],
+    [{ company: db.company, closes: [] }, null, 'an empty list'],
+    [db, previousCut ? FYR.nextDay(previousCut.closedThrough) : null, 'the live book'],
+    [{ ...db, closes: (db.closes || []).map((c) => ({ ...c, reopened: { at: 'x', by: 'y', reason: 'z' } })) },
+      null, 'every cut reopened'],
+    [{ ...db, closes: [...(db.closes || []), { id: 'CUT-2027-06-30', closedThrough: through, ledger: { cumulativeProfit: 0 }, reopened: null }] },
+      FYR.nextDay(through), 'a second cut filed']
+  ];
+  const badWindow = [];
+  for (const [shape, want, what] of shapes) {
+    const got = FYR.closingWindow(shape, through);
+    if ((got.from ?? null) !== want) badWindow.push(`${what}: from ${JSON.stringify(got.from)}, expected ${JSON.stringify(want)}`);
+    if (got.to !== through) badWindow.push(`${what}: to ${JSON.stringify(got.to)}`);
+  }
+  ok('the year being closed spans the day after the last live cut to the cut itself',
+    badWindow.length === 0,
+    badWindow.length ? badWindow.join('; ') : `${shapes.length} book shapes`);
+
+  /* --- and what the app derives over it --- */
+  let pv = null;
+  try {
+    pv = await (await fetch(`${APP}/api/accounts/year-end/preview?through=${through}`)).json();
+  } catch (e) { pv = { _err: e.message }; }
+
+  if (!pv || !pv.control || !pv.ledger) {
+    ok('the close can derive a second year at all', false, JSON.stringify(pv && pv._err ? pv._err : pv));
+  } else {
+    const want = previousCut ? FYR.nextDay(previousCut.closedThrough) : null;
+    ok('both derivations are bounded to the same year, and it is the right year',
+      (pv.control.from ?? null) === want && pv.control.to === through,
+      `control covers ${JSON.stringify(pv.control.from)} to ${JSON.stringify(pv.control.to)}, wanted ${JSON.stringify(want)}`);
+
+    /**
+     * THE GATE ITSELF. admin/server.js refuses the close on exactly this comparison, so a
+     * non-zero gap here is a book that can never file another year.
+     */
+    const gap = pv.ledger.yearProfit - pv.control.netProfit;
+    ok('the next close of this book is not refused for a profit gap that is not there',
+      gap === 0,
+      `journal ${pv.ledger.yearProfit} against vouchers ${pv.control.netProfit}, gap ${gap}`);
+
+    /**
+     * The middle line of the table above. If this book had no journal voucher dated inside
+     * the open year, matching the window alone would be enough and the origin half of the
+     * defect could come back unnoticed — so say so out loud rather than pass on nothing.
+     */
+    const jn = pv.control.journalNet;
+    ok('matching the window alone would not have been enough, and the check can see that',
+      typeof jn === 'number' && jn !== 0 &&
+        pv.control.netProfitBeforeJournal + jn === pv.control.netProfit &&
+        pv.control.netProfitBeforeJournal !== pv.ledger.yearProfit,
+      typeof jn !== 'number'
+        ? 'no journalNet recorded'
+        : jn === 0
+          ? 'no journal voucher is dated in the open year, so this check proves nothing today'
+          : `trading ${pv.control.netProfitBeforeJournal} plus journal ${jn} is ${pv.control.netProfit}, and trading alone would have missed by ${pv.control.netProfitBeforeJournal - pv.ledger.yearProfit}`);
+
+    /**
+     * The gate's gap decomposes into two things the product already watches: the bridge
+     * between the two origins, and drift in the year already filed. If it ever holds a third
+     * term, the gate is refusing for a reason nothing on any screen explains.
+     */
+    const drift = pv.ledger.yearProfitDerived - pv.ledger.yearProfit;
+    ok('the gap between the two derivations is the bridge plus drift in the filed year, and nothing else',
+      gap === drift - pv.statements.bridgeDifference,
+      `gap ${gap} against drift ${drift} less bridge ${pv.statements.bridgeDifference}`);
+
+    /**
+     * And the year derived by subtracting a stored figure equals the year derived off the
+     * journal directly. When it does not, the close refuses by naming the drift — not by
+     * telling somebody filing a year that the vouchers disagree, which would be a lie about
+     * which two things disagreed.
+     */
+    ok('the filed year has not drifted, so this year can be measured at all',
+      drift === 0 || (pv.refusals || []).some((r) => /no longer derives to what was filed/.test(r)),
+      drift === 0
+        ? `the year derives to ${pv.ledger.yearProfitDerived} both ways`
+        : `drifted by ${drift} and the refusal ${(pv.refusals || []).some((r) => /no longer derives/.test(r)) ? "names it" : "DOES NOT NAME IT"}`);
+  }
+}
+
 const failed = results.filter((r) => !r).length;
 console.log(`\n${results.length - failed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

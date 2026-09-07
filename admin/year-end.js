@@ -98,6 +98,8 @@ function closeForm(deps, book, p, session) {
   const m = (v) => money(v, sym);
 
   const refusals = (p && p.refusals) || [];
+  // The cut this year follows, named so the subtraction on screen can be read.
+  const prevThrough = p.control && p.control.from ? FY.prevDay(p.control.from) : null;
   const agree = p.ledger.yearProfit === p.control.netProfit;
   const blocked = refusals.length > 0 || !agree;
 
@@ -129,12 +131,29 @@ function closeForm(deps, book, p, session) {
            <ul style="margin:6px 0 0 16px">${refusals.map((x) => `<li>${esc(x)}</li>`).join('')}</ul></div>`
         : ''}
 
+      <!--
+        BOTH COLUMNS ADD UP ON SCREEN, OVER A WINDOW THAT IS NAMED.
+
+        They did not. The journal column printed income and expense to the cut and then a
+        result for the YEAR, which is those two less the previously filed year — a
+        subtraction the reader could not see and would not get by doing the arithmetic on
+        screen. The voucher column now includes journal postings in its bottom line, the way
+        the ledger counts them, so sales less costs no longer reaches it either.
+
+        A panel whose visible rows do not add to its own total is a panel that teaches people
+        to stop checking. Every intermediate line is shown, and each column says which dates
+        it covers.
+      -->
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:18px;margin:14px 0">
         <div>
           <div class="sub" style="font-weight:600;color:var(--navy)">What the journal says</div>
           <table class="grid"><tbody>
             <tr><td>Income to ${esc(p.through)}</td><td class="tnum">${m(p.ledger.income)}</td></tr>
             <tr><td>Expense to ${esc(p.through)}</td><td class="tnum">${m(p.ledger.expense)}</td></tr>
+            <tr><td>Profit to ${esc(p.through)}</td><td class="tnum">${m(p.ledger.cumulativeProfit)}</td></tr>
+            ${prevThrough
+              ? `<tr><td>Less already filed, to ${esc(prevThrough)}</td><td class="tnum">${m(p.ledger.cumulativeProfit - p.ledger.yearProfit)}</td></tr>`
+              : ``}
             <tr><td><strong>Result for the year</strong></td><td class="tnum"><strong>${m(p.ledger.yearProfit)}</strong></td></tr>
           </tbody></table>
         </div>
@@ -143,10 +162,19 @@ function closeForm(deps, book, p, session) {
           <table class="grid"><tbody>
             <tr><td>Sales</td><td class="tnum">${m(p.control.sales)}</td></tr>
             <tr><td>Cost, expenses and memos</td><td class="tnum">${m(p.control.cost + p.control.expenses + p.control.memoCost)}</td></tr>
+            <tr><td>Trading result</td><td class="tnum">${m(p.control.netProfitBeforeJournal)}</td></tr>
+            <tr><td>Journal vouchers dated in the year</td><td class="tnum">${m(p.control.journalNet)}</td></tr>
             <tr><td><strong>Net profit</strong></td><td class="tnum"><strong>${m(p.control.netProfit)}</strong></td></tr>
           </tbody></table>
         </div>
       </div>
+
+      <p class="sub" style="margin:-6px 0 14px">
+        Both columns cover ${esc(p.control.from || "the beginning of the book")} to ${esc(p.through)}.
+        The journal side reaches the year by subtracting what was filed; the voucher side is
+        derived over those dates directly. Journal postings are counted on both sides, because
+        the ledger counts them and a comparison of two things measured differently is not one.
+      </p>
 
       <p class="sub" style="margin:0 0 14px">${
         agree
