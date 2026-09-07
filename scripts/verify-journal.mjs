@@ -25,6 +25,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const JV = require('../lib/journal-rules.js');
 const LOCK = require('../lib/period-lock.js');
+const FYR = require('../lib/financial-year.js');
 
 const ADMIN = 'http://127.0.0.1:4001';
 const APP = 'http://127.0.0.1:3002';
@@ -340,6 +341,93 @@ ok('an accountant may post', acctPost.status === 302, `HTTP ${acctPost.status}`)
     bare.length <= 1, `${bare.length} such row(s)`);
   ok('and the summary says which figure it is',
     /Net profit — trading only, before journal adjustments/.test(csv), 'labelled rather than silently changed');
+}
+
+/* ------------------------------- unwinding a close the way it was wound */
+
+/**
+ * A REOPEN PUTS BACK WHAT ITS OWN CLOSE RECORDED MOVING. THAT IS ONLY SAFE NEWEST FIRST.
+ *
+ * On the FIRST close of a book, cut.moved.lockedThrough.before is null — nothing was locked
+ * before it. So reopening an EARLIER cut while a later one is still live sets lockedThrough
+ * to null and leaves the later year filed, live, drift-checked, and completely writable.
+ *
+ * Measured before the rule existed, by replaying the route's own mutation on a two-close
+ * book: closedThrough stayed 2027-06-30, lockedThrough became null, isLocked(null,
+ * "2027-03-15") came back false, financialYearStart walked back a year, and the audit line
+ * said only "Reopened FY2026".
+ *
+ * 467 checks were green over that, because the book has one close and the case needs two.
+ * So this synthesises the second one — which is also the only way to test the rule at all.
+ */
+{
+  const filedBook = JSON.parse(readFileSync(BOOK, 'utf8'));
+  const first = (filedBook.closes || [])[0];
+
+  if (!first) {
+    ok('a filed year cannot be reopened out of order', true, 'no year is filed on this book');
+  } else {
+    /* the invariant, on the book as it actually stands */
+    const through = FYR.closedThrough(filedBook);
+    ok('the lock is never behind the newest filed year',
+      !through || (filedBook.lockedThrough && filedBook.lockedThrough >= through),
+      `filed through ${through}, locked through ${JSON.stringify(filedBook.lockedThrough)}`);
+
+    /* a two-close book, in memory, with the real recorded `before` on the first cut */
+    const two = JSON.parse(JSON.stringify(filedBook));
+    const second = JSON.parse(JSON.stringify(first));
+    second.id = 'CUT-2027-06-30';
+    second.label = 'FY2027 to 2027-06-30';
+    second.closedThrough = '2027-06-30';
+    second.opensOn = '2027-07-01';
+    second.moved = {
+      lockedThrough: { before: first.closedThrough, after: '2027-06-30' },
+      financialYearStart: { before: '2026-07-01', after: '2027-07-01' }
+    };
+    two.closes = [...two.closes, second];
+    two.lockedThrough = '2027-06-30';
+    two.company = { ...two.company, financialYearStart: '2027-07-01' };
+
+    const older = FYR.reopenRefusals(two, first.id);
+    ok('reopening an earlier filed year while a later one is live is refused',
+      older.length > 0 && /newest first/i.test(older[0]) && older[0].includes(second.label),
+      older.length ? older[0].slice(0, 88) : 'allowed — the later year would be filed and writable at once');
+
+    const newest = FYR.reopenRefusals(two, second.id);
+    ok('and the newest one may be reopened, so a book is not stuck',
+      newest.length === 0, newest.length ? newest[0].slice(0, 80) : 'allowed');
+
+    /**
+     * What the refusal is protecting, stated as the measurement rather than as an argument:
+     * the value that WOULD have gone back, and what the lock would then have said about a
+     * date inside the year that is still filed.
+     */
+    const wouldRestore = first.moved.lockedThrough.before;
+    ok('because the value it would restore leaves the later year unsealed',
+      !LOCK.isLocked(wouldRestore, '2027-03-15') && FYR.closedThrough(two) === '2027-06-30',
+      `would restore ${JSON.stringify(wouldRestore)}; 2027-03-15 inside the filed FY2027 would be locked: ${LOCK.isLocked(wouldRestore, "2027-03-15")}`);
+
+    /* and through the real route, on a book that really has two closes */
+    writeFileSync(BOOK, JSON.stringify(two, null, 2));
+    const page = await portal('/year-end', { cookie: suCookie });
+    const body = new URLSearchParams();
+    body.set('csrf', csrfOf(page.body));
+    body.set('id', first.id);
+    body.set('reason', 'testing the ordering rule');
+    const res = await portal('/year-end/reopen', {
+      method: 'POST', cookie: suCookie,
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: body.toString()
+    });
+    const after = JSON.parse(readFileSync(BOOK, 'utf8'));
+    const stillSealed = after.lockedThrough === '2027-06-30';
+    const notStamped = !(after.closes || []).some((c) => c.id === first.id && c.reopened);
+    ok('the route refuses it too, and nothing is stamped or unsealed',
+      stillSealed && notStamped && /error=/.test(res.location || ''),
+      `HTTP ${res.status}, lock ${JSON.stringify(after.lockedThrough)}${notStamped ? "" : ", but the cut was stamped"}`);
+
+    writeFileSync(BOOK, JSON.stringify(filedBook, null, 2));
+  }
 }
 
 /* --------------------- the detection half of the close, actually made to detect */

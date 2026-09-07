@@ -5276,8 +5276,18 @@ const server = http.createServer(async (req, res) => {
         return redirect(res, '/year-end?error=' + encodeURIComponent('Reopening a filed year needs a reason in writing.'));
       }
 
+      /**
+       * Checked outside the lock so the message reaches the screen, and again inside it against
+       * the fresh book, because two screens and two writing processes is not hypothetical here.
+       */
+      const why = FY.reopenRefusals(bookFile(), id);
+      if (why.length) return redirect(res, '/year-end?error=' + encodeURIComponent(why[0]));
+
       let reopened = null;
+      let refusedReopen = null;
       await guardedSave(path.join(CONTENT_DIR, 'accounting.json'), session, (b) => {
+        const again = FY.reopenRefusals(b, id);
+        if (again.length) { refusedReopen = again[0]; return; }
         const cut = (b.closes || []).find((c) => c.id === id);
         if (!cut || cut.reopened) return;
         cut.reopened = { at: new Date().toISOString(), by: session.email, reason };
@@ -5290,6 +5300,7 @@ const server = http.createServer(async (req, res) => {
         b.company.financialYearStart = cut.moved.financialYearStart.before;
         reopened = cut;
       });
+      if (refusedReopen) return redirect(res, '/year-end?error=' + encodeURIComponent(refusedReopen));
       if (!reopened) return redirect(res, '/year-end?error=' + encodeURIComponent('That year is not closed.'));
 
       await audit(session, 'update', {

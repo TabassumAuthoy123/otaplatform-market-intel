@@ -62,9 +62,19 @@ function filedTable(deps, book, drift, session) {
                .join('')}</ul>`
           : '<span style="color:#047857">still derives to what was filed</span>';
 
+      /**
+       * Offered on the NEWEST live cut only. Reopening an earlier one restores the lock to
+       * where it stood before that year was filed, which on a first close is nowhere — and
+       * leaves every year filed after it writable. The route refuses it; this stops the form
+       * from asking for something that will be refused.
+       */
+      const newest = FY.lastClose(book);
+      const isNewestLive = newest && newest.id === c.id;
       const reopen = c.reopened
         ? ''
-        : `<form method="post" action="/year-end/reopen">
+        : !isNewestLive
+          ? `<span class="sub">${esc(newest ? newest.label : 'A later year')} was filed after this one — years come off newest first.</span>`
+          : `<form method="post" action="/year-end/reopen">
              <input type="hidden" name="csrf" value="${esc(csrfFor(session))}">
              <input type="hidden" name="id" value="${esc(c.id)}">
              <input type="text" name="reason" placeholder="why, in writing" required minlength="12" style="width:180px">
