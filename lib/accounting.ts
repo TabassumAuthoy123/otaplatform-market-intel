@@ -2595,11 +2595,50 @@ export function balanceSheet(book: Book, asAt?: string) {
    * Equity rows come from the chart now rather than from a hard-coded pair. GL:RETAINED is
    * group 'equity', so anyone posting a manual voucher to it was previously swept into a row
    * labelled 'Opening balances' — the figure landed in the right total under the wrong name.
+   *
+   * EVERY ROW CARRIES A KIND, BECAUSE THE NAME IS NOT A HANDLE.
+   *
+   * Two of these rows are DERIVED — they are not accounts, they are this function's arithmetic
+   * given a label — and the checks that test the split have to be able to find exactly those
+   * two. Selecting them by matching their names against /retained|profit/ looked fine and was
+   * not, because the seeded chart already holds an equity account called 'Retained earnings
+   * brought forward' (GLA-0009, whose own note reads "where last year lands once a year is
+   * closed") and a person may name a ledger account anything at all.
+   *
+   * Measured with one voucher posted to that account: the check that asserts the split adds up
+   * FAILED — "3 retained line(s) totalling 665,537.50 against 521,437.50" — while the split
+   * still added up exactly, so it was a false failure whose message pointed at nothing anybody
+   * had done wrong. And the check that asserts the brought-forward row equals what was filed
+   * PASSED by comparing the accountant's row to the filed figure and never looking at the
+   * derived row it exists to test, because user accounts sort ahead of the appended ones.
+   *
+   * One false failure and one false pass, from the same missing field.
    */
-  const equity = [
-    ...of('equity').map((r) => ({ name: r.account.name, amount: r.balance })),
-    ...(priorTo ? [{ name: `Retained earnings brought forward (to ${priorTo})`, amount: broughtForward }] : []),
-    { name: priorTo ? 'Profit for the year' : 'Retained earnings', amount: profitForPeriod }
+  const equity: { name: string; amount: number; kind: 'account' | 'brought-forward' | 'result' }[] = [
+    ...of('equity').map((r) => ({ name: r.account.name, amount: r.balance, kind: 'account' as const })),
+    ...(priorTo
+      ? [{
+          name: `Retained earnings brought forward (to ${priorTo})`,
+          amount: broughtForward,
+          kind: 'brought-forward' as const
+        }]
+      : []),
+    {
+      /**
+       * Named with the period it covers, the way the brought-forward row above is.
+       *
+       * Not decoration. A ledger account's name is free text and the group dropdown offers
+       * 'equity', so an accountant may create an account called exactly 'Profit for the year'.
+       * Measured: the equity section then printed that name twice with two different figures,
+       * difference 0 and every other guard clean. The checks select on `kind` now and are not
+       * fooled, but a person reading the statement was.
+       *
+       * A date makes the derived row unmistakable and tells the reader something true besides.
+       */
+      name: priorTo ? `Profit for the year (from ${FY.nextDay(priorTo)})` : 'Retained earnings',
+      amount: profitForPeriod,
+      kind: 'result' as const
+    }
   ];
 
   const totalAssets = assets.reduce((t, r) => t + r.amount, 0);

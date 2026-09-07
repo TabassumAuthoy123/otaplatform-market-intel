@@ -380,23 +380,25 @@ function buildSheets(book: Book, from?: string, to?: string): Sheet[] {
   sheets.push({
     name: '17_BALANCE_SHEET',
     title: 'Balance sheet (as at today)',
-    head: ['Section', 'Account', 'Amount'],
-    widths: [22, 40, 20],
+    head: ['Section', 'Account', 'Amount', 'Kind'],
+    widths: [22, 40, 20, 18],
     note:
       'Built from the journal. Retained earnings is income less expenses out of the same postings, not a ' +
-      'stored figure, which is why the two sides meet without a plug. The difference row must read zero.',
+      'stored figure, which is why the two sides meet without a plug. The difference row must read zero. ' +
+      'Kind says whether a row is a ledger account or this statement\'s own arithmetic — a person may name ' +
+      'a ledger account anything, so the name is not a handle.',
     rows: [
-      ...bs.assets.map((r): Row => ['Assets', r.name, n0(r.amount)]),
-      ['Assets', 'Total assets', n0(bs.totalAssets)],
-      ['', '', ''],
-      ...bs.liabilities.map((r): Row => ['Liabilities', r.name, n0(r.amount)]),
-      ['Liabilities', 'Total liabilities', n0(bs.totalLiabilities)],
-      ['', '', ''],
-      ...bs.equity.map((r): Row => ['Equity', r.name, n0(r.amount)]),
-      ['Equity', 'Total equity', n0(bs.totalEquity)],
-      ['', '', ''],
-      ['Check', 'Total liabilities and equity', n0(bs.totalLiabilities + bs.totalEquity)],
-      ['Check', 'Difference', n0(bs.difference)]
+      ...bs.assets.map((r): Row => ['Assets', r.name, n0(r.amount), 'account']),
+      ['Assets', 'Total assets', n0(bs.totalAssets), 'total'],
+      ['', '', '', ''],
+      ...bs.liabilities.map((r): Row => ['Liabilities', r.name, n0(r.amount), 'account']),
+      ['Liabilities', 'Total liabilities', n0(bs.totalLiabilities), 'total'],
+      ['', '', '', ''],
+      ...bs.equity.map((r): Row => ['Equity', r.name, n0(r.amount), r.kind]),
+      ['Equity', 'Total equity', n0(bs.totalEquity), 'total'],
+      ['', '', '', ''],
+      ['Check', 'Total liabilities and equity', n0(bs.totalLiabilities + bs.totalEquity), 'check'],
+      ['Check', 'Difference', n0(bs.difference), 'check']
     ]
   });
 

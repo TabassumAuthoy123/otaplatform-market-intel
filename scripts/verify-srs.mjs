@@ -111,6 +111,34 @@ async function reconciliationRows() {
   });
 }
 /**
+ * The balance sheet, read BY COLUMN NAME and selected BY KIND.
+ *
+ * Two of the equity rows are derived — the statement's own arithmetic given a label — and the
+ * checks below have to find exactly those two. Selecting them by matching names against
+ * /retained|profit/ looked fine and was not: the seeded chart already holds an equity account
+ * called "Retained earnings brought forward" (GLA-0009), and a person may name a ledger
+ * account anything at all.
+ *
+ * Measured with one voucher posted to that account, before the kind column existed: the check
+ * that the split adds up FAILED while the split added up exactly, and the check that the
+ * brought-forward row equals what was filed PASSED by comparing the accountant's row and never
+ * looking at the derived row it exists to test. One false failure and one false pass, from the
+ * same missing field.
+ */
+const balanceSheetRows = async (window = '') => {
+  const { body } = await get(`/api/accounts/export?format=csv&section=balance_sheet${window}`);
+  const cell = (line) => (line.match(/"[^"]*"/g) || []).map((c) => c.slice(1, -1));
+  const lines = body.split(/\r?\n/).filter((l) => l.includes(","));
+  const head = cell(lines[0]);
+  return lines.slice(1).map((line) => {
+    const c = cell(line);
+    const row = {};
+    head.forEach((h, i) => { row[h] = c[i]; });
+    return row;
+  }).filter((r) => r.Section || r.Account);
+};
+
+/**
  * One account off the general ledger, BY COLUMN NAME.
  *
  * Two checks read this report at c[3], c[4], c[5]. The export then grew an Opening column and
@@ -336,9 +364,13 @@ await check('Control accounts agree with the journal', async () => {
   return [bad.length === 0, `${rows.length} checks, ${bad.length} disagreeing`];
 });
 await check('Balance sheet balances', async () => {
-  const { body } = await get('/api/accounts/export?format=csv&section=balance_sheet');
-  const line = body.split(/\r?\n/).find((l) => l.includes('Difference'));
-  return [/,"?0"?$/.test((line || '').trim()), (line || 'not found').replace(/"/g, '')];
+  // By column name. This asserted the LINE ENDED IN ZERO, which stopped being the difference
+  // the moment the sheet grew a Kind column — the row then ended in "check" and a balanced
+  // book read as broken. Third time a column moved under a positional read in this file.
+  const rows = await balanceSheetRows();
+  const row = rows.find((r) => r.Section === 'Check' && /Difference/i.test(r.Account || ''));
+  if (!row) return [false, 'no difference row on the balance sheet'];
+  return [Number(row.Amount) === 0, `difference ${row.Amount}`];
 });
 /**
  * The book had accumulated EIGHT identical supplier credit notes — same day, same bill,
@@ -2619,30 +2651,88 @@ section('Year end');
  * If that sum ever moves, the close has invented or lost something, which is the whole
  * failure worth guarding against.
  */
+
+/**
+ * TWO ROWS WITH THE SAME NAME AND DIFFERENT FIGURES, AND EVERY GUARD CLEAN.
+ *
+ * A ledger account's name is free text and the group dropdown offers 'equity', so an
+ * accountant can create an account called exactly what a derived row is called. Measured
+ * before the derived rows carried their dates: adding an equity account named "Profit for
+ * the year" with a posting produced
+ *
+ *   Opening balances                                  20,465,000
+ *   Profit for the year                                   50,000   <- the account
+ *   Retained earnings brought forward (to 2026-06-30)    144,100
+ *   Profit for the year                                  597,135.5 <- the derivation
+ *
+ * with difference 0 and nothing else complaining. The checks select on `kind` and are not
+ * fooled; a person reading the statement is. This is the check for the reader.
+ */
+await check('No two rows on the balance sheet share a name', async () => {
+  const rows = await balanceSheetRows();
+  const named = rows.filter((r) => r.Account && !/^Total/i.test(r.Account) && r.Section);
+  const seen = new Map();
+  for (const r of named) {
+    const key = `${r.Section}|${r.Account}`;
+    seen.set(key, [...(seen.get(key) || []), r.Amount]);
+  }
+  const dupes = [...seen.entries()].filter(([, v]) => v.length > 1);
+  return [dupes.length === 0,
+    dupes.length
+      ? dupes.map(([k, v]) => `${k} appears ${v.length} times (${v.join(", ")})`).join("; ")
+      : `${named.length} row(s), every name its own`];
+});
+
+/**
+ * And the rule the whole year-end split hangs on, which nothing tested: openYearStart is a
+ * date exactly when a live cut exists, and null otherwise. Seven call sites re-implement
+ * `(book.closes || []).filter((c) => !c.reopened)` by hand to decide whether to skip; if
+ * lastClose's reopened rule and one of those copies ever disagree, no check notices.
+ */
+await check('The open year starts the day after the newest live close, and nowhere otherwise', () => {
+  const FYS = createRequire(import.meta.url)("../lib/financial-year.js");
+  const shapes = [
+    [{ company: book.company }, null, "no closes key at all"],
+    [{ company: book.company, closes: [] }, null, "an empty list"],
+    [book, FYS.closedThrough(book) ? FYS.nextDay(FYS.closedThrough(book)) : null, "the live book"],
+    [{ ...book, closes: (book.closes || []).map((c) => ({ ...c, reopened: { at: "x", by: "y", reason: "z" } })) }, null, "every cut reopened"]
+  ];
+  const bad = [];
+  for (const [shape, want, what] of shapes) {
+    const got = FYS.openYearStart(shape);
+    if (got !== want) bad.push(`${what}: ${JSON.stringify(got)}, expected ${JSON.stringify(want)}`);
+    const win = FYS.openWindow(shape, undefined, undefined);
+    if ((win.from ?? null) !== want) bad.push(`${what}: openWindow disagrees (${JSON.stringify(win.from)})`);
+  }
+  return [bad.length === 0,
+    bad.length ? bad.join("; ")
+      : `${shapes.length} book shapes, and openWindow agrees with openYearStart on every one`];
+});
+
 await check('Retained earnings, split at the close, still equals income less expense', async () => {
-  const bs = await (await fetch(`${APP}/api/accounts/export?format=csv&section=balance_sheet`)).text();
-  const cells = (line) => (line.match(/"[^"]*"/g) || []).map((c) => c.slice(1, -1));
-  const rows = bs.split(/\r?\n/).filter((l) => l.includes(",")).map(cells).filter((c) => c.length >= 3);
-  const equity = rows.filter((c) => c[0] === "Equity" && !/^Total/i.test(c[1]));
-  const retainedRows = equity.filter((c) => /retained|profit for/i.test(c[1]));
-  const retained = retainedRows.reduce((t, c) => t + Number(c[2]), 0);
+  const rows = await balanceSheetRows();
+  // By KIND. The derived rows are the two this asserts about; a ledger account named anything
+  // at all is not one of them.
+  const derived = rows.filter((r) => r.Section === "Equity" && (r.Kind === "brought-forward" || r.Kind === "result"));
+  const retained = derived.reduce((t, r) => t + Number(r.Amount), 0);
 
   const gl = await glRows();
   const grp = (g) => gl.filter((r) => r.Group === g).reduce((t, r) => t + Number(r.Balance), 0);
   const ledger = grp("income") - grp("expense");
 
   return [Math.round(retained) === Math.round(ledger),
-    `${retainedRows.length} retained line(s) totalling ${retained.toLocaleString("en-IN")} against ${ledger.toLocaleString("en-IN")} in the ledger`];
+    `${derived.length} derived line(s) — ${derived.map((r) => r.Kind).join(" + ")} — totalling ${retained.toLocaleString("en-IN")} against ${ledger.toLocaleString("en-IN")} in the ledger`];
 });
 
 await check('A closed year is split out rather than fused into this year', async () => {
   const closed = (book.closes || []).filter((c) => !c.reopened);
   if (!closed.length) return [true, 'no year has been closed'];
-  const bs = await (await fetch(`${APP}/api/accounts/export?format=csv&section=balance_sheet`)).text();
-  const cells = (line) => (line.match(/"[^"]*"/g) || []).map((c) => c.slice(1, -1));
-  const rows = bs.split(/\r?\n/).filter((l) => l.includes(",")).map(cells).filter((c) => c.length >= 3);
-  const brought = rows.find((c) => c[0] === "Equity" && /brought forward/i.test(c[1]));
-  const thisYear = rows.find((c) => c[0] === "Equity" && /profit for/i.test(c[1]));
+  const rows = await balanceSheetRows();
+  // By KIND, not by name. User ledger accounts sort ahead of the appended derived rows, so a
+  // name match took the accountant's row and compared it against the filed figure — passing
+  // without ever looking at the row this exists to test.
+  const brought = rows.find((r) => r.Section === "Equity" && r.Kind === "brought-forward");
+  const thisYear = rows.find((r) => r.Section === "Equity" && r.Kind === "result");
   const last = closed[closed.length - 1];
   if (!brought || !thisYear) return [false, 'the balance sheet still shows one fused retained figure'];
   /**
@@ -2651,8 +2741,8 @@ await check('A closed year is split out rather than fused into this year', async
    * there instead would make the statement and the close share a term, and two derivations
    * that share a term agreeing is not evidence.
    */
-  return [Number(brought[2]) === last.ledger.cumulativeProfit,
-    `balance sheet brings forward ${Number(brought[2]).toLocaleString("en-IN")}, the cut filed ${last.ledger.cumulativeProfit.toLocaleString("en-IN")}, and this year stands at ${Number(thisYear[2]).toLocaleString("en-IN")}`];
+  return [Number(brought.Amount) === last.ledger.cumulativeProfit,
+    `balance sheet brings forward ${Number(brought.Amount).toLocaleString("en-IN")}, the cut filed ${last.ledger.cumulativeProfit.toLocaleString("en-IN")}, and this year stands at ${Number(thisYear.Amount).toLocaleString("en-IN")}`];
 });
 
 /**

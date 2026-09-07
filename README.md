@@ -1380,7 +1380,7 @@ npm run verify
 ```
 
 ```bash
-node scripts/verify-srs.mjs      # 208 checks — specification, hardening, automation
+node scripts/verify-srs.mjs      # 210 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 50 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
 node scripts/verify-journal.mjs  # 54 checks — manual vouchers, and the reconciliation surviving them
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**477 checks** across the six suites against the running app: each one loads a
+**479 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **208 + 50 + 39 + 54 + 69 + 57
+should accept on trust, including from me. It currently reports **210 + 50 + 39 + 54 + 69 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
