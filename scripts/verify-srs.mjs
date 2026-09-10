@@ -125,6 +125,39 @@ async function reconciliationRows() {
  * looking at the derived row it exists to test. One false failure and one false pass, from the
  * same missing field.
  */
+/**
+ * RUN THE MONITORING PASS, ONCE, BEFORE ANYTHING READS WHAT IT RAISED.
+ *
+ * Two checks in this file read /api/alerts and assert something about a raised alert. The
+ * pass that raises them was triggered 900 lines below the first of those checks, so on a
+ * machine whose content/alerts.json had gone stale — a laptop that had been switched off,
+ * a fresh clone — the first check read an empty list and failed:
+ *
+ *   FAIL  The screen and the alert agree about what is overdue   screen read, alert absent
+ *
+ * and then passed on every run after it, on the file the previous run had left behind. A
+ * check that is green because of residue from a previous run is the exact thing this
+ * codebase says is worse than no check: it cannot fail on the machine where it matters,
+ * and it fails on the one machine that had never run it.
+ *
+ * Idempotent — the scheduler refuses only a pass that is already running, so calling it
+ * twice is calling it twice. Both call sites use this, so the ordering cannot drift apart
+ * again.
+ */
+let monitoringRan = null;
+const runMonitoring = async () => {
+  const page = await fetch(`${ADMIN}/alerts`, { headers: { cookie: probe.cookie } });
+  const csrf = ((await page.text()).match(/name="csrf" value="([^"]+)"/) || [])[1];
+  if (!csrf) return (monitoringRan = 'no csrf on the alerts screen — the pass was not triggered');
+  await fetch(`${ADMIN}/alerts/run`, {
+    method: 'POST', redirect: 'manual',
+    headers: { cookie: probe.cookie, 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ csrf }).toString()
+  });
+  return (monitoringRan = 'ran');
+};
+await runMonitoring();
+
 const balanceSheetRows = async (window = '') => {
   const { body } = await get(`/api/accounts/export?format=csv&section=balance_sheet${window}`);
   const cell = (line) => (line.match(/"[^"]*"/g) || []).map((c) => c.slice(1, -1));
@@ -2075,11 +2108,15 @@ await check('The book\'s today is the real calendar date', async () => {
 });
 
 await check('The screen and the alert agree about what is overdue', async () => {
+  // The pass ran at the top of this file, not 900 lines below here — see runMonitoring.
   const page = (await get('/accounts/reminders')).body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
   const onScreen = page.match(/Overdue — escalate[^0-9]{0,40}৳([\d,]+)[^0-9]{0,40}(\d+) invoices past/);
   const alerts = await (await fetch(`${APP}/api/alerts`)).json();
   const alert = (alerts.open || []).find((a) => /past 30 days/i.test(a.title || ''));
-  if (!onScreen || !alert) return [false, `screen ${onScreen ? 'read' : 'unreadable'}, alert ${alert ? 'present' : 'absent'}`];
+  if (!onScreen || !alert)
+    return [false,
+      `screen ${onScreen ? 'read' : 'unreadable'}, alert ${alert ? 'present' : 'absent'}` +
+      (alert ? '' : ` — the monitoring pass ${monitoringRan === 'ran' ? 'ran but raised nothing matching' : monitoringRan}`)];
   const alertCount = Number((alert.title.match(/^(\d+)/) || [])[1]);
   const alertValue = Number((alert.title.match(/৳([\d,]+)/) || ['', '0'])[1].replace(/,/g, ''));
   const screenCount = Number(onScreen[2]);
@@ -2986,16 +3023,9 @@ await check('Closing a year adds nothing to the reconciling items', async () => 
 });
 
 await check('Every check has run and none of them failed', async () => {
-  const page = await fetch(`${ADMIN}/alerts`, { headers: { cookie: probe.cookie } });
-  const csrf = ((await page.text()).match(/name="csrf" value="([^"]+)"/) || [])[1];
-  if (csrf) {
-    await fetch(`${ADMIN}/alerts/run`, {
-      method: 'POST',
-      redirect: 'manual',
-      headers: { cookie: probe.cookie, 'content-type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams({ csrf }).toString()
-    });
-  }
+  // Deliberately runs the pass AGAIN — this check is about what a pass does right now, not
+  // about what some earlier pass left behind. One helper, so the two sites cannot diverge.
+  await runMonitoring();
 
   const r = await fetch(`${APP}/api/alerts`);
   const d = await r.json();
