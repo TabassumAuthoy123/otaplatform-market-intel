@@ -1383,7 +1383,7 @@ npm run verify
 node scripts/verify-srs.mjs      # 210 checks — specification, hardening, automation
 node scripts/verify-admin.mjs    # 50 checks — the admin portal, signed in
 node scripts/verify-auth.mjs     # 39 checks — who may read what, and what leaks when refused
-node scripts/verify-journal.mjs  # 60 checks — manual vouchers, and the reconciliation surviving them
+node scripts/verify-journal.mjs  # 66 checks — manual vouchers, and the reconciliation surviving them
 node scripts/verify-bank.mjs     # 69 checks — a bank statement against the book, and every refusal
 node scripts/verify-flights.mjs  # 57 checks — seven live routes against both GDS
 ```
@@ -1401,11 +1401,11 @@ while the dev server is up** — it overwrites `.next` underneath the running
 process and every page starts returning 500 until the server is restarted with a
 clean `.next`. It looks exactly like a catastrophic regression and is not one.
 
-**485 checks** across the six suites against the running app: each one loads a
+**491 checks** across the six suites against the running app: each one loads a
 page and looks for the feature the specification asks for, reads the book and tests
 that an identity holds, or asks for something it should not be given and checks the
 bytes that come back. It is there because "it is all done" is not a claim anybody
-should accept on trust, including from me. It currently reports **210 + 50 + 39 + 60 + 69 + 57
+should accept on trust, including from me. It currently reports **210 + 50 + 39 + 66 + 69 + 57
 passed, 0 failed**, and it fails loudly if a page stops carrying what it claims — or
 starts carrying something it should not.
 
@@ -3352,6 +3352,62 @@ order: the filed year derives to what was filed, the edit lands unrefused, every
 guard still reads clean over it, drift names what moved with both figures, and drift goes
 quiet again when the restatement is put back. That last clause is what stops a drift function
 that simply always complains from passing.
+
+---
+
+### The two things that panel could not see
+
+It compared carrying accounts one by one, and income and expense as **two group totals**.
+So a restatement that moves money *between* two accounts in the same group moved neither
+total — and that is the most ordinary restatement there is. Somebody recodes an expense
+from Transportation to IT & Development because it was miscoded. Measured on one expense
+dated 2026-06-18, inside the year filed to 2026-06-30:
+
+| | Filed | ৳28,500 recoded between two expense accounts |
+|---|---|---|
+| Total assets | ৳2,39,24,824 | ৳2,39,24,824 |
+| Balance sheet difference | ৳0 | ৳0 |
+| Expense group total | ৳68,18,000 | ৳68,18,000 |
+| **Drift** | clean | **clean, `moved: []`** |
+
+The filed profit and loss *by account* had changed and not one thing in the product said
+so. The panel that exists precisely because the lock cannot see everything could not see
+this either.
+
+And the close records **two** derivations of the year — that is the whole reason it records
+anything — while only the journal one was ever re-derived afterwards. A filed year could
+stop agreeing with its own voucher side and the panel would still print *still derives to
+what was filed*, which was true of the half it looked at.
+
+So the cut now records income and expense **by account** (`cut.ledger.nominals`) and the
+window its control figures covered (`cut.control.from` / `.to`), and drift compares both
+sides account by account and re-derives the voucher result over that window.
+
+```
+IT & Development    filed 69,500   now 98,000   difference  +28,500
+Transportation      filed 31,000   now  2,500   difference  -28,500
+```
+
+**Which means a year filed before those fields existed cannot be checked against them.**
+That is not a green tick. `closedYearDrift` returns `unwatched` — a sentence naming what
+cannot be asked and how to fix it — and every reader has to show it:
+
+> derives to what was filed, as far as it can be checked
+> · This year was filed before income and expense were recorded account by account, so
+> money moved BETWEEN two accounts in the same group inside it cannot be seen — only the
+> group totals above. Reopen and close it again to record them.
+
+`clean` stays a statement about what *moved*; `watched` is the separate question of whether
+the whole question could be asked. A cut with nothing recorded to compare would otherwise
+read exactly like a cut that had been checked and found intact, and somebody would believe
+it. Reopening the year and closing it again records both fields, and the note goes away by
+itself.
+
+The six checks measure each state rather than asserting the happy one: a cut that cannot be
+fully checked reports it, an upgraded cut is watched and clean, the reclassification is named
+on **both** sides, **the group total the old comparison watched did not move** — so nothing
+else could have caught it — the voucher half is caught when its filed result is bent by
+৳33,333, and the panel goes back to what it said before any of it.
 
 ---
 

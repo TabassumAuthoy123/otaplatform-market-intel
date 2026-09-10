@@ -27,6 +27,12 @@ export async function GET() {
     ok: true,
     closes: drift.length,
     clean: drift.every((d) => d.clean),
+    /**
+     * Whether every filed year could be asked the whole question. A cut filed before a field
+     * existed cannot be compared against it, and a reader that showed only `clean` would show
+     * a year nobody could check as a year that had been checked.
+     */
+    watched: drift.every((d) => d.watched),
     drift
   });
 }

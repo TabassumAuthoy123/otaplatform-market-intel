@@ -51,6 +51,15 @@ function filedTable(deps, book, drift, session) {
     .map((c) => {
       const d = (drift || []).find((x) => x.cut && x.cut.id === c.id);
       const moved = (d && d.moved) || [];
+      /**
+       * WHAT THIS YEAR COULD NOT BE ASKED. Shown, always, and never as a tick.
+       *
+       * The close records more about a year than it used to, and a year filed before a field
+       * existed cannot be compared against it. Printing "still derives to what was filed"
+       * over a year nobody could fully check would be the panel claiming a check it did not
+       * run — which is worse than no panel, because somebody would believe it.
+       */
+      const unwatched = (d && d.unwatched) || [];
       const since = c.reopened
         ? `<span style="color:#b91c1c;font-weight:600">reopened</span>
            <br><span class="sub">${esc(c.reopened.reason || '')}</span>`
@@ -60,7 +69,10 @@ function filedTable(deps, book, drift, session) {
                .slice(0, 6)
                .map((m) => `<li>${esc(m.what)}: filed ${money(m.filed, sym)}, now ${money(m.now, sym)}</li>`)
                .join('')}</ul>`
-          : '<span style="color:#047857">still derives to what was filed</span>';
+          : unwatched.length
+            ? `<span style="color:#b45309;font-weight:600">derives to what was filed, as far as it can be checked</span>` +
+              `<ul class="sub" style="margin:4px 0 0 16px">${unwatched.map((u) => `<li>${esc(u)}</li>`).join("")}</ul>`
+            : '<span style="color:#047857">still derives to what was filed</span>';
 
       /**
        * Offered on the NEWEST live cut only. Reopening an earlier one restores the lock to

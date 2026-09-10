@@ -101,6 +101,40 @@ export async function GET(req: Request) {
     );
   }
 
+  /**
+   * EVERY INCOME AND EXPENSE ACCOUNT AT THE CUT, BY CODE.
+   *
+   * positions below holds the accounts that CARRY a balance across the boundary, because
+   * those are what the next year opens with. Nominals do not carry, so for a long while
+   * nothing recorded them and drift compared income and expense as two group totals.
+   *
+   * WHICH MADE A WHOLE CLASS OF RESTATEMENT INVISIBLE. Measured on the demo book by moving
+   * one expense inside the filed year from one category to another — a miscoding correction,
+   * the most ordinary restatement there is:
+   *
+   *   28,500 moved between two expense accounts inside the year filed to 2026-06-30
+   *
+   *   total assets            2,39,24,824  ->  2,39,24,824
+   *   balance sheet diff      0            ->  0
+   *   drift                   clean        ->  clean, moved []
+   *
+   * Nothing in the product noticed, because the expense GROUP total did not move and
+   * positions holds no expense account to compare. The filed P&L by account — which is what
+   * an auditor reads — had changed, and the panel whose whole job is saying so said nothing.
+   *
+   * Rounded to whole taka and filtered to non-zero, the same way positions is, so the two
+   * lists are read by one comparison.
+   */
+  const nominal = (g: AccountGroup) => g === 'income' || g === 'expense';
+  const nominals = summary
+    .filter((r) => nominal(r.account.group) && Math.round(r.balance) !== 0)
+    .map((r) => ({
+      code: r.account.code,
+      name: r.account.name,
+      group: r.account.group,
+      balance: Math.round(r.balance)
+    }));
+
   const carries = (g: AccountGroup) => g === 'asset' || g === 'liability' || g === 'equity';
   const positions = summary
     .filter((r) => carries(r.account.group) && Math.round(r.balance) !== 0)
@@ -205,7 +239,7 @@ export async function GET(req: Request) {
     bookRevision: (book as unknown as { _meta?: { revision?: number } })._meta?.revision ?? null,
     refusals,
     ledger: {
-      income, expense, cumulativeProfit, yearProfit, positions,
+      income, expense, cumulativeProfit, yearProfit, positions, nominals,
       /** The same year bounded straight off the journal, never by subtracting a stored figure. */
       yearIncome, yearExpense, yearProfitDerived
     },

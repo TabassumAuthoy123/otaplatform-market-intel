@@ -2421,7 +2421,18 @@ export type YearEndClose = {
     expense: number;
     cumulativeProfit: number;
     yearProfit: number;
+    /** Accounts that carry a balance across the boundary — what the next year opens with. */
     positions: { code: string; name: string; group: AccountGroup; balance: number }[];
+    /**
+     * Income and expense at the cut, by account. Optional because cuts filed before it was
+     * recorded do not carry it, and a year with no nominals recorded cannot be checked for a
+     * reclassification inside it — which drift says out loud rather than reading clean.
+     */
+    nominals?: { code: string; name: string; group: AccountGroup; balance: number }[];
+    /** The same year off the journal directly, for cuts filed once it was recorded. */
+    yearIncome?: number;
+    yearExpense?: number;
+    yearProfitDerived?: number;
   };
   /**
    * What the voucher side said about THE SAME YEAR, derived the same way, for the same reason.
@@ -2502,25 +2513,102 @@ export function closedYearDrift(book: Book) {
     compare('Expense to the cut', cut.ledger.expense, now.expense);
     compare('Profit carried forward', cut.ledger.cumulativeProfit, now.cumulativeProfit);
 
-    const positionsNow = new Map(
-      summary.filter((r) => carries(r.account.group)).map((r) => [r.account.code, r])
-    );
-    for (const filed of cut.ledger.positions) {
-      const live = positionsNow.get(filed.code);
-      compare(filed.name, filed.balance, live ? live.balance : 0);
-      positionsNow.delete(filed.code);
-    }
-    // An account that did not exist at the cut and carries a balance inside it now.
-    for (const [, r] of positionsNow) {
-      if (Math.round(r.balance) !== 0) {
-        moved.push({
-          what: `${r.account.name} — no balance when the year was filed`,
-          filed: 0, now: Math.round(r.balance), difference: Math.round(r.balance)
-        });
+    /**
+     * ACCOUNT BY ACCOUNT, ON BOTH SIDES OF THE STATEMENT.
+     *
+     * Carrying accounts were always compared this way. Income and expense were compared as
+     * two group totals, and a restatement that moves money BETWEEN two accounts in the same
+     * group moves neither total. Measured by recategorising one expense inside the filed
+     * year on the demo book — a miscoding correction, the most ordinary restatement there is:
+     *
+     *   28,500 moved from one expense account to another, dated 2026-06-18, inside the year
+     *   filed to 2026-06-30
+     *
+     *   total assets            2,39,24,824  ->  2,39,24,824
+     *   balance sheet diff      0            ->  0
+     *   expense group total     2,67,91,638  ->  2,67,91,638
+     *   drift                   clean        ->  clean, moved []
+     *
+     * The filed profit and loss BY ACCOUNT had changed and not one thing in the product
+     * said so. The panel that exists precisely because the lock cannot see everything could
+     * not see this either.
+     */
+    const byCode = (rows: { code: string; name: string; balance: number }[] | undefined,
+                    live: Map<string, { account: Account; balance: number }>,
+                    label: string) => {
+      const rest = new Map(live);
+      for (const filed of rows || []) {
+        const now = rest.get(filed.code);
+        compare(filed.name, filed.balance, now ? now.balance : 0);
+        rest.delete(filed.code);
       }
+      // An account that held nothing when the year was filed and holds something inside it now.
+      for (const [, r] of rest) {
+        if (Math.round(r.balance) !== 0) {
+          moved.push({
+            what: `${r.account.name} — ${label} when the year was filed`,
+            filed: 0, now: Math.round(r.balance), difference: Math.round(r.balance)
+          });
+        }
+      }
+    };
+
+    const liveBy = (pick: (g: AccountGroup) => boolean) =>
+      new Map(summary.filter((r) => pick(r.account.group)).map((r) => [r.account.code, r]));
+
+    byCode(cut.ledger.positions, liveBy(carries), 'no balance');
+
+    /**
+     * WHAT THIS CUT CANNOT BE ASKED, AND WHY — never silence.
+     *
+     * Both of these are things the close records now and did not always. A year filed before
+     * a field existed cannot be checked against it, and the honest report of that is a
+     * sentence naming what is unwatched — not a green tick, and not a zero. A cut with
+     * nothing recorded to compare would otherwise read exactly like a cut that had been
+     * checked and found intact, which is the difference between a check and a decoration.
+     *
+     * Reopening the year and closing it again records both, and the note goes away by itself.
+     */
+    const unwatched: string[] = [];
+
+    if (cut.ledger.nominals) {
+      byCode(cut.ledger.nominals, liveBy((g) => g === 'income' || g === 'expense'), 'no balance');
+    } else {
+      unwatched.push(
+        `This year was filed before income and expense were recorded account by account, so ` +
+          `money moved BETWEEN two accounts in the same group inside it cannot be seen — only ` +
+          `the group totals above. Reopen and close it again to record them.`
+      );
     }
 
-    return { cut, moved, clean: moved.length === 0 };
+    /**
+     * AND THE OTHER DERIVATION, WHICH NOTHING WAS WATCHING.
+     *
+     * The close records two independent derivations of the year — that is the whole reason it
+     * records anything — and then only one of them was ever re-derived afterwards. A filed
+     * year could stop agreeing with its own voucher side and the panel would say it still
+     * derives to what was filed, which is true of the half it looked at.
+     *
+     * Re-derivable only for cuts that recorded the window their control figures covered.
+     * Before that field existed the figures were bounded at the top only, so there is no
+     * window to re-derive over and no honest comparison to make.
+     */
+    if (cut.control && cut.control.to) {
+      const pl = profitAndLoss(book, cut.control.from ?? undefined, cut.control.to);
+      compare('Result for the year, from the vouchers', cut.control.netProfit, pl.netProfit);
+    } else {
+      unwatched.push(
+        `This year was filed before the close recorded which dates its voucher figures ` +
+          `covered, so the voucher side of it cannot be re-derived — only the journal side ` +
+          `above. Reopen and close it again to record the window.`
+      );
+    }
+
+    /**
+     * `clean` is about what MOVED and stays that way — a cut with nothing to compare has
+     * moved nothing. `watched` is the separate question, and every reader has to show it.
+     */
+    return { cut, moved, clean: moved.length === 0, unwatched, watched: unwatched.length === 0 };
   });
 }
 

@@ -886,6 +886,145 @@ ok('an accountant may post', acctPost.status === 302, `HTTP ${acctPost.status}`)
   }
 }
 
+/* ========================================================================== */
+/*  THE HALF OF A FILED YEAR NOTHING WAS WATCHING                             */
+/* ========================================================================== */
+/**
+ * Drift compared carrying accounts one by one and income and expense as two GROUP TOTALS.
+ * A same-group reclassification moves neither total, so the most ordinary restatement there
+ * is — money recoded from one expense category to another — was invisible to every guard in
+ * the product. Measured on this book by recategorising one expense dated inside the filed
+ * year:
+ *
+ *   28,500 moved between two expense accounts, dated 2026-06-18, inside the year filed to
+ *   2026-06-30
+ *
+ *   total assets            2,39,24,824  ->  2,39,24,824
+ *   balance sheet diff      0            ->  0
+ *   expense group total     2,67,91,638  ->  2,67,91,638
+ *   drift                   clean        ->  clean, moved []
+ *
+ * And the close records TWO derivations of the year, which is the whole reason it records
+ * anything, and only one of them was ever re-derived afterwards. A filed year could stop
+ * agreeing with its own voucher side and the panel would still say it derives to what was
+ * filed — true of the half it looked at.
+ *
+ * Both are fixed by the cut recording more: income and expense by account, and the window
+ * its control figures covered. Which means a year filed BEFORE those fields existed cannot
+ * be checked against them, and saying so is the first check here. A green tick over a year
+ * nobody could check is the panel claiming a check it never ran.
+ */
+{
+  const filedNow = JSON.parse(readFileSync(BOOK, 'utf8'));
+  const theCut = (filedNow.closes || []).filter((c) => !c.reopened).pop();
+
+  const driftOf = async () => {
+    const j = await (await fetch(`${APP}/api/accounts/year-end/drift`)).json();
+    return { top: j, row: (j.drift || []).find((x) => x.cut && x.cut.id === theCut.id) || null };
+  };
+  const expenseGroupTotal = async () => {
+    const pv = await (await fetch(`${APP}/api/accounts/year-end/preview?through=${theCut.closedThrough}`)).json();
+    return pv.ledger.expense;
+  };
+
+  if (!theCut) {
+    ok('a filed year says what it cannot be asked', true, 'no year is filed on this book');
+  } else {
+    /* ---------- 1. the cut as it actually stands ---------- */
+    const base = await driftOf();
+    const recorded = Boolean(theCut.ledger.nominals) && Boolean(theCut.control && theCut.control.to);
+    ok('a year that cannot be fully checked says so, instead of reading green',
+      recorded
+        ? base.row.watched === true && (base.row.unwatched || []).length === 0
+        : base.row.watched === false && (base.row.unwatched || []).length > 0 &&
+          base.top.watched === false,
+      recorded
+        ? 'the cut records both fields, so there is nothing unwatched to report'
+        : `${(base.row.unwatched || []).length} note(s), and the panel is told: watched=${base.row.watched}`);
+
+    /* ---------- 2. upgrade the cut the way reopening and re-closing would ---------- */
+    /**
+     * Written straight into the book rather than through the close, because the close would
+     * need the year reopened and every voucher in it rewritten to get here. What is being
+     * measured is the DETECTION, and the detection reads a cut, not a route.
+     */
+    const upgraded = JSON.parse(readFileSync(BOOK, 'utf8'));
+    const uCut = (upgraded.closes || []).find((c) => c.id === theCut.id);
+    const atCut = await (await fetch(`${APP}/api/accounts/year-end/preview?through=${theCut.closedThrough}`)).json();
+    uCut.ledger.nominals = atCut.ledger.nominals;
+    // The window this cut actually covered. FYR.closingWindow asked at an already-closed date
+    // returns the window of the year AFTER it, which would be inverted — so it is derived from
+    // the cut before this one, which is what the close itself uses.
+    const earlier = (upgraded.closes || []).filter((c) => !c.reopened && c.closedThrough < theCut.closedThrough).pop();
+    uCut.control = { ...uCut.control, from: earlier ? FYR.nextDay(earlier.closedThrough) : null, to: theCut.closedThrough };
+    writeFileSync(BOOK, JSON.stringify(upgraded, null, 2));
+
+    const upgradedDrift = await driftOf();
+    ok('a cut carrying income and expense by account, and its window, is watched and clean',
+      upgradedDrift.row.watched === true && upgradedDrift.row.clean === true &&
+        (uCut.ledger.nominals || []).length > 0,
+      `${(uCut.ledger.nominals || []).length} nominal account(s) recorded, moved ${JSON.stringify(upgradedDrift.row.moved)}`);
+
+    /* ---------- 3. the restatement nothing could see ---------- */
+    const groupBefore = await expenseGroupTotal();
+    const planted = JSON.parse(readFileSync(BOOK, 'utf8'));
+    const exp = (planted.expenses || []).find((x) => x.date <= theCut.closedThrough);
+    const otherCat = [...new Set((planted.expenses || []).map((x) => x.categoryId))]
+      .filter((c) => c && c !== (exp && exp.categoryId))[0];
+
+    if (!exp || !otherCat) {
+      ok('money moved between two accounts in the same group inside a filed year is named',
+        false, 'no expense inside the filed year, or only one category — nothing to plant');
+    } else {
+      const amount = exp.amount;
+      exp.categoryId = otherCat;
+      writeFileSync(BOOK, JSON.stringify(planted, null, 2));
+
+      const after = await driftOf();
+      const groupAfter = await expenseGroupTotal();
+      const rows = (after.row.moved || []).filter((m) => Math.abs(m.difference) === Math.round(amount));
+      const up = rows.find((m) => m.difference > 0);
+      const down = rows.find((m) => m.difference < 0);
+
+      ok('money moved between two accounts in the same group inside a filed year is named, on both sides',
+        Boolean(up && down) && after.row.clean === false && after.top.clean === false,
+        up && down
+          ? `${up.what} filed ${up.filed} now ${up.now}; ${down.what} filed ${down.filed} now ${down.now}`
+          : `moved: ${JSON.stringify(after.row.moved)}`);
+
+      /**
+       * And the reason nothing else could have caught it: the group total the old comparison
+       * looked at did not move a taka. If this ever fails, the plant is no longer a
+       * same-group reclassification and the check above has stopped testing what it says.
+       */
+      ok('and the group total the old comparison watched did not move, so nothing else could have',
+        groupAfter === groupBefore,
+        `expense group ${groupBefore} -> ${groupAfter}, while ${Math.round(amount)} moved between two accounts inside it`);
+    }
+
+    /* ---------- 4. and the voucher side of the year, re-derived ---------- */
+    const bent = JSON.parse(readFileSync(BOOK, 'utf8'));
+    const bCut = (bent.closes || []).find((c) => c.id === theCut.id);
+    const wasFiled = bCut.control.netProfit;
+    bCut.control = { ...bCut.control, netProfit: wasFiled + 33333 };
+    writeFileSync(BOOK, JSON.stringify(bent, null, 2));
+
+    const bentDrift = await driftOf();
+    const vRow = (bentDrift.row.moved || []).find((m) => /from the vouchers/i.test(m.what));
+    ok('the voucher half of a filed year is re-derived too, not only the journal half',
+      Boolean(vRow) && vRow.difference === -33333,
+      vRow
+        ? `${vRow.what}: filed ${vRow.filed}, derives to ${vRow.now}`
+        : `the filed voucher result was bent by 33333 and nothing noticed: ${JSON.stringify(bentDrift.row.moved)}`);
+
+    writeFileSync(BOOK, JSON.stringify(filedNow, null, 2));
+    const restored = await driftOf();
+    ok('and the panel goes back to what it said before any of it',
+      restored.row.clean === base.row.clean && restored.row.watched === base.row.watched,
+      `clean ${restored.row.clean}, watched ${restored.row.watched}`);
+  }
+}
+
 const failed = results.filter((r) => !r).length;
 console.log(`\n${results.length - failed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);
